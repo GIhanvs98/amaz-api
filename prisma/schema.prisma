@@ -1,0 +1,79 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Medicine {
+  id              String         @id @default(uuid())
+  name            String
+  genericName     String?
+  category        String
+  form            String         // e.g. Tablet, Syrup, Injection
+  unit            String         // e.g. mg, ml
+  reorderLevel    Int            @default(50) // Low stock threshold
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  stockBatches    StockBatch[]
+  purchaseItems   PurchaseOrderItem[]
+}
+
+model Supplier {
+  id              String         @id @default(uuid())
+  name            String
+  contactPerson   String?
+  email           String?
+  phone           String?
+  address         String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  purchaseOrders  PurchaseOrder[]
+}
+
+model StockBatch {
+  id              String         @id @default(uuid())
+  medicineId      String
+  batchNumber     String
+  expiryDate      DateTime
+  initialQuantity Int
+  currentQuantity Int
+  unitPrice       Float
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  medicine        Medicine       @relation(fields: [medicineId], references: [id])
+}
+
+model PurchaseOrder {
+  id              String         @id @default(uuid())
+  supplierId      String
+  status          String         @default("PENDING") // PENDING, DELIVERED, CANCELLED
+  totalAmount     Float          @default(0)
+  orderDate       DateTime       @default(now())
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  supplier        Supplier       @relation(fields: [supplierId], references: [id])
+  items           PurchaseOrderItem[]
+}
+
+model PurchaseOrderItem {
+  id              String         @id @default(uuid())
+  purchaseOrderId String
+  medicineId      String
+  quantity        Int
+  unitPrice       Float
+  totalPrice      Float
+  createdAt       DateTime       @default(now())
+
+  purchaseOrder   PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id])
+  medicine        Medicine       @relation(fields: [medicineId], references: [id])
+}

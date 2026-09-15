@@ -18,11 +18,15 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+import pharmacyRoutes from "./routes/pharmacy.routes";
+
 app.get("/health", (_req, res) => {
     res.json({
         success: true,
         message: "Amaz Hospital API is running",
     });
 });
+
+app.use("/api/pharmacy", pharmacyRoutes);
 
 export default app;
