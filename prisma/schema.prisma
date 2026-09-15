@@ -12,6 +12,7 @@ datasource db {
 
 model Medicine {
   id              String         @id @default(uuid())
+  barcode         String?        @unique
   name            String
   genericName     String?
   category        String

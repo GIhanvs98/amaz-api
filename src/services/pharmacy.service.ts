@@ -2,8 +2,10 @@ import { prisma } from '../lib/prisma';
 
 export class PharmacyService {
   // --- MEDICINE CATALOG ---
-  async getAllMedicines() {
+  async getAllMedicines(barcode?: string) {
+    const whereClause = barcode ? { barcode } : {};
     return prisma.medicine.findMany({
+      where: whereClause,
       include: {
         stockBatches: {
           where: { currentQuantity: { gt: 0 } },

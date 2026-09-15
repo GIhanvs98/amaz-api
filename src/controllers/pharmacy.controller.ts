@@ -4,7 +4,8 @@ import { pharmacyService } from '../services/pharmacy.service';
 export class PharmacyController {
   async getMedicines(req: Request, res: Response) {
     try {
-      const medicines = await pharmacyService.getAllMedicines();
+      const { barcode } = req.query;
+      const medicines = await pharmacyService.getAllMedicines(barcode as string);
       res.json(medicines);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
