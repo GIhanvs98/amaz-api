@@ -127,3 +127,43 @@ model Refund {
   status          String   @default("COMPLETED")
   createdAt       DateTime @default(now())
 }
+
+model LabTestCatalog {
+  id              String   @id @default(uuid())
+  name            String
+  category        String   // e.g., Hematology, Biochemistry
+  price           Float
+  referenceRange  String?  // e.g., "4.0-10.0" (Optional, as complex tests have multiple biomarkers)
+  unit            String?  // e.g., "mmol/L"
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  labRequests     LabRequest[]
+}
+
+model LabRequest {
+  id              String   @id @default(uuid())
+  patientId       String
+  visitId         String?
+  testId          String
+  doctorId        String?
+  priority        String   @default("ROUTINE") // ROUTINE, URGENT
+  status          String   @default("PENDING") // PENDING, COMPLETED, CANCELLED
+  reportUrl       String?  // PDF Report URL
+  requestedAt     DateTime @default(now())
+
+  test            LabTestCatalog @relation(fields: [testId], references: [id])
+  results         LabResult[]
+}
+
+model LabResult {
+  id              String   @id @default(uuid())
+  requestId       String
+  biomarker       String   // e.g., "Hemoglobin", "WBC Count"
+  value           String
+  isOutOfRange    Boolean  @default(false)
+  notes           String?
+  recordedAt      DateTime @default(now())
+
+  request         LabRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}

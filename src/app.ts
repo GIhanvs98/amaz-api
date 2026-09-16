@@ -20,6 +20,7 @@ app.use(cookieParser());
 
 import pharmacyRoutes from "./routes/pharmacy.routes";
 import billingRoutes from "./routes/billing.routes";
+import labRoutes from "./routes/lab.routes";
 
 app.get("/health", (_req, res) => {
     res.json({
@@ -30,5 +31,6 @@ app.get("/health", (_req, res) => {
 
 app.use("/api/pharmacy", pharmacyRoutes);
 app.use("/api/billing", billingRoutes);
+app.use("/api/lab", labRoutes);
 
 export default app;
