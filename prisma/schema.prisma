@@ -83,7 +83,7 @@ model Invoice {
   id              String             @id @default(uuid())
   visitId         String?            // Nullable for walk-in OTC customers
   patientId       String?            // Nullable for walk-in OTC customers
-  status          String             @default("DRAFT") // DRAFT, PAID, CANCELLED
+  status          String             @default("DRAFT") // DRAFT, PENDING, PAID, CANCELLED
   subtotal        Float              @default(0)
   totalAmount     Float              @default(0)
   createdAt       DateTime           @default(now())
@@ -166,4 +166,15 @@ model LabResult {
   recordedAt      DateTime @default(now())
 
   request         LabRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}
+
+model Expense {
+  id              String   @id @default(uuid())
+  category        String   // e.g., SALARY, UTILITIES, MAINTENANCE, SUPPLIES, MISC
+  amount          Float
+  description     String
+  status          String   @default("COMPLETED") // PENDING, COMPLETED, CANCELLED
+  date            DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
