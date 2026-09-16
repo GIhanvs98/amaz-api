@@ -18,10 +18,11 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-import pharmacyRoutes from "./routes/pharmacy.routes";
-import billingRoutes from "./routes/billing.routes";
-import labRoutes from "./routes/lab.routes";
-import financeRoutes from "./routes/finance.routes";
+import pharmacyRoutes from "./routes/pharmacy.routes.js";
+import billingRoutes from "./routes/billing.routes.js";
+import labRoutes from "./routes/lab.routes.js";
+import financeRoutes from "./routes/finance.routes.js";
+import prescriptionRoutes from "./routes/prescription.routes.js";
 
 app.get("/health", (_req, res) => {
     res.json({
@@ -34,5 +35,6 @@ app.use("/api/pharmacy", pharmacyRoutes);
 app.use("/api/billing", billingRoutes);
 app.use("/api/lab", labRoutes);
 app.use("/api/finance", financeRoutes);
+app.use("/api/prescriptions", prescriptionRoutes);
 
 export default app;

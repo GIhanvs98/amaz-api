@@ -24,6 +24,7 @@ model Medicine {
 
   stockBatches    StockBatch[]
   purchaseItems   PurchaseOrderItem[]
+  prescriptionItems PrescriptionItem[]
 }
 
 model Supplier {
@@ -177,4 +178,36 @@ model Expense {
   date            DateTime @default(now())
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+}
+
+model Prescription {
+  id              String             @id @default(uuid())
+  patientId       String
+  patientName     String?            // Denormalized for quick frontend rendering
+  visitId         String
+  doctorId        String
+  doctorName      String?            // Denormalized for quick frontend rendering
+  status          String             @default("PENDING") // PENDING, DISPENSED, CANCELLED
+  diagnosis       String?
+  clinicalNotes   String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  items           PrescriptionItem[]
+}
+
+model PrescriptionItem {
+  id              String       @id @default(uuid())
+  prescriptionId  String
+  medicineId      String?      // Optional: can be null if custom drug typed
+  drugName        String       // Explicit drug name
+  dosage          String?
+  frequency       String?      // Times per day or literal instruction
+  duration        String?
+  instructions    String?
+  dispenseQty     Int          @default(0) // Qty actually dispensed by pharmacist
+  createdAt       DateTime     @default(now())
+
+  prescription    Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  medicine        Medicine?    @relation(fields: [medicineId], references: [id])
 }
