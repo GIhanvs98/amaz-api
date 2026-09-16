@@ -15,9 +15,34 @@ export class PharmacyService {
     });
   }
 
-  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; form: string; unit: string; reorderLevel?: number }) {
-    return withRetry(() => prisma.medicine.create({
-      data,
+  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; form: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number }) {
+    return withRetry(() => prisma.$transaction(async (tx) => {
+      const medicine = await tx.medicine.create({
+        data: {
+          name: data.name,
+          barcode: data.barcode,
+          genericName: data.genericName,
+          category: data.category,
+          form: data.form,
+          unit: data.unit,
+          reorderLevel: data.reorderLevel,
+        },
+      });
+
+      if (data.baseStock && data.baseStock > 0) {
+        await tx.stockBatch.create({
+          data: {
+            medicineId: medicine.id,
+            batchNumber: `INIT-${Date.now()}`,
+            expiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1)), // 1 year from now
+            initialQuantity: data.baseStock,
+            currentQuantity: data.baseStock,
+            unitPrice: data.basePrice || 0,
+          }
+        });
+      }
+
+      return medicine;
     }));
   }
 
