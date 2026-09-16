@@ -78,3 +78,52 @@ model PurchaseOrderItem {
   purchaseOrder   PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id])
   medicine        Medicine       @relation(fields: [medicineId], references: [id])
 }
+
+model Invoice {
+  id              String             @id @default(uuid())
+  visitId         String?            // Nullable for walk-in OTC customers
+  patientId       String?            // Nullable for walk-in OTC customers
+  status          String             @default("DRAFT") // DRAFT, PAID, CANCELLED
+  subtotal        Float              @default(0)
+  totalAmount     Float              @default(0)
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  lineItems       InvoiceLineItem[]
+  payments        Payment[]
+}
+
+model InvoiceLineItem {
+  id              String   @id @default(uuid())
+  invoiceId       String
+  department      String   // PHARMACY, CONSULTATION, LAB, OTC
+  referenceId     String?  // e.g., prescription ID, batch ID
+  description     String
+  quantity        Int      @default(1)
+  unitPrice       Float
+  total           Float
+  createdAt       DateTime @default(now())
+
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id])
+}
+
+model Payment {
+  id              String   @id @default(uuid())
+  invoiceId       String
+  amount          Float
+  method          String   // CASH, CARD, BANK, QR
+  status          String   @default("COMPLETED")
+  transactionRef  String?
+  createdAt       DateTime @default(now())
+
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id])
+}
+
+model Refund {
+  id              String   @id @default(uuid())
+  paymentId       String
+  amount          Float
+  reason          String
+  status          String   @default("COMPLETED")
+  createdAt       DateTime @default(now())
+}

@@ -11,4 +11,6 @@ router.post('/dispense', pharmacyController.dispense);
 
 router.get('/alerts', pharmacyController.getAlerts);
 
+router.post('/sell', pharmacyController.sell.bind(pharmacyController));
+
 export default router;
