@@ -15,12 +15,22 @@ export class PharmacyController {
 
   async addMedicine(req: Request, res: Response) {
     try {
-      const { name, category, form, unit } = req.body;
+      const { name, barcode, genericName, category, form, unit, reorderLevel, baseStock, basePrice } = req.body;
       if (!name || !category || !form || !unit) {
         return res.status(400).json({ error: "Missing required fields: name, category, form, or unit." });
       }
       
-      const medicine = await pharmacyService.addMedicine(req.body);
+      const medicine = await pharmacyService.addMedicine({
+        name,
+        barcode,
+        genericName,
+        category,
+        form,
+        unit,
+        reorderLevel: reorderLevel ? Number(reorderLevel) : undefined,
+        baseStock: baseStock ? Number(baseStock) : undefined,
+        basePrice: basePrice ? Number(basePrice) : undefined
+      });
       res.status(201).json(medicine);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
