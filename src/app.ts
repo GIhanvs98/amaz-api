@@ -19,6 +19,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 import pharmacyRoutes from "./routes/pharmacy.routes";
+import billingRoutes from "./routes/billing.routes";
 
 app.get("/health", (_req, res) => {
     res.json({
@@ -28,5 +29,6 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api/pharmacy", pharmacyRoutes);
+app.use("/api/billing", billingRoutes);
 
 export default app;

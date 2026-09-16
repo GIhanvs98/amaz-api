@@ -70,6 +70,7 @@ export class PharmacyService {
           batchId: batch.id,
           batchNumber: batch.batchNumber,
           quantityDispensed: quantityFromThisBatch,
+          unitPrice: batch.unitPrice,
         });
 
         remainingToDispense -= quantityFromThisBatch;
