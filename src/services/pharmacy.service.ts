@@ -1,4 +1,4 @@
-import { prisma } from '../lib/prisma';
+import { prisma, withRetry } from '../lib/prisma';
 
 export class PharmacyService {
   // --- MEDICINE CATALOG ---
@@ -15,20 +15,20 @@ export class PharmacyService {
     });
   }
 
-  async addMedicine(data: { name: string; genericName?: string; category: string; form: string; unit: string; reorderLevel?: number }) {
-    return prisma.medicine.create({
+  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; form: string; unit: string; reorderLevel?: number }) {
+    return withRetry(() => prisma.medicine.create({
       data,
-    });
+    }));
   }
 
   // --- INVENTORY MANAGEMENT ---
   async addStockBatch(data: { medicineId: string; batchNumber: string; expiryDate: Date; initialQuantity: number; unitPrice: number }) {
-    return prisma.stockBatch.create({
+    return withRetry(() => prisma.stockBatch.create({
       data: {
         ...data,
         currentQuantity: data.initialQuantity,
       },
-    });
+    }));
   }
 
   // --- DISPENSING ENGINE (FIFO LOGIC) ---

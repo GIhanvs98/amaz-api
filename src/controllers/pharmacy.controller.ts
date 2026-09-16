@@ -15,6 +15,11 @@ export class PharmacyController {
 
   async addMedicine(req: Request, res: Response) {
     try {
+      const { name, category, form, unit } = req.body;
+      if (!name || !category || !form || !unit) {
+        return res.status(400).json({ error: "Missing required fields: name, category, form, or unit." });
+      }
+      
       const medicine = await pharmacyService.addMedicine(req.body);
       res.status(201).json(medicine);
     } catch (error: any) {
@@ -24,9 +29,22 @@ export class PharmacyController {
 
   async addStockBatch(req: Request, res: Response) {
     try {
-      const { expiryDate, ...rest } = req.body;
+      const { expiryDate, initialQuantity, unitPrice, medicineId, batchNumber, ...rest } = req.body;
+      
+      if (!medicineId || !batchNumber || !expiryDate || initialQuantity === undefined || unitPrice === undefined) {
+        return res.status(400).json({ error: "Missing required stock batch fields." });
+      }
+      
+      if (Number(initialQuantity) <= 0 || Number(unitPrice) < 0) {
+        return res.status(400).json({ error: "Quantity must be > 0 and price must be >= 0." });
+      }
+
       const batch = await pharmacyService.addStockBatch({
         ...rest,
+        medicineId,
+        batchNumber,
+        initialQuantity: Number(initialQuantity),
+        unitPrice: Number(unitPrice),
         expiryDate: new Date(expiryDate),
       });
       res.status(201).json(batch);
