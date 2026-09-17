@@ -11,7 +11,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     const { fullName, email, password, roleName = "USER" } = req.body;
 
     if (!fullName || !email || !password) {
-      res.status(400).json({ message: "Please provide all required fields" });
+      res.status(400).json({ error: "Please provide all required fields" });
       return;
     }
 
@@ -21,7 +21,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     });
 
     if (existingUser) {
-      res.status(400).json({ message: "User already exists with this email" });
+      res.status(400).json({ error: "User already exists with this email" });
       return;
     }
 
@@ -81,7 +81,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      res.status(400).json({ message: "Please provide email and password" });
+      res.status(400).json({ error: "Please provide email and password" });
       return;
     }
 
@@ -92,14 +92,14 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     });
 
     if (!user) {
-      res.status(401).json({ message: "Invalid credentials" });
+      res.status(401).json({ error: "Invalid credentials" });
       return;
     }
 
     // Check password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      res.status(401).json({ message: "Invalid credentials" });
+      res.status(401).json({ error: "Invalid credentials" });
       return;
     }
 
