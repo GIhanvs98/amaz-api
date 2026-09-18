@@ -20,6 +20,7 @@ const withRetry = async <T>(operation: () => Promise<T>, retries = 3, delay = 10
 
 export const createPrescription = async (req: Request, res: Response): Promise<void> => {
   try {
+    console.log("CREATE PRESCRIPTION PAYLOAD:", req.body);
     const { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items } = req.body;
 
     const newPrescription = await withRetry(() => (prisma as any).prescription.create({
