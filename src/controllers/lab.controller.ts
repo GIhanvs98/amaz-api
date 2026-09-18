@@ -41,7 +41,29 @@ export class LabController {
 
   async createRequest(req: Request, res: Response) {
     try {
-      const request = await labService.createRequest(req.body);
+      const { patientPhone, patientName, patientId, testIds, doctorId, priority, visitId } = req.body;
+
+      // Validate test selection
+      if (!testIds || !Array.isArray(testIds) || testIds.length === 0) {
+        return res.status(400).json({ error: "At least one testId is required" });
+      }
+
+      // Resolve patientId: accept direct patientId or resolve from phone
+      let resolvedPatientId = patientId;
+      if (!resolvedPatientId) {
+        if (!patientPhone || !patientName) {
+          return res.status(400).json({ error: "Either patientId or patientPhone + patientName are required" });
+        }
+        resolvedPatientId = await labService.resolvePatient(patientPhone, patientName);
+      }
+
+      const request = await labService.createRequest({
+        patientId: resolvedPatientId,
+        visitId,
+        testIds,
+        doctorId,
+        priority
+      });
       res.status(201).json(request);
     } catch (error: any) {
       res.status(400).json({ error: error.message });

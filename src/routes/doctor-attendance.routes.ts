@@ -1,9 +1,12 @@
 import { Router } from "express";
-import { markDoctorArrived } from "../controllers/doctor-attendance.controller.js";
+import { markDoctorArrived, getDoctorsTodayStatus } from "../controllers/doctor-attendance.controller.js";
 
 const router = Router();
 
 // POST /api/doctors/:id/attendance/arrive
 router.post("/:id/attendance/arrive", markDoctorArrived);
+
+// GET /api/doctors/today
+router.get("/today", getDoctorsTodayStatus);
 
 export default router;

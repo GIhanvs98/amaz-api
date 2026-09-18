@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma.js';
 
 export class BillingService {
   /**
@@ -47,7 +45,7 @@ export class BillingService {
     }
 
     // 3. Add the line item
-    const lineItem = await prisma.invoiceLineItem.create({
+    await prisma.invoiceLineItem.create({
       data: {
         invoiceId: invoice.id,
         department: data.department,

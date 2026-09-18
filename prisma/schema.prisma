@@ -286,6 +286,8 @@ model Appointment {
   User              User?    @relation(fields: [doctorId], references: [id])
   Patient           Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
   Session           DoctorScheduleSession? @relation(fields: [sessionId], references: [id])
+
+  @@unique([doctorId, appointmentDate, tokenNumber])
 }
 
 model User {

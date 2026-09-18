@@ -3,16 +3,12 @@ import { NotificationService } from "./notification.service.js";
 
 export class BookingService {
   static async getDoctors() {
+    // Return minimal data — do not expose internal schedule details to the public booking API
     return prisma.user.findMany({
       where: { Role: { name: "Doctor" } },
       select: {
         id: true,
-        fullName: true,
-        DoctorSchedule: {
-          include: {
-            sessions: true
-          }
-        }
+        fullName: true
       }
     });
   }
@@ -35,13 +31,45 @@ export class BookingService {
     });
 
     if (!session) {
-      return { available: false, reason: "Doctor does not consult on this day", bookedSlots: 0, totalSlots: 0 };
+      return { available: false, reason: "Doctor does not consult on this day", bookedSlots: 0, totalSlots: 0, tokens: [] };
     }
 
+    const targetDate = new Date(date);
     const startOfDay = new Date(date);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(date);
     endOfDay.setHours(23, 59, 59, 999);
+
+    // Check for schedule exceptions (doctor modified or cancelled this specific day)
+    const exception = await prisma.doctorScheduleException.findFirst({
+      where: {
+        scheduleId: session.scheduleId,
+        exceptionDate: { gte: startOfDay, lte: endOfDay }
+      }
+    });
+
+    if (exception?.isUnavailable) {
+      return { available: false, reason: "Doctor has marked this day as unavailable", bookedSlots: 0, totalSlots: 0, tokens: [] };
+    }
+
+    // Check for approved leave
+    const onLeave = await prisma.doctorLeave.findFirst({
+      where: {
+        scheduleId: session.scheduleId,
+        status: "APPROVED",
+        startDate: { lte: targetDate },
+        endDate: { gte: targetDate }
+      }
+    });
+
+    if (onLeave) {
+      return { available: false, reason: "Doctor is on approved leave", bookedSlots: 0, totalSlots: 0, tokens: [] };
+    }
+
+    // Use exception capacity/times if specified
+    const effectiveCapacity = exception?.newTokenCapacity ?? session.tokenCapacity;
+    const effectiveStartTime = exception?.newStartTime ?? session.startTime;
+    const effectiveEndTime = exception?.newEndTime ?? session.endTime;
 
     const existingTokens = await prisma.appointment.findMany({
       where: {
@@ -49,15 +77,17 @@ export class BookingService {
         appointmentDate: {
           gte: startOfDay,
           lte: endOfDay
-        }
+        },
+        status: { notIn: ["CANCELLED", "NO_SHOW"] } // Don't count cancelled/no-show as booked
       },
       select: { tokenNumber: true, status: true }
     });
 
+    // Normalize: token numbers are stored as zero-padded 3-char strings e.g. "001"
     const bookedNumbers = new Set(existingTokens.map(t => parseInt(t.tokenNumber, 10)));
     const tokens = [];
     
-    for (let i = 1; i <= session.tokenCapacity; i++) {
+    for (let i = 1; i <= effectiveCapacity; i++) {
       tokens.push({
         tokenNumber: i,
         status: bookedNumbers.has(i) ? "BOOKED" : "AVAILABLE"
@@ -67,12 +97,12 @@ export class BookingService {
     const bookedCount = existingTokens.length;
 
     return {
-      available: bookedCount < session.tokenCapacity,
+      available: bookedCount < effectiveCapacity,
       bookedSlots: bookedCount,
-      totalSlots: session.tokenCapacity,
+      totalSlots: effectiveCapacity,
       tokens,
-      startTime: session.startTime,
-      endTime: session.endTime
+      startTime: effectiveStartTime,
+      endTime: effectiveEndTime
     };
   }
 
@@ -183,7 +213,8 @@ export class BookingService {
           doctorId: doctorId,
           appointmentDate,
           sessionId: session.id,
-          status: "BOOKED"
+          status: "BOOKED",
+          bookingType: "PHONE" // Always set explicitly for phone bookings
         },
         include: {
           User: true

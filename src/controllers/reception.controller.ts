@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { NotificationService } from "../services/notification.service.js";
 import { prisma } from "../lib/prisma.js";
+import { randomUUID } from "crypto";
 
 export const getPatients = async (req: Request, res: Response) => {
   try {
@@ -39,7 +40,7 @@ export const generateToken = async (req: Request, res: Response) => {
       patient = await prisma.patient.create({
         data: {
           fullName: patientName || "Walk-in Patient",
-          phone: patientPhone || `WALKIN-${Date.now()}`, // Fallback phone for DB unique constraint
+          phone: patientPhone || `WALKIN-${randomUUID()}`, // UUID fallback guarantees uniqueness under concurrency
           ageFallback: ageFallback || null
         }
       });
@@ -70,10 +71,11 @@ export const generateToken = async (req: Request, res: Response) => {
       return await tx.appointment.create({
         data: {
           tokenNumber: tokenDisplay,
-          patientId: patient.id,
+          patientId: patient!.id,
           doctorId: isLab ? null : doctorId,
           department: isLab ? "LAB" : "CONSULTATION",
-          status: isLab ? "WAITING" : "waiting_for_counsiling_payment",
+          status: "BOOKED", // Normalized status — no more legacy strings
+          bookingType: "WALK_IN",
           appointmentDate: new Date()
         }
       });

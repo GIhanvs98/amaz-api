@@ -6,7 +6,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const endOfDay = new Date();
+    const endOfDay = new Date(today); // Derive from today to avoid off-by-millisecond at midnight
     endOfDay.setHours(23, 59, 59, 999);
 
     // 1. Total Appointments Today

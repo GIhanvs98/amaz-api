@@ -1,7 +1,9 @@
 import { PrismaClient } from '@prisma/client';
-import { billingService } from './billing.service';
+import { billingService } from './billing.service.js';
+import { prisma as sharedPrisma } from '../lib/prisma.js';
 
-const prisma = new PrismaClient();
+// Use shared singleton to avoid multiple connection pools
+const prisma = sharedPrisma;
 
 export class LabService {
   /**
@@ -25,6 +27,18 @@ export class LabService {
     sampleType?: string;
   }) {
     return prisma.labTest.create({ data });
+  }
+
+  /**
+   * Resolve patientId from phone/name, creating patient if needed
+   */
+  async resolvePatient(phone: string, name: string): Promise<string> {
+    const patient = await prisma.patient.upsert({
+      where: { phone },
+      update: {},
+      create: { phone, fullName: name }
+    });
+    return patient.id;
   }
 
   /**
@@ -220,4 +234,3 @@ export class LabService {
 }
 
 export const labService = new LabService();
-
