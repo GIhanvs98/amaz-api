@@ -98,3 +98,76 @@ export const getDoctorQueue = async (req: Request, res: Response): Promise<void>
     res.status(500).json({ error: "Internal server error" });
   }
 };
+
+export const updateTokenStatus = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { patientId, doctorId, status } = req.body;
+
+    if (!patientId || !doctorId || !status) {
+      res.status(400).json({ error: "Please provide patientId, doctorId, and status" });
+      return;
+    }
+
+    // Find the most recent token for this patient and doctor today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const token = await prisma.token.findFirst({
+      where: {
+        patientId: patientId,
+        doctorId: doctorId,
+        createdAt: {
+          gte: today
+        }
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+
+    if (!token) {
+      res.status(404).json({ error: "No active token found for this patient and doctor today." });
+      return;
+    }
+
+    const updatedToken = await prisma.token.update({
+      where: { id: token.id },
+      data: { status }
+    });
+
+    res.status(200).json(updatedToken);
+  } catch (error) {
+    console.error("Error updating token status:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getPendingPrescriptions = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const tokens = await prisma.token.findMany({
+      where: {
+        status: "prescription_issued",
+        createdAt: {
+          gte: today
+        }
+      },
+      include: {
+        patient: true,
+        doctor: {
+          select: { fullName: true }
+        }
+      },
+      orderBy: {
+        updatedAt: 'desc'
+      }
+    });
+
+    res.status(200).json(tokens);
+  } catch (error) {
+    console.error("Error fetching pending prescriptions:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
