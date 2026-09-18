@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,203 +8,273 @@ datasource db {
 }
 
 model Medicine {
-  id              String         @id @default(uuid())
-  barcode         String?        @unique
-  name            String
-  genericName     String?
-  category        String
-  form            String         // e.g. Tablet, Syrup, Injection
-  unit            String         // e.g. mg, ml
-  reorderLevel    Int            @default(50) // Low stock threshold
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-
-  stockBatches    StockBatch[]
-  purchaseItems   PurchaseOrderItem[]
+  id                String              @id @default(uuid())
+  name              String
+  genericName       String?
+  category          String
+  form              String
+  unit              String
+  reorderLevel      Int                 @default(50)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  barcode           String?             @unique
   prescriptionItems PrescriptionItem[]
+  purchaseItems     PurchaseOrderItem[]
+  stockBatches      StockBatch[]
 }
 
 model Supplier {
-  id              String         @id @default(uuid())
-  name            String
-  contactPerson   String?
-  email           String?
-  phone           String?
-  address         String?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-
-  purchaseOrders  PurchaseOrder[]
+  id             String          @id @default(uuid())
+  name           String
+  contactPerson  String?
+  email          String?
+  phone          String?
+  address        String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  purchaseOrders PurchaseOrder[]
 }
 
 model StockBatch {
-  id              String         @id @default(uuid())
+  id              String   @id @default(uuid())
   medicineId      String
   batchNumber     String
   expiryDate      DateTime
   initialQuantity Int
   currentQuantity Int
   unitPrice       Float
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-
-  medicine        Medicine       @relation(fields: [medicineId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  medicine        Medicine @relation(fields: [medicineId], references: [id])
 }
 
 model PurchaseOrder {
-  id              String         @id @default(uuid())
-  supplierId      String
-  status          String         @default("PENDING") // PENDING, DELIVERED, CANCELLED
-  totalAmount     Float          @default(0)
-  orderDate       DateTime       @default(now())
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-
-  supplier        Supplier       @relation(fields: [supplierId], references: [id])
-  items           PurchaseOrderItem[]
+  id          String              @id @default(uuid())
+  supplierId  String
+  status      String              @default("PENDING")
+  totalAmount Float               @default(0)
+  orderDate   DateTime            @default(now())
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  supplier    Supplier            @relation(fields: [supplierId], references: [id])
+  items       PurchaseOrderItem[]
 }
 
 model PurchaseOrderItem {
-  id              String         @id @default(uuid())
+  id              String        @id @default(uuid())
   purchaseOrderId String
   medicineId      String
   quantity        Int
   unitPrice       Float
   totalPrice      Float
-  createdAt       DateTime       @default(now())
-
-  purchaseOrder   PurchaseOrder  @relation(fields: [purchaseOrderId], references: [id])
-  medicine        Medicine       @relation(fields: [medicineId], references: [id])
+  createdAt       DateTime      @default(now())
+  medicine        Medicine      @relation(fields: [medicineId], references: [id])
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
 }
 
 model Invoice {
-  id              String             @id @default(uuid())
-  visitId         String?            // Nullable for walk-in OTC customers
-  patientId       String?            // Nullable for walk-in OTC customers
-  status          String             @default("DRAFT") // DRAFT, PENDING, PAID, CANCELLED
-  subtotal        Float              @default(0)
-  totalAmount     Float              @default(0)
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
-
-  lineItems       InvoiceLineItem[]
-  payments        Payment[]
+  id          String            @id @default(uuid())
+  visitId     String?
+  patientId   String?
+  status      String            @default("DRAFT")
+  subtotal    Float             @default(0)
+  totalAmount Float             @default(0)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  lineItems   InvoiceLineItem[]
+  payments    Payment[]
 }
 
 model InvoiceLineItem {
-  id              String   @id @default(uuid())
-  invoiceId       String
-  department      String   // PHARMACY, CONSULTATION, LAB, OTC
-  referenceId     String?  // e.g., prescription ID, batch ID
-  description     String
-  quantity        Int      @default(1)
-  unitPrice       Float
-  total           Float
-  createdAt       DateTime @default(now())
-
-  invoice         Invoice  @relation(fields: [invoiceId], references: [id])
+  id          String   @id @default(uuid())
+  invoiceId   String
+  department  String
+  referenceId String?
+  description String
+  quantity    Int      @default(1)
+  unitPrice   Float
+  total       Float
+  createdAt   DateTime @default(now())
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id])
 }
 
 model Payment {
-  id              String   @id @default(uuid())
-  invoiceId       String
-  amount          Float
-  method          String   // CASH, CARD, BANK, QR
-  status          String   @default("COMPLETED")
-  transactionRef  String?
-  createdAt       DateTime @default(now())
-
-  invoice         Invoice  @relation(fields: [invoiceId], references: [id])
+  id             String   @id @default(uuid())
+  invoiceId      String
+  amount         Float
+  method         String
+  status         String   @default("COMPLETED")
+  transactionRef String?
+  createdAt      DateTime @default(now())
+  tokenId        String?  @unique
+  invoice        Invoice  @relation(fields: [invoiceId], references: [id])
+  Token          Token?   @relation(fields: [tokenId], references: [id])
 }
 
 model Refund {
-  id              String   @id @default(uuid())
-  paymentId       String
-  amount          Float
-  reason          String
-  status          String   @default("COMPLETED")
-  createdAt       DateTime @default(now())
+  id        String   @id @default(uuid())
+  paymentId String
+  amount    Float
+  reason    String
+  status    String   @default("COMPLETED")
+  createdAt DateTime @default(now())
 }
 
 model LabTestCatalog {
-  id              String   @id @default(uuid())
-  name            String
-  category        String   // e.g., Hematology, Biochemistry
-  price           Float
-  referenceRange  String?  // e.g., "4.0-10.0" (Optional, as complex tests have multiple biomarkers)
-  unit            String?  // e.g., "mmol/L"
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  labRequests     LabRequest[]
+  id             String       @id @default(uuid())
+  name           String
+  category       String
+  price          Float
+  referenceRange String?
+  unit           String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  labRequests    LabRequest[]
 }
 
 model LabRequest {
-  id              String   @id @default(uuid())
-  patientId       String
-  visitId         String?
-  testId          String
-  doctorId        String?
-  priority        String   @default("ROUTINE") // ROUTINE, URGENT
-  status          String   @default("PENDING") // PENDING, COMPLETED, CANCELLED
-  reportUrl       String?  // PDF Report URL
-  requestedAt     DateTime @default(now())
-
-  test            LabTestCatalog @relation(fields: [testId], references: [id])
-  results         LabResult[]
+  id          String         @id @default(uuid())
+  patientId   String
+  visitId     String?
+  testId      String
+  doctorId    String?
+  status      String         @default("PENDING")
+  requestedAt DateTime       @default(now())
+  priority    String         @default("ROUTINE")
+  reportUrl   String?
+  test        LabTestCatalog @relation(fields: [testId], references: [id])
+  results     LabResult[]
 }
 
 model LabResult {
-  id              String   @id @default(uuid())
-  requestId       String
-  biomarker       String   // e.g., "Hemoglobin", "WBC Count"
-  value           String
-  isOutOfRange    Boolean  @default(false)
-  notes           String?
-  recordedAt      DateTime @default(now())
-
-  request         LabRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  id           String     @id @default(uuid())
+  requestId    String
+  biomarker    String
+  value        String
+  isOutOfRange Boolean    @default(false)
+  notes        String?
+  recordedAt   DateTime   @default(now())
+  request      LabRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 }
 
 model Expense {
-  id              String   @id @default(uuid())
-  category        String   // e.g., SALARY, UTILITIES, MAINTENANCE, SUPPLIES, MISC
-  amount          Float
-  description     String
-  status          String   @default("COMPLETED") // PENDING, COMPLETED, CANCELLED
-  date            DateTime @default(now())
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id          String   @id @default(uuid())
+  category    String
+  amount      Float
+  description String
+  status      String   @default("COMPLETED")
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model Prescription {
-  id              String             @id @default(uuid())
-  patientId       String
-  patientName     String?            // Denormalized for quick frontend rendering
-  visitId         String
-  doctorId        String
-  doctorName      String?            // Denormalized for quick frontend rendering
-  status          String             @default("PENDING") // PENDING, DISPENSED, CANCELLED
-  diagnosis       String?
-  clinicalNotes   String?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
-
-  items           PrescriptionItem[]
+  id            String             @id @default(uuid())
+  patientId     String
+  patientName   String?
+  visitId       String
+  doctorId      String
+  doctorName    String?
+  status        String             @default("PENDING")
+  diagnosis     String?
+  clinicalNotes String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  items         PrescriptionItem[]
 }
 
 model PrescriptionItem {
-  id              String       @id @default(uuid())
-  prescriptionId  String
-  medicineId      String?      // Optional: can be null if custom drug typed
-  drugName        String       // Explicit drug name
-  dosage          String?
-  frequency       String?      // Times per day or literal instruction
-  duration        String?
-  instructions    String?
-  dispenseQty     Int          @default(0) // Qty actually dispensed by pharmacist
-  createdAt       DateTime     @default(now())
+  id             String       @id @default(uuid())
+  prescriptionId String
+  medicineId     String?
+  drugName       String
+  dosage         String?
+  frequency      String?
+  duration       String?
+  instructions   String?
+  dispenseQty    Int          @default(0)
+  createdAt      DateTime     @default(now())
+  medicine       Medicine?    @relation(fields: [medicineId], references: [id])
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+}
 
-  prescription    Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
-  medicine        Medicine?    @relation(fields: [medicineId], references: [id])
+model Patient {
+  id        String   @id @default(uuid())
+  fullName  String
+  phone     String   @unique
+  age       Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  Token     Token[]
+}
+
+model Permission {
+  id             String           @id
+  action         String
+  resource       String
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime
+  RolePermission RolePermission[]
+
+  @@unique([action, resource])
+}
+
+model Role {
+  id             String           @id
+  name           String           @unique
+  description    String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime
+  RolePermission RolePermission[]
+  User           User[]
+}
+
+model RolePermission {
+  id           String     @id
+  roleId       String
+  permissionId String
+  createdAt    DateTime   @default(now())
+  Permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  Role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+model Token {
+  id              String   @id @default(uuid())
+  tokenNumber     String
+  patientId       String
+  doctorId        String
+  appointmentDate DateTime @default(now())
+  status          String   @default("waiting_for_counsiling_payment")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  Payment         Payment?
+  User            User     @relation(fields: [doctorId], references: [id])
+  Patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id             String   @id @default(uuid())
+  fullName       String
+  email          String   @unique
+  password       String
+  roleId         String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  Token          Token[]
+  DoctorSchedule DoctorSchedule[]
+  Role           Role     @relation(fields: [roleId], references: [id])
+}
+
+model DoctorSchedule {
+  id         String   @id @default(uuid())
+  doctorId   String
+  dayOfWeek  Int      // 0 = Sunday, 1 = Monday, etc.
+  startTime  String   // e.g., "09:00"
+  endTime    String   // e.g., "13:00"
+  maxTokens  Int      @default(30)
+  isActive   Boolean  @default(true)
+
+  doctor     User     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
 }

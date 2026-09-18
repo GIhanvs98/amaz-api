@@ -24,6 +24,7 @@ import labRoutes from "./routes/lab.routes.js";
 import financeRoutes from "./routes/finance.routes.js";
 import prescriptionRoutes from "./routes/prescription.routes.js";
 import receptionRoutes from "./routes/reception.routes.js";
+import bookingRoutes from "./routes/booking.routes.js";
 
 app.get("/health", (_req, res) => {
     res.json({
@@ -38,5 +39,6 @@ app.use("/api/lab", labRoutes);
 app.use("/api/finance", financeRoutes);
 app.use("/api/prescriptions", prescriptionRoutes);
 app.use("/api/reception", receptionRoutes);
+app.use("/api/booking", bookingRoutes);
 
 export default app;
