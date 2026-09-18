@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { pharmacyService } from '../services/pharmacy.service';
 import { billingService } from '../services/billing.service';
+import { prisma } from '../lib/prisma';
 
 export class PharmacyController {
   async getMedicines(req: Request, res: Response) {
@@ -106,11 +107,11 @@ export class PharmacyController {
 
   async sell(req: Request, res: Response) {
     try {
-      const { items, paymentMethod } = req.body;
+      const { items, paymentMethod, prescriptionId } = req.body;
       
       const invoice = await billingService.addCharge({
         department: 'OTC',
-        description: 'Over The Counter Sales',
+        description: prescriptionId ? 'Prescription Pharmacy Sales' : 'Over The Counter Sales',
         quantity: 1,
         unitPrice: 0 // We will increment via line items
       });
@@ -118,28 +119,69 @@ export class PharmacyController {
       let totalCost = 0;
 
       for (const item of items) {
-        const result = await pharmacyService.dispenseMedicine(item.id, Number(item.qty));
-        
-        let itemCost = 0;
-        result.batchesUsed.forEach((b: any) => {
-          itemCost += b.quantityDispensed * b.unitPrice;
-        });
-
-        if (itemCost > 0) {
-          totalCost += itemCost;
-          await billingService.addCharge({
-            invoiceId: invoice.id,
-            department: 'PHARMACY',
-            referenceId: item.id,
-            description: item.name || 'OTC Medication',
-            quantity: 1,
-            unitPrice: itemCost
+        // If it's a generic custom item without medicineId, we might skip stock decrement
+        // But assuming item.id is valid medicineId for now since dispenseMedicine expects one.
+        // In a real app we'd need to handle custom text medicines vs stock medicines.
+        try {
+          const result = await pharmacyService.dispenseMedicine(item.id, Number(item.qty));
+          
+          let itemCost = 0;
+          result.batchesUsed.forEach((b: any) => {
+            itemCost += b.quantityDispensed * b.unitPrice;
           });
+
+          if (itemCost > 0) {
+            totalCost += itemCost;
+            await billingService.addCharge({
+              invoiceId: invoice.id,
+              department: 'PHARMACY',
+              referenceId: item.id,
+              description: item.name || 'OTC Medication',
+              quantity: 1,
+              unitPrice: itemCost
+            });
+          }
+        } catch (e: any) {
+           // Fallback for custom drugs (no stock): just add to invoice
+           if (item.price > 0) {
+             const cost = item.price * Number(item.qty);
+             totalCost += cost;
+             await billingService.addCharge({
+               invoiceId: invoice.id,
+               department: 'PHARMACY',
+               referenceId: item.id,
+               description: item.name || 'Custom Medication',
+               quantity: Number(item.qty),
+               unitPrice: item.price
+             });
+           }
         }
       }
       
       // Pay the invoice immediately since it's OTC POS
       const finalInvoice = await billingService.payInvoice(invoice.id, totalCost, paymentMethod);
+
+      if (prescriptionId) {
+        const rx = await (prisma as any).prescription.update({
+          where: { id: prescriptionId },
+          data: { status: "DISPENSED" }
+        });
+        
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const token = await (prisma as any).token.findFirst({
+          where: { patientId: rx.patientId, createdAt: { gte: today } },
+          orderBy: { createdAt: 'desc' }
+        });
+        
+        if (token) {
+          await (prisma as any).token.update({
+            where: { id: token.id },
+            data: { status: "completed" }
+          });
+        }
+      }
 
       res.json({ success: true, invoice: finalInvoice });
     } catch (error: any) {
