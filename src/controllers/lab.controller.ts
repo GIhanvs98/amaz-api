@@ -90,6 +90,15 @@ export class LabController {
       res.status(400).json({ error: error.message });
     }
   }
+
+  async getQueueTokens(req: Request, res: Response) {
+    try {
+      const tokens = await labService.getQueueTokens();
+      res.json({ success: true, data: tokens });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
 }
 
 export const labController = new LabController();

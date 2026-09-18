@@ -25,6 +25,8 @@ import financeRoutes from "./routes/finance.routes.js";
 import prescriptionRoutes from "./routes/prescription.routes.js";
 import receptionRoutes from "./routes/reception.routes.js";
 import bookingRoutes from "./routes/booking.routes.js";
+import doctorRoutes from "./routes/doctor-attendance.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
 
 app.get("/health", (_req, res) => {
     res.json({
@@ -40,5 +42,7 @@ app.use("/api/finance", financeRoutes);
 app.use("/api/prescriptions", prescriptionRoutes);
 app.use("/api/reception", receptionRoutes);
 app.use("/api/booking", bookingRoutes);
+app.use("/api/doctors", doctorRoutes);
+app.use("/api/admin/dashboard", dashboardRoutes);
 
 export default app;

@@ -24,13 +24,26 @@ export const getAvailability = async (req: Request, res: Response) => {
   }
 };
 
+export const getAvailableDates = async (req: Request, res: Response) => {
+  try {
+    const { doctorId } = req.query;
+    if (!doctorId) {
+      return res.status(400).json({ success: false, error: "doctorId is required" });
+    }
+    const dates = await BookingService.getAvailableDates(doctorId as string);
+    res.json({ success: true, data: dates });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export const bookPhoneToken = async (req: Request, res: Response) => {
   try {
-    const { phone, fullName, doctorId, date } = req.body;
+    const { phone, fullName, doctorId, date, tokenNumber } = req.body;
     if (!phone || !fullName || !doctorId || !date) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
-    const token = await BookingService.bookPhoneToken(phone, fullName, doctorId, date);
+    const token = await BookingService.bookPhoneToken(phone, fullName, doctorId, date, tokenNumber);
     res.status(201).json({ success: true, data: token });
   } catch (error: any) {
     res.status(400).json({ success: false, error: error.message });
@@ -57,7 +70,7 @@ export const getTodayAppointments = async (req: Request, res: Response) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     // Query all appointments for the specified date
-    const tokens = await prisma.token.findMany({
+    const tokens = await prisma.appointment.findMany({
       where: {
         appointmentDate: { gte: startOfDay, lte: endOfDay }
       },

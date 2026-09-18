@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { getDoctors, getAvailability, bookPhoneToken, markArrived, getTodayAppointments } from "../controllers/booking.controller.js";
+import { getDoctors, getAvailability, getAvailableDates, bookPhoneToken, markArrived, getTodayAppointments } from "../controllers/booking.controller.js";
 
 const router = Router();
 
 router.get("/doctors", getDoctors);
 router.get("/availability", getAvailability);
+router.get("/available-dates", getAvailableDates);
 router.get("/appointments", getTodayAppointments);
 router.post("/phone", bookPhoneToken);
 router.patch("/:id/arrive", markArrived);

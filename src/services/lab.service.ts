@@ -8,7 +8,8 @@ export class LabService {
    * Fetch the catalog of available lab tests
    */
   async getCatalog() {
-    return (prisma as any).labTestCatalog.findMany({
+    return prisma.labTest.findMany({
+      where: { isActive: true },
       orderBy: { category: 'asc' }
     });
   }
@@ -18,57 +19,67 @@ export class LabService {
    */
   async addTestToCatalog(data: {
     name: string;
+    code: string;
     category: string;
     price: number;
-    referenceRange?: string;
-    unit?: string;
+    sampleType?: string;
   }) {
-    return (prisma as any).labTestCatalog.create({ data });
+    return prisma.labTest.create({ data });
   }
 
   /**
-   * Create a new Lab Request (Order a test)
+   * Create a new Lab Request (Order multiple tests)
    * This automatically charges the patient's billing invoice
    */
   async createRequest(data: {
     patientId: string;
     visitId?: string;
-    testId: string;
+    testIds: string[];
     doctorId?: string;
     priority?: string;
   }) {
-    // Verify test exists to get the price
-    const test = await (prisma as any).labTestCatalog.findUnique({
-      where: { id: data.testId }
+    // Verify tests exist to get prices
+    const tests = await prisma.labTest.findMany({
+      where: { id: { in: data.testIds } }
     });
 
-    if (!test) {
-      throw new Error("Test not found in catalog");
+    if (tests.length !== data.testIds.length) {
+      throw new Error("One or more tests not found in catalog");
     }
 
-    // 1. Create the lab request
-    const request = await (prisma as any).labRequest.create({
+    // 1. Create the lab request with items
+    const request = await prisma.labRequest.create({
       data: {
         patientId: data.patientId,
-        visitId: data.visitId,
-        testId: data.testId,
         doctorId: data.doctorId,
         priority: data.priority || "ROUTINE",
-        status: "PENDING"
+        status: "PENDING",
+        items: {
+          create: tests.map(test => ({
+            labTestId: test.id,
+            price: test.price
+          }))
+        }
+      },
+      include: {
+        items: true
       }
     });
 
     // 2. Add the charge to the centralized billing engine
     if (data.visitId || data.patientId) {
-      await billingService.addCharge({
-        visitId: data.visitId,
-        patientId: data.patientId,
-        department: 'LAB',
-        referenceId: request.id,
-        description: `Lab Test: ${test.name}`,
-        quantity: 1,
-        unitPrice: test.price
-      });
+      // Create separate charges for each test
+      for (const test of tests) {
+        await billingService.addCharge({
+          visitId: data.visitId,
+          patientId: data.patientId,
+          department: 'LAB',
+          referenceId: request.id,
+          description: `Lab Test: ${test.name}`,
+          quantity: 1,
+          unitPrice: test.price
+        });
+      }
     }
 
     return request;
@@ -78,10 +89,13 @@ export class LabService {
    * Get pending lab requests for the technicians
    */
   async getPendingRequests() {
-    return (prisma as any).labRequest.findMany({
+    return prisma.labRequest.findMany({
       where: { status: "PENDING" },
       include: {
-        test: true
+        items: {
+          include: { LabTest: true }
+        },
+        Patient: true
       },
       orderBy: { requestedAt: 'asc' }
     });
@@ -93,14 +107,14 @@ export class LabService {
   async submitResults(requestId: string, results: { biomarker: string; value: string; isOutOfRange: boolean; notes?: string }[], reportUrl?: string) {
     return prisma.$transaction(async (tx) => {
       // 1. Mark request as completed
-      const request = await (tx as any).labRequest.update({
+      const request = await tx.labRequest.update({
         where: { id: requestId },
         data: { status: "COMPLETED", reportUrl: reportUrl || null }
       });
 
       // 2. Insert all results
       const createdResults = await Promise.all(
-        results.map(res => (tx as any).labResult.create({
+        results.map(res => tx.labResult.create({
           data: {
             requestId: requestId,
             biomarker: res.biomarker,
@@ -119,11 +133,14 @@ export class LabService {
    * Get all completed (published) lab requests
    */
   async getPublishedReports() {
-    return (prisma as any).labRequest.findMany({
+    return prisma.labRequest.findMany({
       where: { status: "COMPLETED" },
       include: {
-        test: true,
-        results: true
+        items: {
+          include: { LabTest: true }
+        },
+        results: true,
+        Patient: true
       },
       orderBy: { requestedAt: 'desc' }
     });
@@ -136,19 +153,18 @@ export class LabService {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const pendingCount = await (prisma as any).labRequest.count({
+    const pendingCount = await prisma.labRequest.count({
       where: { status: "PENDING" }
     });
 
-    const publishedCount = await (prisma as any).labRequest.count({
+    const publishedCount = await prisma.labRequest.count({
       where: { 
         status: "COMPLETED",
-        // Ideally we'd have a 'completedAt' field, but requestedAt is close enough for demo if they just published it
         requestedAt: { gte: today } 
       }
     });
 
-    const criticalCount = await (prisma as any).labResult.count({
+    const criticalCount = await prisma.labResult.count({
       where: {
         isOutOfRange: true,
         request: {
@@ -157,27 +173,51 @@ export class LabService {
       }
     });
 
-    const urgentPending = await (prisma as any).labRequest.findMany({
+    const urgentPending = await prisma.labRequest.findMany({
       where: { status: "PENDING", priority: "URGENT" },
-      include: { test: true },
+      include: { 
+        items: { include: { LabTest: true } },
+        Patient: true
+      },
       orderBy: { requestedAt: 'asc' }
     });
 
     return {
       pendingRequests: pendingCount,
-      inProgressTests: Math.floor(pendingCount * 0.3), // Mock "in progress"
+      inProgressTests: Math.floor(pendingCount * 0.3),
       publishedToday: publishedCount,
       criticalResults: criticalCount,
-      urgentRequests: urgentPending.map((req: any) => ({
+      urgentRequests: urgentPending.map(req => ({
         id: req.id,
-        patientName: `Patient ${req.patientId.slice(0, 4)}`,
+        patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
         doctor: req.doctorId || "Unknown",
-        tests: [req.test.name],
+        tests: req.items.map(i => i.LabTest?.name),
         priority: req.priority,
         requestedAt: req.requestedAt
       }))
     };
   }
+
+  /**
+   * Get waiting lab queue tokens
+   */
+  async getQueueTokens() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return prisma.appointment.findMany({
+      where: {
+        department: "LAB",
+        appointmentDate: { gte: today },
+        status: { notIn: ["COMPLETED", "CANCELLED"] }
+      },
+      include: {
+        Patient: true
+      },
+      orderBy: { createdAt: 'asc' }
+    });
+  }
 }
 
 export const labService = new LabService();
+
