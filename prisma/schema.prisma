@@ -257,4 +257,30 @@ model User {
   updatedAt DateTime @updatedAt
 
   role      Role     @relation(fields: [roleId], references: [id])
+  tokens    Token[]  @relation("DoctorTokens")
+}
+
+model Patient {
+  id        String   @id @default(uuid())
+  fullName  String
+  phone     String   @unique
+  age       Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tokens    Token[]
+}
+
+model Token {
+  id          String   @id @default(uuid())
+  tokenNumber String   // e.g. SIL-001
+  patientId   String
+  doctorId    String
+  status      String   @default("waiting_for_counsiling_payment") 
+  // waiting_for_counsiling_payment, waiting_for_doc, in_progress_at_doc, prescription_issued, waiting_for_medicine_payment, completed
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor      User     @relation("DoctorTokens", fields: [doctorId], references: [id])
 }

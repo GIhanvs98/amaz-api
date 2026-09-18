@@ -205,6 +205,25 @@ async function main() {
   });
   console.log('Created User: frontdesk@amaz.com [FRONTDESK]');
 
+  // Doctor Role & User
+  const doctorRole = await prisma.role.upsert({
+    where: { name: 'DOCTOR' },
+    update: {},
+    create: { name: 'DOCTOR', description: 'Medical Doctor' }
+  });
+
+  await prisma.user.upsert({
+    where: { email: 'doctor@amaz.com' },
+    update: {},
+    create: {
+      fullName: 'Dr. Silva',
+      email: 'doctor@amaz.com',
+      password: hashedPw,
+      roleId: doctorRole.id
+    }
+  });
+  console.log('Created User: doctor@amaz.com [DOCTOR]');
+
   console.log('All Seeding Complete!');
 }
 
