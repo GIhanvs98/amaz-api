@@ -62,4 +62,27 @@ export const searchPatient = async (req: Request, res: Response): Promise<void> 
     console.error("Error searching patient:", error);
     res.status(500).json({ error: "Internal server error" });
   }
-}
+};
+
+export const getPatientById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+       res.status(400).json({ error: "Patient ID is required" });
+       return;
+    }
+
+    const patient = await prisma.patient.findUnique({
+      where: { id },
+    });
+
+    if (!patient) {
+       res.status(404).json({ error: "Patient not found" });
+       return;
+    }
+    res.status(200).json(patient);
+  } catch(error) {
+    console.error("Error fetching patient:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
