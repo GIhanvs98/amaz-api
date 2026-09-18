@@ -3,6 +3,9 @@ import { labController } from '../controllers/lab.controller';
 
 const router = Router();
 
+// GET /api/lab/upload-url
+router.get('/upload-url', labController.getUploadUrl.bind(labController));
+
 // GET /api/lab/catalog
 router.get('/catalog', labController.getCatalog.bind(labController));
 

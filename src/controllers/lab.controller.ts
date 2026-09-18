@@ -1,7 +1,26 @@
 import { Request, Response } from 'express';
 import { labService } from '../services/lab.service';
+import { S3Service } from '../services/s3.service';
 
 export class LabController {
+  async getUploadUrl(req: Request, res: Response) {
+    try {
+      const { filename, contentType } = req.query;
+      
+      if (!filename || !contentType) {
+        return res.status(400).json({ error: "filename and contentType are required" });
+      }
+
+      const result = await S3Service.generateUploadUrl(
+        filename as string, 
+        contentType as string
+      );
+      
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  }
   async getCatalog(req: Request, res: Response) {
     try {
       const catalog = await labService.getCatalog();
