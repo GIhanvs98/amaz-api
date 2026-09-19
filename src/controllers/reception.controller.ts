@@ -101,6 +101,37 @@ export const getMetrics = async (req: Request, res: Response) => {
   }
 };
 
+export const getPatientById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const patient = await prisma.patient.findUnique({
+      where: { id }
+    });
+    
+    if (!patient) {
+      res.status(404).json({ error: "Patient not found" });
+      return;
+    }
+    
+    // Map to the frontend expected format
+    res.json({
+      id: patient.id,
+      name: patient.fullName,
+      age: patient.ageFallback || 30,
+      gender: patient.gender || "UNKNOWN",
+      contact: patient.phone,
+      bloodGroup: patient.bloodGroup || "O+",
+      allergies: [],
+      chronicConditions: [],
+      medicalHistory: [],
+      labResults: []
+    });
+  } catch (error) {
+    console.error("Error fetching patient:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
 export const generateToken = async (req: Request, res: Response) => {
   try {
     const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds } = req.body;
