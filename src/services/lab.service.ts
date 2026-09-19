@@ -194,7 +194,8 @@ export class LabService {
       where: { status: "PENDING", priority: "URGENT" },
       include: { 
         items: { include: { LabTest: true } },
-        Patient: true
+        Patient: true,
+        Visit: { include: { User: true } }
       },
       orderBy: { requestedAt: 'asc' }
     });
@@ -207,7 +208,7 @@ export class LabService {
       urgentRequests: urgentPending.map(req => ({
         id: req.id,
         patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
-        doctor: req.doctorId || "Unknown",
+        doctor: req.Visit?.User?.fullName || "Unknown Doctor",
         tests: req.items.map(i => i.LabTest?.name),
         priority: req.priority,
         requestedAt: req.requestedAt
