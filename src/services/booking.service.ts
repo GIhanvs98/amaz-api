@@ -1,14 +1,16 @@
 import { prisma } from "../lib/prisma.js";
 import { NotificationService } from "./notification.service.js";
+import { websocketService } from "./websocket.service.js";
 
 export class BookingService {
   static async getDoctors() {
     // Return minimal data — do not expose internal schedule details to the public booking API
     return prisma.user.findMany({
-      where: { Role: { name: "Doctor" } },
+      where: { Role: { name: "DOCTOR" } },
       select: {
         id: true,
-        fullName: true
+        fullName: true,
+        specialty: true
       }
     });
   }
@@ -237,6 +239,13 @@ export class BookingService {
       );
     } catch (e) {
       console.error("Failed to queue SMS job:", e);
+    }
+
+    try {
+      const updatedAvailability = await BookingService.getAvailability(doctorId, date);
+      websocketService.emitToRoom(`doctor_${doctorId}_${date}`, 'availability_updated', updatedAvailability);
+    } catch (e) {
+      console.error("Failed to broadcast availability update:", e);
     }
 
     return token;

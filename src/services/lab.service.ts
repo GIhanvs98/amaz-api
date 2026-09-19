@@ -221,7 +221,7 @@ export class LabService {
 
     return prisma.appointment.findMany({
       where: {
-        department: "LAB",
+        department: { in: ["LAB", "MULTI"] },
         appointmentDate: { gte: today },
         status: { notIn: ["COMPLETED", "CANCELLED"] }
       },

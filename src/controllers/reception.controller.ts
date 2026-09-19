@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { NotificationService } from "../services/notification.service.js";
 import { prisma } from "../lib/prisma.js";
 import { randomUUID } from "crypto";
+import { BookingService } from "../services/booking.service.js";
+import { websocketService } from "../services/websocket.service.js";
 
 export const getPatients = async (req: Request, res: Response) => {
   try {
@@ -28,7 +30,7 @@ export const getPatients = async (req: Request, res: Response) => {
 
 export const generateToken = async (req: Request, res: Response) => {
   try {
-    const { patientName, patientPhone, ageFallback, doctorId, doctorName, department } = req.body;
+    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds } = req.body;
 
     // Find or create patient
     let patient;
@@ -46,8 +48,16 @@ export const generateToken = async (req: Request, res: Response) => {
       });
     }
 
-    const isLab = department === "LAB";
+    const hasConsultation = !!doctorId;
+    const hasLab = Array.isArray(testIds) && testIds.length > 0;
     
+    let department = "CONSULTATION";
+    if (hasConsultation && hasLab) {
+      department = "MULTI";
+    } else if (hasLab && !hasConsultation) {
+      department = "LAB";
+    }
+
     // Generate Token Number via Transaction
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -60,21 +70,21 @@ export const generateToken = async (req: Request, res: Response) => {
       const tokenCount = await tx.appointment.count({
         where: {
           appointmentDate: { gte: startOfDay, lte: endOfDay },
-          department: isLab ? "LAB" : "CONSULTATION",
-          ...(isLab ? {} : { doctorId })
+          department
         }
       });
 
       const queueNumber = (tokenCount + 1).toString().padStart(3, "0");
-      const tokenDisplay = isLab ? `LAB-${queueNumber}` : queueNumber;
+      const prefix = department === "LAB" ? "LAB-" : (department === "MULTI" ? "MLT-" : "");
+      const tokenDisplay = `${prefix}${queueNumber}`;
 
       return await tx.appointment.create({
         data: {
           tokenNumber: tokenDisplay,
           patientId: patient!.id,
-          doctorId: isLab ? null : doctorId,
-          department: isLab ? "LAB" : "CONSULTATION",
-          status: "BOOKED", // Normalized status — no more legacy strings
+          doctorId: doctorId || null,
+          department,
+          status: "BOOKED",
           bookingType: "WALK_IN",
           appointmentDate: new Date()
         }
@@ -83,19 +93,45 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const tokenDisplay = token.tokenNumber;
 
+    if (hasLab) {
+      // Import dynamically or use a service to avoid circular dependencies if any
+      const { labService } = await import('../services/lab.service.js');
+      await labService.createRequest({
+        patientId: patient.id,
+        visitId: token.id,
+        testIds,
+        doctorId: doctorId || null,
+        priority: "ROUTINE"
+      });
+    }
+
     if (patientPhone && !patientPhone.startsWith('WALKIN')) {
+      let doctorDisplay = "Laboratory";
+      if (hasConsultation && hasLab) doctorDisplay = `${doctorName || "General Physician"} + Lab`;
+      else if (hasConsultation) doctorDisplay = doctorName || "General Physician";
+
       await NotificationService.sendTemplatedSMS(
         patient.id,
         patientPhone,
         'APPOINTMENT_BOOKED',
         {
           patientName: patient.fullName,
-          doctorName: isLab ? "Laboratory" : (doctorName || "General Physician"),
+          doctorName: doctorDisplay,
           appointmentDate: new Date().toLocaleDateString(),
           tokenNumber: tokenDisplay,
           hospitalName: "AMAZ Hospital"
         }
       );
+    }
+
+    if (hasConsultation) {
+      try {
+        const todayStr = new Date().toISOString().split('T')[0];
+        const updatedAvailability = await BookingService.getAvailability(doctorId, todayStr);
+        websocketService.emitToRoom(`doctor_${doctorId}_${todayStr}`, 'availability_updated', updatedAvailability);
+      } catch (e) {
+        console.error("Failed to broadcast availability update:", e);
+      }
     }
 
     res.status(201).json({
@@ -105,8 +141,8 @@ export const generateToken = async (req: Request, res: Response) => {
         refNo,
         queueNumber: tokenDisplay,
         patientName: patient.fullName,
-        doctorName: isLab ? "Laboratory" : doctorName,
-        department: isLab ? "LAB" : department,
+        doctorName: doctorName || (hasLab ? "Laboratory" : ""),
+        department,
         status: token.status
       }
     });
