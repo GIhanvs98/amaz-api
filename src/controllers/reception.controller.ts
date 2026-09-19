@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { randomUUID } from "crypto";
 import { BookingService } from "../services/booking.service.js";
 import { websocketService } from "../services/websocket.service.js";
+import { SMSService } from "../services/sms.service.js";
 
 export const getPatients = async (req: Request, res: Response) => {
   try {
@@ -46,6 +47,10 @@ export const generateToken = async (req: Request, res: Response) => {
           ageFallback: ageFallback || null
         }
       });
+      
+      if (patientPhone && !patientPhone.startsWith('WALKIN')) {
+        SMSService.syncContact(patientPhone, patient.fullName).catch(console.error);
+      }
     }
 
     const hasConsultation = !!doctorId;
@@ -124,7 +129,7 @@ export const generateToken = async (req: Request, res: Response) => {
       );
     }
 
-    if (hasConsultation) {
+    if (hasConsultation && typeof doctorId === 'string') {
       try {
         const todayStr = new Date().toISOString().split('T')[0];
         const updatedAvailability = await BookingService.getAvailability(doctorId, todayStr);

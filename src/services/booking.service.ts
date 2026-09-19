@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { NotificationService } from "./notification.service.js";
 import { websocketService } from "./websocket.service.js";
+import { SMSService } from "./sms.service.js";
 
 export class BookingService {
   static async getDoctors() {
@@ -246,6 +247,12 @@ export class BookingService {
       websocketService.emitToRoom(`doctor_${doctorId}_${date}`, 'availability_updated', updatedAvailability);
     } catch (e) {
       console.error("Failed to broadcast availability update:", e);
+    }
+
+    try {
+      SMSService.syncContact(phone, fullName).catch(console.error);
+    } catch (e) {
+      console.error("Failed to sync contact:", e);
     }
 
     return token;
