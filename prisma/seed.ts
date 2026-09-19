@@ -161,7 +161,51 @@ async function main() {
     console.log(`Created Medicine: ${m.name} [${m.barcode}]`);
   }
 
-  console.log('Seeding Complete!');
+  console.log('Seeding Complete for Medicines!');
+
+  console.log('Seeding Roles and Users...');
+  const bcrypt = require('bcryptjs');
+  const hashedPw = await bcrypt.hash('ChangeMe123!', 10);
+
+  // Admin Role & User
+  const adminRole = await prisma.role.upsert({
+    where: { name: 'ADMIN' },
+    update: {},
+    create: { name: 'ADMIN', description: 'System Administrator' }
+  });
+
+  await prisma.user.upsert({
+    where: { email: 'admin@amaz.com' },
+    update: {},
+    create: {
+      fullName: 'System Admin',
+      email: 'admin@amaz.com',
+      password: hashedPw,
+      roleId: adminRole.id
+    }
+  });
+  console.log('Created User: admin@amaz.com [ADMIN]');
+
+  // Frontdesk Role & User
+  const frontdeskRole = await prisma.role.upsert({
+    where: { name: 'FRONTDESK' },
+    update: {},
+    create: { name: 'FRONTDESK', description: 'Frontdesk Receptionist' }
+  });
+
+  await prisma.user.upsert({
+    where: { email: 'frontdesk@amaz.com' },
+    update: {},
+    create: {
+      fullName: 'Frontdesk User',
+      email: 'frontdesk@amaz.com',
+      password: hashedPw,
+      roleId: frontdeskRole.id
+    }
+  });
+  console.log('Created User: frontdesk@amaz.com [FRONTDESK]');
+
+  console.log('All Seeding Complete!');
 }
 
 main()
