@@ -145,6 +145,57 @@ export class PharmacyService {
       orderBy: { expiryDate: 'asc' },
     });
   }
+
+  async getMetrics() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const pendingPrescriptions = await prisma.prescription.count({
+      where: { status: "PENDING" }
+    });
+
+    const fulfilledToday = await prisma.prescription.count({
+      where: {
+        status: "DISPENSED",
+        updatedAt: { gte: today }
+      }
+    });
+
+    const allMedicines = await this.getAllMedicines();
+    let lowStockItems = 0;
+    allMedicines.forEach((med: any) => {
+      const stock = med.stockBatches.reduce((sum: number, b: any) => sum + b.currentQuantity, 0);
+      if (stock > 0 && stock <= med.reorderLevel) lowStockItems++;
+    });
+
+    const recentPrescriptionsRaw = await prisma.prescription.findMany({
+      take: 5,
+      orderBy: { createdAt: 'desc' },
+      include: { items: true }
+    });
+
+    const recentPrescriptions = recentPrescriptionsRaw.map((rx: any) => ({
+      id: rx.id,
+      patientName: rx.patientName || `Patient ${rx.patientId.slice(0, 4)}`,
+      doctor: rx.doctorName || "Unknown Doctor",
+      drugs: rx.items.map((i: any) => `${i.drugName} ${i.dosage || ''}`.trim()),
+      status: rx.status,
+      issuedAt: rx.createdAt
+    }));
+
+    const pharmacyLines = await prisma.invoiceLineItem.findMany({
+      where: { department: "PHARMACY", createdAt: { gte: today } }
+    });
+    const totalRevenue = pharmacyLines.reduce((sum: number, item: any) => sum + item.total, 0);
+
+    return {
+      pendingPrescriptions,
+      fulfilledToday,
+      lowStockItems,
+      totalRevenue,
+      recentPrescriptions
+    };
+  }
 }
 
 export const pharmacyService = new PharmacyService();

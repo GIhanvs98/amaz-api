@@ -13,6 +13,15 @@ export class PharmacyController {
     }
   }
 
+  async getMetrics(req: Request, res: Response) {
+    try {
+      const metrics = await pharmacyService.getMetrics();
+      res.json(metrics);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+
   async addMedicine(req: Request, res: Response) {
     try {
       const { name, barcode, genericName, category, form, unit, reorderLevel, baseStock, basePrice } = req.body;
