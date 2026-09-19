@@ -228,3 +228,23 @@ export const generateToken = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 };
+
+export const updateDoctorRoom = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { roomNumber } = req.body;
+    
+    // We update the User's roomNumber.
+    // Note: Due to Neon DB being offline in dev, this might fail if DB is down.
+    // The frontend should handle it gracefully or we just rely on standard prisma error.
+    const user = await prisma.user.update({
+      where: { id: id as string },
+      data: { roomNumber: roomNumber || null }
+    });
+    
+    res.json({ success: true, data: { id: user.id, roomNumber: user.roomNumber } });
+  } catch (error) {
+    console.error("Error updating doctor room:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+};

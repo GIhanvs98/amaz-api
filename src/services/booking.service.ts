@@ -11,7 +11,8 @@ export class BookingService {
       select: {
         id: true,
         fullName: true,
-        specialty: true
+        specialty: true,
+        roomNumber: true
       }
     }));
   }

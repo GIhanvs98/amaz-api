@@ -301,6 +301,7 @@ model User {
   password       String
   roleId         String
   specialty      String?
+  roomNumber     String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   Appointment    Appointment[]
