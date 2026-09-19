@@ -10,7 +10,11 @@ export const getPatients = async (req: Request, res: Response) => {
   try {
     const { q } = req.query;
     if (!q) {
-      return res.json({ success: true, data: [] });
+      const recentPatients = await prisma.patient.findMany({
+        take: 50,
+        orderBy: { createdAt: 'desc' }
+      });
+      return res.json({ success: true, data: recentPatients });
     }
     
     const patients = await prisma.patient.findMany({
