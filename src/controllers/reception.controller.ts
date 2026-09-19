@@ -33,6 +33,74 @@ export const getPatients = async (req: Request, res: Response) => {
   }
 };
 
+export const getMetrics = async (req: Request, res: Response) => {
+  try {
+    const today = new Date();
+    const startOfDay = new Date(today);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(today);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // 1. Registered Today
+    const registeredToday = await prisma.patient.count({
+      where: { createdAt: { gte: startOfDay, lte: endOfDay } }
+    });
+
+    // 2. Current Queue Size (All appointments today)
+    const currentQueueSize = await prisma.appointment.count({
+      where: { appointmentDate: { gte: startOfDay, lte: endOfDay } }
+    });
+
+    // 3. Available Doctors (Marked as ARRIVED today)
+    const availableDoctors = await prisma.doctorAttendance.count({
+      where: { date: { gte: startOfDay, lte: endOfDay }, status: "ARRIVED" }
+    });
+
+    // 4. Pending Appointments
+    const pendingAppointments = await prisma.appointment.count({
+      where: { appointmentDate: { gte: startOfDay, lte: endOfDay }, status: "BOOKED" }
+    });
+
+    // 5. Next in queue (Top 5 Booked or In Progress)
+    const upcomingTokens = await prisma.appointment.findMany({
+      where: { 
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: { in: ["BOOKED", "IN_PROGRESS"] }
+      },
+      include: { Patient: true, User: true },
+      orderBy: { tokenNumber: 'asc' },
+      take: 5
+    });
+
+    const nextInQueue = upcomingTokens.map(apt => {
+      let mappedStatus = apt.status;
+      if (mappedStatus === "BOOKED") mappedStatus = "WAITING";
+      if (mappedStatus === "IN_PROGRESS") mappedStatus = "IN_CONSULTATION";
+
+      return {
+        queueNo: apt.tokenNumber,
+        patientName: apt.Patient?.fullName || "Unknown",
+        doctor: apt.User?.fullName || "Unassigned",
+        status: mappedStatus
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        registeredToday,
+        currentQueueSize,
+        availableDoctors,
+        pendingAppointments,
+        nextInQueue
+      }
+    });
+  } catch (error: any) {
+    console.error("Error fetching metrics:", error);
+    res.status(500).json({ success: false, error: "Internal server error" });
+  }
+};
+
 export const generateToken = async (req: Request, res: Response) => {
   try {
     const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds } = req.body;
