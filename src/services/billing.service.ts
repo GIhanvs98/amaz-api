@@ -114,6 +114,20 @@ export class BillingService {
       include: { lineItems: true, payments: true }
     });
   }
+
+  /**
+   * Retrieves all invoices for the cashier dashboard list
+   */
+  async getAllInvoices() {
+    return prisma.invoice.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        lineItems: true,
+        payments: true,
+        Patient: true
+      }
+    });
+  }
 }
 
 export const billingService = new BillingService();
