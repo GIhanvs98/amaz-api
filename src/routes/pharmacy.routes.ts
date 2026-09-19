@@ -3,6 +3,7 @@ import { pharmacyController } from '../controllers/pharmacy.controller';
 
 const router = Router();
 
+router.get('/metrics', pharmacyController.getMetrics);
 router.get('/medicines', pharmacyController.getMedicines);
 router.post('/medicines', pharmacyController.addMedicine);
 

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { pharmacyService } from '../services/pharmacy.service';
-import { billingService } from '../services/billing.service';
-import { prisma } from '../lib/prisma';
+import { billingService } from '../services/billing.service.js';
+import { websocketService } from '../services/websocket.service.js';
 
 export class PharmacyController {
   async getMedicines(req: Request, res: Response) {
@@ -9,6 +9,15 @@ export class PharmacyController {
       const { barcode } = req.query;
       const medicines = await pharmacyService.getAllMedicines(barcode as string);
       res.json(medicines);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  async getMetrics(req: Request, res: Response) {
+    try {
+      const metrics = await pharmacyService.getMetrics();
+      res.json(metrics);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -107,89 +116,56 @@ export class PharmacyController {
 
   async sell(req: Request, res: Response) {
     try {
-      const { items, paymentMethod, prescriptionId } = req.body;
+      const { items, paymentMethod } = req.body;
       
       const invoice = await billingService.addCharge({
         department: 'OTC',
-        description: prescriptionId ? 'Prescription Pharmacy Sales' : 'Over The Counter Sales',
+        description: 'Over The Counter Sales',
         quantity: 1,
-        unitPrice: 0 // We will increment via line items
+        unitPrice: 0 // Invoice creation hook
       });
 
       let totalCost = 0;
+      const chargeItems: { referenceId?: string; description: string; quantity: number; unitPrice: number; }[] = [];
 
       for (const item of items) {
-        // If it's a generic custom item without medicineId, we might skip stock decrement
-        // But assuming item.id is valid medicineId for now since dispenseMedicine expects one.
-        // In a real app we'd need to handle custom text medicines vs stock medicines.
-        try {
-          const result = await pharmacyService.dispenseMedicine(item.id, Number(item.qty));
-          
-          let itemCost = 0;
-          result.batchesUsed.forEach((b: any) => {
-            itemCost += b.quantityDispensed * b.unitPrice;
+        // We still need to call dispenseMedicine to deduct inventory correctly
+        const result = await pharmacyService.dispenseMedicine(item.id, Number(item.qty));
+        
+        let itemCost = 0;
+        result.batchesUsed.forEach((b: any) => {
+          itemCost += b.quantityDispensed * b.unitPrice;
+        });
+
+        if (itemCost > 0) {
+          totalCost += itemCost;
+          chargeItems.push({
+            referenceId: item.id,
+            description: item.name || 'OTC Medication',
+            quantity: 1,
+            unitPrice: itemCost
           });
-
-          if (itemCost > 0) {
-            totalCost += itemCost;
-            await billingService.addCharge({
-              invoiceId: invoice.id,
-              department: 'PHARMACY',
-              referenceId: item.id,
-              description: item.name || 'OTC Medication',
-              quantity: 1,
-              unitPrice: itemCost
-            });
-          }
-        } catch (e: any) {
-           // Fallback for custom drugs (no stock): just add to invoice
-           if (item.price > 0) {
-             const cost = item.price * Number(item.qty);
-             totalCost += cost;
-             await billingService.addCharge({
-               invoiceId: invoice.id,
-               department: 'PHARMACY',
-               referenceId: item.id,
-               description: item.name || 'Custom Medication',
-               quantity: Number(item.qty),
-               unitPrice: item.price
-             });
-           }
         }
       }
       
-      // 1. Look up token if prescriptionId exists
-      let tokenIdToPass: string | undefined = undefined;
-      
-      if (prescriptionId) {
-        const rx = await (prisma as any).prescription.update({
-          where: { id: prescriptionId },
-          data: { status: "DISPENSED" }
-        });
-        
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        
-        const token = await (prisma as any).token.findFirst({
-          where: { patientId: rx.patientId, createdAt: { gte: today } },
-          orderBy: { createdAt: 'desc' }
-        });
-        
-        if (token) {
-          tokenIdToPass = token.id;
-        }
-      }
-
-      // 2. Pay the invoice immediately since it's OTC POS, and pass the tokenId so it links the payment
-      const finalInvoice = await billingService.payInvoice(invoice.id, totalCost, paymentMethod, tokenIdToPass);
-
-      // 3. Mark the token as completed
-      if (tokenIdToPass) {
-        await (prisma as any).token.update({
-          where: { id: tokenIdToPass },
-          data: { status: "completed" }
+      // Bulk insert all line items at once
+      if (chargeItems.length > 0) {
+        await billingService.addChargesBulk({
+          invoiceId: invoice.id,
+          department: 'PHARMACY',
+          items: chargeItems
         });
       }
+
+      // Pay the invoice immediately since it's OTC POS
+      const finalInvoice = await billingService.payInvoice(invoice.id, totalCost, paymentMethod);
+
+      // Announce payment success via WebSockets
+      websocketService.broadcast('pos_payment_success', {
+        invoiceId: finalInvoice.id,
+        totalAmount: finalInvoice.totalAmount,
+        paymentMethod
+      });
 
       res.json({ success: true, invoice: finalInvoice });
     } catch (error: any) {

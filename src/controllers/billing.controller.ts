@@ -32,7 +32,9 @@ export class BillingController {
       const { invoiceId, visitId } = req.query;
       
       if (!invoiceId && !visitId) {
-        return res.status(400).json({ error: 'Must provide invoiceId or visitId' });
+        // If no specific ID is provided, return all invoices
+        const invoices = await billingService.getAllInvoices();
+        return res.json(invoices);
       }
 
       const invoice = await billingService.getInvoice({ 

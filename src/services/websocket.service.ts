@@ -21,6 +21,11 @@ class WebSocketService {
         console.log(`[Socket.io] Client ${socket.id} joined room ${room}`);
       });
 
+      socket.on("leave", (room) => {
+        socket.leave(room);
+        console.log(`[Socket.io] Client ${socket.id} left room ${room}`);
+      });
+
       socket.on("disconnect", () => {
         console.log(`[Socket.io] Client disconnected: ${socket.id}`);
       });

@@ -1,7 +1,26 @@
 import { Request, Response } from 'express';
-import { labService } from '../services/lab.service';
+import { labService } from '../services/lab.service.js';
+import { S3Service } from '../services/s3.service.js';
 
 export class LabController {
+  async getUploadUrl(req: Request, res: Response) {
+    try {
+      const { filename, contentType } = req.query;
+      
+      if (!filename || !contentType) {
+        return res.status(400).json({ error: "filename and contentType are required" });
+      }
+
+      const result = await S3Service.generateUploadUrl(
+        filename as string, 
+        contentType as string
+      );
+      
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  }
   async getCatalog(req: Request, res: Response) {
     try {
       const catalog = await labService.getCatalog();
@@ -22,7 +41,29 @@ export class LabController {
 
   async createRequest(req: Request, res: Response) {
     try {
-      const request = await labService.createRequest(req.body);
+      const { patientPhone, patientName, patientId, testIds, doctorId, priority, visitId } = req.body;
+
+      // Validate test selection
+      if (!testIds || !Array.isArray(testIds) || testIds.length === 0) {
+        return res.status(400).json({ error: "At least one testId is required" });
+      }
+
+      // Resolve patientId: accept direct patientId or resolve from phone
+      let resolvedPatientId = patientId;
+      if (!resolvedPatientId) {
+        if (!patientPhone || !patientName) {
+          return res.status(400).json({ error: "Either patientId or patientPhone + patientName are required" });
+        }
+        resolvedPatientId = await labService.resolvePatient(patientPhone, patientName);
+      }
+
+      const request = await labService.createRequest({
+        patientId: resolvedPatientId,
+        visitId,
+        testIds,
+        doctorId,
+        priority
+      });
       res.status(201).json(request);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -69,6 +110,15 @@ export class LabController {
       res.json(submission);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
+    }
+  }
+
+  async getQueueTokens(req: Request, res: Response) {
+    try {
+      const tokens = await labService.getQueueTokens();
+      res.json({ success: true, data: tokens });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
     }
   }
 }

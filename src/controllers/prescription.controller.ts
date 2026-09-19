@@ -20,7 +20,6 @@ const withRetry = async <T>(operation: () => Promise<T>, retries = 3, delay = 10
 
 export const createPrescription = async (req: Request, res: Response): Promise<void> => {
   try {
-    console.log("CREATE PRESCRIPTION PAYLOAD:", req.body);
     const { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items } = req.body;
 
     const newPrescription = await withRetry(() => (prisma as any).prescription.create({
@@ -61,15 +60,23 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
 export const getPendingPrescriptions = async (req: Request, res: Response): Promise<void> => {
   try {
     const prescriptions = await withRetry(() => (prisma as any).prescription.findMany({
-      where: { status: "PENDING" },
+      where: { status: { in: ["PENDING", "IN_PROGRESS"] } },
       include: {
         items: {
           include: {
-            medicine: true
+            medicine: {
+              include: {
+                stockBatches: {
+                  where: { currentQuantity: { gt: 0 } },
+                  orderBy: { createdAt: 'asc' as const },
+                  take: 1,
+                }
+              }
+            }
           }
         }
       },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' as const }
     }));
     res.json(prescriptions);
   } catch (error) {
@@ -109,5 +116,34 @@ export const markPrescriptionDispensed = async (req: Request, res: Response): Pr
   } catch (error) {
     console.error("Error updating prescription:", error);
     res.status(500).json({ error: "Failed to update prescription" });
+  }
+};
+
+/**
+ * PATCH /prescriptions/:id/status
+ * Updates prescription status to IN_PROGRESS, PENDING, or DISPENSED
+ */
+export const updatePrescriptionStatus = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body as { status: string };
+
+    const allowed = ["PENDING", "IN_PROGRESS", "DISPENSED", "CANCELLED"];
+    if (!allowed.includes(status)) {
+      res.status(400).json({ error: `Invalid status. Must be one of: ${allowed.join(", ")}` });
+      return;
+    }
+
+    const updated = await withRetry(() =>
+      (prisma as any).prescription.update({
+        where: { id },
+        data: { status },
+      })
+    );
+
+    res.json(updated);
+  } catch (error) {
+    console.error("Error updating prescription status:", error);
+    res.status(500).json({ error: "Failed to update prescription status" });
   }
 };

@@ -88,7 +88,7 @@ export class FinanceService {
     const unified: any[] = [];
 
     payments.forEach(p => unified.push({
-      id: p.id.split('-')[0].toUpperCase(),
+      id: (p.id.split('-')[0] || '').toUpperCase(),
       date: p.createdAt.toISOString(),
       type: 'INCOME',
       category: p.invoice?.lineItems[0]?.department || 'MIXED',
@@ -97,7 +97,7 @@ export class FinanceService {
     }));
 
     po.forEach(p => unified.push({
-      id: p.id.split('-')[0].toUpperCase(),
+      id: (p.id.split('-')[0] || '').toUpperCase(),
       date: p.createdAt.toISOString(),
       type: 'EXPENSE',
       category: 'SUPPLIES',
@@ -106,7 +106,7 @@ export class FinanceService {
     }));
 
     expenses.forEach(e => unified.push({
-      id: e.id.split('-')[0].toUpperCase(),
+      id: (e.id.split('-')[0] || '').toUpperCase(),
       date: e.date.toISOString(),
       type: 'EXPENSE',
       category: e.category,

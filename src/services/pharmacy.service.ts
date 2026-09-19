@@ -1,10 +1,9 @@
 import { prisma, withRetry } from '../lib/prisma';
 
 export class PharmacyService {
-  // --- MEDICINE CATALOG ---
   async getAllMedicines(barcode?: string) {
     const whereClause = barcode ? { barcode } : {};
-    return prisma.medicine.findMany({
+    return withRetry(() => prisma.medicine.findMany({
       where: whereClause,
       include: {
         stockBatches: {
@@ -12,7 +11,7 @@ export class PharmacyService {
           orderBy: { expiryDate: 'asc' },
         },
       },
-    });
+    }));
   }
 
   async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; form: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number }) {
@@ -58,7 +57,7 @@ export class PharmacyService {
 
   // --- DISPENSING ENGINE (FIFO LOGIC) ---
   async dispenseMedicine(medicineId: string, quantityToDispense: number) {
-    return prisma.$transaction(async (tx) => {
+    return withRetry(() => prisma.$transaction(async (tx) => {
       // 1. Get all available unexpired stock batches for this medicine, ordered by expiry date (FIFO)
       const availableBatches = await tx.stockBatch.findMany({
         where: {
@@ -106,43 +105,100 @@ export class PharmacyService {
         message: `Successfully dispensed ${quantityToDispense} units.`,
         batchesUsed,
       };
-    });
+    }));
   }
 
   // --- ALERTS ---
   async getLowStockAlerts() {
-    const medicines = await prisma.medicine.findMany({
-      include: {
-        stockBatches: {
-          where: { currentQuantity: { gt: 0 }, expiryDate: { gt: new Date() } },
+    return withRetry(async () => {
+      const medicines = await prisma.medicine.findMany({
+        include: {
+          stockBatches: {
+            where: { currentQuantity: { gt: 0 }, expiryDate: { gt: new Date() } },
+          },
         },
-      },
-    });
+      });
 
-    return medicines
-      .map(med => ({
-        id: med.id,
-        name: med.name,
-        totalStock: med.stockBatches.reduce((sum, b) => sum + b.currentQuantity, 0),
-        reorderLevel: med.reorderLevel,
-      }))
-      .filter(med => med.totalStock <= med.reorderLevel);
+      return medicines
+        .map(med => ({
+          id: med.id,
+          name: med.name,
+          totalStock: med.stockBatches.reduce((sum, b) => sum + b.currentQuantity, 0),
+          reorderLevel: med.reorderLevel,
+        }))
+        .filter(med => med.totalStock <= med.reorderLevel);
+    });
   }
 
   async getExpiringSoonAlerts(daysThreshold: number = 30) {
-    const thresholdDate = new Date();
-    thresholdDate.setDate(thresholdDate.getDate() + daysThreshold);
+    return withRetry(async () => {
+      const thresholdDate = new Date();
+      thresholdDate.setDate(thresholdDate.getDate() + daysThreshold);
 
-    return prisma.stockBatch.findMany({
-      where: {
-        currentQuantity: { gt: 0 },
-        expiryDate: {
-          lte: thresholdDate,
-          gt: new Date(),
+      return prisma.stockBatch.findMany({
+        where: {
+          currentQuantity: { gt: 0 },
+          expiryDate: {
+            lte: thresholdDate,
+            gt: new Date(),
+          },
         },
-      },
-      include: { medicine: true },
-      orderBy: { expiryDate: 'asc' },
+        include: { medicine: true },
+        orderBy: { expiryDate: 'asc' },
+      });
+    });
+  }
+
+  async getMetrics() {
+    return withRetry(async () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const pendingPrescriptions = await prisma.prescription.count({
+        where: { status: "PENDING" }
+      });
+
+      const fulfilledToday = await prisma.prescription.count({
+        where: {
+          status: "DISPENSED",
+          updatedAt: { gte: today }
+        }
+      });
+
+      const allMedicines = await this.getAllMedicines();
+      let lowStockItems = 0;
+      allMedicines.forEach((med: any) => {
+        const stock = med.stockBatches.reduce((sum: number, b: any) => sum + b.currentQuantity, 0);
+        if (stock > 0 && stock <= med.reorderLevel) lowStockItems++;
+      });
+
+      const recentPrescriptionsRaw = await prisma.prescription.findMany({
+        take: 5,
+        orderBy: { createdAt: 'desc' },
+        include: { items: true }
+      });
+
+      const recentPrescriptions = recentPrescriptionsRaw.map((rx: any) => ({
+        id: rx.id,
+        patientName: rx.patientName || `Patient ${rx.patientId.slice(0, 4)}`,
+        doctor: rx.doctorName || "Unknown Doctor",
+        drugs: rx.items.map((i: any) => `${i.drugName} ${i.dosage || ''}`.trim()),
+        status: rx.status,
+        issuedAt: rx.createdAt
+      }));
+
+      const pharmacyLines = await prisma.invoiceLineItem.findMany({
+        where: { department: "PHARMACY", createdAt: { gte: today } }
+      });
+      const totalRevenue = pharmacyLines.reduce((sum: number, item: any) => sum + item.total, 0);
+
+      return {
+        pendingPrescriptions,
+        fulfilledToday,
+        lowStockItems,
+        totalRevenue,
+        recentPrescriptions
+      };
     });
   }
 }
