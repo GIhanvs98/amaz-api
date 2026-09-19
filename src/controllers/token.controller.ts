@@ -14,22 +14,22 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
 
     const doctor = await prisma.user.findUnique({
       where: { id: doctorId },
-      include: { role: true },
+      include: { Role: true },
     });
 
-    if (!doctor || doctor.role.name !== "DOCTOR") {
+    if (!doctor || doctor.Role?.name !== "DOCTOR") {
       res.status(400).json({ error: "Invalid doctor selected" });
       return;
     }
 
-    // Get today's tokens for this doctor to determine the sequence number
+    // Get today's appointments for this doctor to determine the sequence number
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const tokensToday = await prisma.token.count({
+    const tokensToday = await prisma.appointment.count({
       where: {
         doctorId,
-        createdAt: {
+        appointmentDate: {
           gte: today,
         },
       },
@@ -40,22 +40,27 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
     const sequence = (tokensToday + 1).toString().padStart(3, "0");
     const tokenNumber = `${docPrefix}-${sequence}`;
 
-    const token = await prisma.token.create({
+    const appointment = await prisma.appointment.create({
       data: {
         tokenNumber,
         patientId,
         doctorId,
-        status: "waiting_for_counsiling_payment",
+        status: "CHECKED_IN", // Mapping "waiting_for_counsiling_payment" or similar
       },
       include: {
-        patient: true,
-        doctor: {
+        Patient: true,
+        User: {
           select: { fullName: true }
         }
       }
     });
 
-    res.status(201).json(token);
+    // Map to frontend expected format
+    res.status(201).json({
+      ...appointment,
+      patient: appointment.Patient,
+      doctor: appointment.User
+    });
   } catch (error) {
     console.error("Error generating token:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -74,25 +79,28 @@ export const getDoctorQueue = async (req: Request, res: Response): Promise<void>
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const tokens = await prisma.token.findMany({
+    const appointments = await prisma.appointment.findMany({
       where: {
         doctorId: doctorId as string,
-        createdAt: {
+        appointmentDate: {
           gte: today
         },
-        // For queue, we might want to return all today's tokens, or just the waiting ones. 
-        // We'll return all and filter on frontend, or return specific statuses.
-        // Let's return all today's tokens for this doctor.
       },
       include: {
-        patient: true,
+        Patient: true,
       },
       orderBy: {
         createdAt: 'asc'
       }
     });
 
-    res.status(200).json(tokens);
+    // Map to frontend expected format
+    const mappedTokens = appointments.map(app => ({
+      ...app,
+      patient: app.Patient
+    }));
+
+    res.status(200).json(mappedTokens);
   } catch (error) {
     console.error("Error fetching doctor queue:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -108,15 +116,15 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    // Find the most recent token for this patient and doctor today
+    // Find the most recent appointment for this patient and doctor today
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const token = await prisma.token.findFirst({
+    const appointment = await prisma.appointment.findFirst({
       where: {
         patientId: patientId,
         doctorId: doctorId,
-        createdAt: {
+        appointmentDate: {
           gte: today
         }
       },
@@ -125,17 +133,17 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
       }
     });
 
-    if (!token) {
+    if (!appointment) {
       res.status(404).json({ error: "No active token found for this patient and doctor today." });
       return;
     }
 
-    const updatedToken = await prisma.token.update({
-      where: { id: token.id },
+    const updatedApp = await prisma.appointment.update({
+      where: { id: appointment.id },
       data: { status }
     });
 
-    res.status(200).json(updatedToken);
+    res.status(200).json(updatedApp);
   } catch (error) {
     console.error("Error updating token status:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -147,16 +155,16 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const tokens = await prisma.token.findMany({
+    const appointments = await prisma.appointment.findMany({
       where: {
         status: "prescription_issued",
-        createdAt: {
+        appointmentDate: {
           gte: today
         }
       },
       include: {
-        patient: true,
-        doctor: {
+        Patient: true,
+        User: {
           select: { fullName: true }
         }
       },
@@ -165,7 +173,13 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
       }
     });
 
-    res.status(200).json(tokens);
+    const mappedTokens = appointments.map(app => ({
+      ...app,
+      patient: app.Patient,
+      doctor: app.User
+    }));
+
+    res.status(200).json(mappedTokens);
   } catch (error) {
     console.error("Error fetching pending prescriptions:", error);
     res.status(500).json({ error: "Internal server error" });
