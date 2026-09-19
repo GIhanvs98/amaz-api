@@ -158,9 +158,9 @@ export class PharmacyController {
         }
       }
       
-      // Pay the invoice immediately since it's OTC POS
-      const finalInvoice = await billingService.payInvoice(invoice.id, totalCost, paymentMethod);
-
+      // 1. Look up token if prescriptionId exists
+      let tokenIdToPass: string | undefined = undefined;
+      
       if (prescriptionId) {
         const rx = await (prisma as any).prescription.update({
           where: { id: prescriptionId },
@@ -176,11 +176,19 @@ export class PharmacyController {
         });
         
         if (token) {
-          await (prisma as any).token.update({
-            where: { id: token.id },
-            data: { status: "completed" }
-          });
+          tokenIdToPass = token.id;
         }
+      }
+
+      // 2. Pay the invoice immediately since it's OTC POS, and pass the tokenId so it links the payment
+      const finalInvoice = await billingService.payInvoice(invoice.id, totalCost, paymentMethod, tokenIdToPass);
+
+      // 3. Mark the token as completed
+      if (tokenIdToPass) {
+        await (prisma as any).token.update({
+          where: { id: tokenIdToPass },
+          data: { status: "completed" }
+        });
       }
 
       res.json({ success: true, invoice: finalInvoice });

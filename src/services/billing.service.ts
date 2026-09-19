@@ -95,7 +95,7 @@ export class BillingService {
   /**
    * Pay an invoice
    */
-  async payInvoice(invoiceId: string, amount: number, method: string) {
+  async payInvoice(invoiceId: string, amount: number, method: string, tokenId?: string) {
     const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new Error("Invoice not found");
     if (invoice.status === "PAID") throw new Error("Invoice is already paid");
@@ -106,7 +106,8 @@ export class BillingService {
         invoiceId,
         amount,
         method,
-        status: "COMPLETED"
+        status: "COMPLETED",
+        ...(tokenId ? { tokenId } : {})
       }
     });
 

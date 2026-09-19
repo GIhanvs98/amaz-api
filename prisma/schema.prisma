@@ -115,9 +115,11 @@ model Payment {
   method          String   // CASH, CARD, BANK, QR
   status          String   @default("COMPLETED")
   transactionRef  String?
+  tokenId         String?  @unique // Optional 1:1 relationship
   createdAt       DateTime @default(now())
 
   invoice         Invoice  @relation(fields: [invoiceId], references: [id])
+  token           Token?   @relation(fields: [tokenId], references: [id])
 }
 
 model Refund {
@@ -283,4 +285,5 @@ model Token {
 
   patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
   doctor      User     @relation("DoctorTokens", fields: [doctorId], references: [id])
+  payment     Payment?
 }
