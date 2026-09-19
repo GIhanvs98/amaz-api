@@ -62,7 +62,7 @@ export const markArrived = async (req: Request, res: Response) => {
 
 export const getTodayAppointments = async (req: Request, res: Response) => {
   try {
-    const { date } = req.query;
+    const { date, doctorId } = req.query;
     const targetDate = date ? new Date(date as string) : new Date();
     const startOfDay = new Date(targetDate);
     startOfDay.setHours(0, 0, 0, 0);
@@ -70,10 +70,15 @@ export const getTodayAppointments = async (req: Request, res: Response) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     // Query all appointments for the specified date
+    const whereClause: any = {
+      appointmentDate: { gte: startOfDay, lte: endOfDay }
+    };
+    if (doctorId) {
+      whereClause.doctorId = doctorId;
+    }
+
     const tokens = await prisma.appointment.findMany({
-      where: {
-        appointmentDate: { gte: startOfDay, lte: endOfDay }
-      },
+      where: whereClause,
       include: {
         Patient: true,
         User: true
