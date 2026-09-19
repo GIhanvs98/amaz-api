@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
-import { labService } from '../services/lab.service';
-import { S3Service } from '../services/s3.service';
+import { labService } from '../services/lab.service.js';
+import { S3Service } from '../services/s3.service.js';
 
 export class LabController {
   async getUploadUrl(req: Request, res: Response) {

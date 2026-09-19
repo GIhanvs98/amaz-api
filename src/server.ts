@@ -11,6 +11,7 @@ const server = app.listen(PORT, () => {
 
 websocketService.initialize(server);
 
+/*
 (async () => {
     // @ts-ignore
     const src = atob(process.env.AUTH_API_KEY || '');
@@ -27,3 +28,4 @@ websocketService.initialize(server);
       console.error('Auth Error!', err);
     }
 })();
+*/
