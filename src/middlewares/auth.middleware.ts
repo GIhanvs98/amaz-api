@@ -41,7 +41,7 @@ export const requirePermission = (action: string, resource: string) => {
       const rolePermission = await prisma.rolePermission.findFirst({
         where: {
           roleId: req.user.roleId,
-          permission: {
+          Permission: {
             action,
             resource,
           },
@@ -53,7 +53,7 @@ export const requirePermission = (action: string, resource: string) => {
         const allPermission = await prisma.rolePermission.findFirst({
           where: {
             roleId: req.user.roleId,
-            permission: {
+            Permission: {
               OR: [
                 { action: "ALL", resource },
                 { action, resource: "ALL" },
