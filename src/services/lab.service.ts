@@ -1,6 +1,5 @@
-import { PrismaClient } from '@prisma/client';
 import { billingService } from './billing.service.js';
-import { prisma as sharedPrisma } from '../lib/prisma.js';
+import { prisma as sharedPrisma, withRetry } from '../lib/prisma.js';
 
 // Use shared singleton to avoid multiple connection pools
 const prisma = sharedPrisma;
@@ -10,10 +9,10 @@ export class LabService {
    * Fetch the catalog of available lab tests
    */
   async getCatalog() {
-    return prisma.labTest.findMany({
+    return withRetry(() => prisma.labTest.findMany({
       where: { isActive: true },
       orderBy: { category: 'asc' }
-    });
+    }));
   }
 
   /**
@@ -26,19 +25,21 @@ export class LabService {
     price: number;
     sampleType?: string;
   }) {
-    return prisma.labTest.create({ data });
+    return withRetry(() => prisma.labTest.create({ data }));
   }
 
   /**
    * Resolve patientId from phone/name, creating patient if needed
    */
   async resolvePatient(phone: string, name: string): Promise<string> {
-    const patient = await prisma.patient.upsert({
-      where: { phone },
-      update: {},
-      create: { phone, fullName: name }
+    return withRetry(async () => {
+      const patient = await prisma.patient.upsert({
+        where: { phone },
+        update: {},
+        create: { phone, fullName: name }
+      });
+      return patient.id;
     });
-    return patient.id;
   }
 
   /**
@@ -52,58 +53,60 @@ export class LabService {
     doctorId?: string;
     priority?: string;
   }) {
-    // Verify tests exist to get prices
-    const tests = await prisma.labTest.findMany({
-      where: { id: { in: data.testIds } }
-    });
+    return withRetry(async () => {
+      // Verify tests exist to get prices
+      const tests = await prisma.labTest.findMany({
+        where: { id: { in: data.testIds } }
+      });
 
-    if (tests.length !== data.testIds.length) {
-      throw new Error("One or more tests not found in catalog");
-    }
-
-    // 1. Create the lab request with items
-    const request = await prisma.labRequest.create({
-      data: {
-        patientId: data.patientId,
-        doctorId: data.doctorId,
-        priority: data.priority || "ROUTINE",
-        status: "PENDING",
-        items: {
-          create: tests.map(test => ({
-            labTestId: test.id,
-            price: test.price
-          }))
-        }
-      },
-      include: {
-        items: true
+      if (tests.length !== data.testIds.length) {
+        throw new Error("One or more tests not found in catalog");
       }
-    });
 
-    // 2. Add the charge to the centralized billing engine
-    if (data.visitId || data.patientId) {
-      // Create separate charges for each test
-      for (const test of tests) {
-        await billingService.addCharge({
-          visitId: data.visitId,
+      // 1. Create the lab request with items
+      const request = await prisma.labRequest.create({
+        data: {
           patientId: data.patientId,
-          department: 'LAB',
-          referenceId: request.id,
-          description: `Lab Test: ${test.name}`,
-          quantity: 1,
-          unitPrice: test.price
-        });
-      }
-    }
+          doctorId: data.doctorId,
+          priority: data.priority || "ROUTINE",
+          status: "PENDING",
+          items: {
+            create: tests.map(test => ({
+              labTestId: test.id,
+              price: test.price
+            }))
+          }
+        },
+        include: {
+          items: true
+        }
+      });
 
-    return request;
+      // 2. Add the charge to the centralized billing engine
+      if (data.visitId || data.patientId) {
+        // Create separate charges for each test
+        for (const test of tests) {
+          await billingService.addCharge({
+            visitId: data.visitId,
+            patientId: data.patientId,
+            department: 'LAB',
+            referenceId: request.id,
+            description: `Lab Test: ${test.name}`,
+            quantity: 1,
+            unitPrice: test.price
+          });
+        }
+      }
+
+      return request;
+    });
   }
 
   /**
    * Get pending lab requests for the technicians
    */
   async getPendingRequests() {
-    return prisma.labRequest.findMany({
+    return withRetry(() => prisma.labRequest.findMany({
       where: { status: "PENDING" },
       include: {
         items: {
@@ -115,14 +118,14 @@ export class LabService {
         }
       },
       orderBy: { requestedAt: 'asc' }
-    });
+    }));
   }
 
   /**
    * Submit biomarker results for a specific request
    */
   async submitResults(requestId: string, results: { biomarker: string; value: string; isOutOfRange: boolean; notes?: string }[], reportUrl?: string) {
-    return prisma.$transaction(async (tx) => {
+    return withRetry(() => prisma.$transaction(async (tx) => {
       // 1. Mark request as completed
       const request = await tx.labRequest.update({
         where: { id: requestId },
@@ -143,14 +146,14 @@ export class LabService {
       );
 
       return { request, results: createdResults };
-    });
+    }));
   }
 
   /**
    * Get all completed (published) lab requests
    */
   async getPublishedReports() {
-    return prisma.labRequest.findMany({
+    return withRetry(() => prisma.labRequest.findMany({
       where: { status: "COMPLETED" },
       include: {
         items: {
@@ -160,79 +163,83 @@ export class LabService {
         Patient: true
       },
       orderBy: { requestedAt: 'desc' }
-    });
+    }));
   }
 
   /**
    * Get lab tech dashboard metrics
    */
   async getMetrics() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    return withRetry(async () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-    const pendingCount = await prisma.labRequest.count({
-      where: { status: "PENDING" }
-    });
+      const pendingCount = await prisma.labRequest.count({
+        where: { status: "PENDING" }
+      });
 
-    const publishedCount = await prisma.labRequest.count({
-      where: { 
-        status: "COMPLETED",
-        requestedAt: { gte: today } 
-      }
-    });
-
-    const criticalCount = await prisma.labResult.count({
-      where: {
-        isOutOfRange: true,
-        request: {
-          requestedAt: { gte: today }
+      const publishedCount = await prisma.labRequest.count({
+        where: { 
+          status: "COMPLETED",
+          requestedAt: { gte: today } 
         }
-      }
-    });
+      });
 
-    const urgentPending = await prisma.labRequest.findMany({
-      where: { status: "PENDING", priority: "URGENT" },
-      include: { 
-        items: { include: { LabTest: true } },
-        Patient: true,
-        Visit: { include: { User: true } }
-      },
-      orderBy: { requestedAt: 'asc' }
-    });
+      const criticalCount = await prisma.labResult.count({
+        where: {
+          isOutOfRange: true,
+          request: {
+            requestedAt: { gte: today }
+          }
+        }
+      });
 
-    return {
-      pendingRequests: pendingCount,
-      inProgressTests: Math.floor(pendingCount * 0.3),
-      publishedToday: publishedCount,
-      criticalResults: criticalCount,
-      urgentRequests: urgentPending.map(req => ({
-        id: req.id,
-        patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
-        doctor: req.Visit?.User?.fullName || "Unknown Doctor",
-        tests: req.items.map(i => i.LabTest?.name),
-        priority: req.priority,
-        requestedAt: req.requestedAt
-      }))
-    };
+      const urgentPending = await prisma.labRequest.findMany({
+        where: { status: "PENDING", priority: "URGENT" },
+        include: { 
+          items: { include: { LabTest: true } },
+          Patient: true,
+          Visit: { include: { User: true } }
+        },
+        orderBy: { requestedAt: 'asc' }
+      });
+
+      return {
+        pendingRequests: pendingCount,
+        inProgressTests: Math.floor(pendingCount * 0.3),
+        publishedToday: publishedCount,
+        criticalResults: criticalCount,
+        urgentRequests: urgentPending.map(req => ({
+          id: req.id,
+          patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
+          doctor: req.Visit?.User?.fullName || "Unknown Doctor",
+          tests: req.items.map(i => i.LabTest?.name),
+          priority: req.priority,
+          requestedAt: req.requestedAt
+        }))
+      };
+    });
   }
 
   /**
    * Get waiting lab queue tokens
    */
   async getQueueTokens() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    return withRetry(async () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
-    return prisma.appointment.findMany({
-      where: {
-        department: { in: ["LAB", "MULTI"] },
-        appointmentDate: { gte: today },
-        status: { notIn: ["COMPLETED", "CANCELLED"] }
-      },
-      include: {
-        Patient: true
-      },
-      orderBy: { createdAt: 'asc' }
+      return prisma.appointment.findMany({
+        where: {
+          department: { in: ["LAB", "MULTI"] },
+          appointmentDate: { gte: today },
+          status: { notIn: ["COMPLETED", "CANCELLED"] }
+        },
+        include: {
+          Patient: true
+        },
+        orderBy: { createdAt: 'asc' }
+      });
     });
   }
 }

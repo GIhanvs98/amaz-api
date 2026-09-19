@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma.js";
+import { prisma, withRetry } from "../lib/prisma.js";
 import { NotificationService } from "./notification.service.js";
 import { websocketService } from "./websocket.service.js";
 import { SMSService } from "./sms.service.js";
@@ -6,113 +6,115 @@ import { SMSService } from "./sms.service.js";
 export class BookingService {
   static async getDoctors() {
     // Return minimal data — do not expose internal schedule details to the public booking API
-    return prisma.user.findMany({
+    return withRetry(() => prisma.user.findMany({
       where: { Role: { name: "DOCTOR" } },
       select: {
         id: true,
         fullName: true,
         specialty: true
       }
-    });
+    }));
   }
 
   static async getAvailability(doctorId: string, date: string) {
-    const dayOfWeek = new Date(date).getDay();
-    const session = await prisma.doctorScheduleSession.findFirst({
-      where: { 
-        dayOfWeek, 
-        isActive: true,
-        schedule: {
-          doctorId,
-          validFrom: { lte: new Date(date) },
-          OR: [
-            { validUntil: null },
-            { validUntil: { gte: new Date(date) } }
-          ]
+    return withRetry(async () => {
+      const dayOfWeek = new Date(date).getDay();
+      const targetDate = new Date(date);
+      const startOfDay = new Date(date);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const session = await prisma.doctorScheduleSession.findFirst({
+        where: { 
+          dayOfWeek, 
+          isActive: true,
+          schedule: {
+            doctorId,
+            validFrom: { lte: endOfDay },
+            OR: [
+              { validUntil: null },
+              { validUntil: { gte: startOfDay } }
+            ]
+          }
         }
-      }
-    });
-
-    if (!session) {
-      return { available: false, reason: "Doctor does not consult on this day", bookedSlots: 0, totalSlots: 0, tokens: [] };
-    }
-
-    const targetDate = new Date(date);
-    const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    // Check for schedule exceptions (doctor modified or cancelled this specific day)
-    const exception = await prisma.doctorScheduleException.findFirst({
-      where: {
-        scheduleId: session.scheduleId,
-        exceptionDate: { gte: startOfDay, lte: endOfDay }
-      }
-    });
-
-    if (exception?.isUnavailable) {
-      return { available: false, reason: "Doctor has marked this day as unavailable", bookedSlots: 0, totalSlots: 0, tokens: [] };
-    }
-
-    // Check for approved leave
-    const onLeave = await prisma.doctorLeave.findFirst({
-      where: {
-        scheduleId: session.scheduleId,
-        status: "APPROVED",
-        startDate: { lte: targetDate },
-        endDate: { gte: targetDate }
-      }
-    });
-
-    if (onLeave) {
-      return { available: false, reason: "Doctor is on approved leave", bookedSlots: 0, totalSlots: 0, tokens: [] };
-    }
-
-    // Use exception capacity/times if specified
-    const effectiveCapacity = exception?.newTokenCapacity ?? session.tokenCapacity;
-    const effectiveStartTime = exception?.newStartTime ?? session.startTime;
-    const effectiveEndTime = exception?.newEndTime ?? session.endTime;
-
-    const existingTokens = await prisma.appointment.findMany({
-      where: {
-        doctorId,
-        appointmentDate: {
-          gte: startOfDay,
-          lte: endOfDay
-        },
-        status: { notIn: ["CANCELLED", "NO_SHOW"] } // Don't count cancelled/no-show as booked
-      },
-      select: { tokenNumber: true, status: true }
-    });
-
-    // Normalize: token numbers are stored as zero-padded 3-char strings e.g. "001"
-    const bookedNumbers = new Set(existingTokens.map(t => parseInt(t.tokenNumber, 10)));
-    const tokens = [];
-    
-    for (let i = 1; i <= effectiveCapacity; i++) {
-      tokens.push({
-        tokenNumber: i,
-        status: bookedNumbers.has(i) ? "BOOKED" : "AVAILABLE"
       });
-    }
 
-    const bookedCount = existingTokens.length;
+      if (!session) {
+        return { available: false, reason: "Doctor does not consult on this day", bookedSlots: 0, totalSlots: 0, tokens: [] };
+      }
 
-    return {
-      available: bookedCount < effectiveCapacity,
-      bookedSlots: bookedCount,
-      totalSlots: effectiveCapacity,
-      tokens,
-      startTime: effectiveStartTime,
-      endTime: effectiveEndTime
-    };
+      // Check for schedule exceptions (doctor modified or cancelled this specific day)
+      const exception = await prisma.doctorScheduleException.findFirst({
+        where: {
+          scheduleId: session.scheduleId,
+          exceptionDate: { gte: startOfDay, lte: endOfDay }
+        }
+      });
+
+      if (exception?.isUnavailable) {
+        return { available: false, reason: "Doctor has marked this day as unavailable", bookedSlots: 0, totalSlots: 0, tokens: [] };
+      }
+
+      // Check for approved leave
+      const onLeave = await prisma.doctorLeave.findFirst({
+        where: {
+          scheduleId: session.scheduleId,
+          status: "APPROVED",
+          startDate: { lte: targetDate },
+          endDate: { gte: targetDate }
+        }
+      });
+
+      if (onLeave) {
+        return { available: false, reason: "Doctor is on approved leave", bookedSlots: 0, totalSlots: 0, tokens: [] };
+      }
+
+      // Use exception capacity/times if specified
+      const effectiveCapacity = exception?.newTokenCapacity ?? session.tokenCapacity;
+      const effectiveStartTime = exception?.newStartTime ?? session.startTime;
+      const effectiveEndTime = exception?.newEndTime ?? session.endTime;
+
+      const existingTokens = await prisma.appointment.findMany({
+        where: {
+          doctorId,
+          appointmentDate: {
+            gte: startOfDay,
+            lte: endOfDay
+          },
+          status: { notIn: ["CANCELLED", "NO_SHOW"] } // Don't count cancelled/no-show as booked
+        },
+        select: { tokenNumber: true, status: true }
+      });
+
+      // Normalize: token numbers are stored as zero-padded 3-char strings e.g. "001" or with prefixes like "MLT-001"
+      const bookedNumbers = new Set(existingTokens.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
+      const tokens = [];
+      
+      for (let i = 1; i <= effectiveCapacity; i++) {
+        tokens.push({
+          tokenNumber: i,
+          status: bookedNumbers.has(i) ? "BOOKED" : "AVAILABLE"
+        });
+      }
+
+      const bookedCount = existingTokens.length;
+
+      return {
+        available: bookedCount < effectiveCapacity,
+        bookedSlots: bookedCount,
+        totalSlots: effectiveCapacity,
+        tokens,
+        startTime: effectiveStartTime,
+        endTime: effectiveEndTime
+      };
+    });
   }
 
   static async getAvailableDates(doctorId: string) {
     const dates: any[] = [];
     let currentDate = new Date();
-    currentDate.setDate(currentDate.getDate() + 1); // Start from tomorrow
+    // Allow checking for today's tokens if there are any remaining.
 
     let daysChecked = 0;
     while (dates.length < 5 && daysChecked < 30) {
@@ -144,17 +146,17 @@ export class BookingService {
     const endOfDay = new Date(date);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const token = await prisma.$transaction(async (tx) => {
+    const token = await withRetry(() => prisma.$transaction(async (tx) => {
       const session = await tx.doctorScheduleSession.findFirst({
         where: { 
           dayOfWeek, 
           isActive: true,
           schedule: {
             doctorId,
-            validFrom: { lte: appointmentDate },
+            validFrom: { lte: endOfDay },
             OR: [
               { validUntil: null },
-              { validUntil: { gte: appointmentDate } }
+              { validUntil: { gte: startOfDay } }
             ]
           }
         }
@@ -201,7 +203,7 @@ export class BookingService {
           where: { doctorId, appointmentDate: { gte: startOfDay, lte: endOfDay } },
           select: { tokenNumber: true }
         });
-        const bookedNums = new Set(existingTokens.map(t => parseInt(t.tokenNumber, 10)));
+        const bookedNums = new Set(existingTokens.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
         let nextAvailable = 1;
         while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
           nextAvailable++;
@@ -223,7 +225,7 @@ export class BookingService {
           User: true
         }
       });
-    });
+    }));
 
     try {
       await NotificationService.sendTemplatedSMS(
@@ -259,35 +261,37 @@ export class BookingService {
   }
 
   static async markArrived(tokenId: string) {
-    const existingToken = await prisma.appointment.findUnique({ where: { id: tokenId } });
-    if (!existingToken) throw new Error("Token not found");
-    if (existingToken.status === "ARRIVED") throw new Error("Patient already marked as arrived. Invoice already exists.");
+    return withRetry(async () => {
+      const existingToken = await prisma.appointment.findUnique({ where: { id: tokenId } });
+      if (!existingToken) throw new Error("Token not found");
+      if (existingToken.status === "ARRIVED") throw new Error("Patient already marked as arrived. Invoice already exists.");
 
-    const token = await prisma.appointment.update({
-      where: { id: tokenId },
-      data: { status: "ARRIVED" },
-      include: { Patient: true, User: true }
-    });
+      const token = await prisma.appointment.update({
+        where: { id: tokenId },
+        data: { status: "ARRIVED" },
+        include: { Patient: true, User: true }
+      });
 
-    // Create Invoice for the Cashier
-    const invoice = await prisma.invoice.create({
-      data: {
-        patientId: token.patientId,
-        status: "DRAFT",
-        subtotal: 1500, // Standard fee
-        totalAmount: 1500,
-        lineItems: {
-          create: {
-            department: "CONSULTATION",
-            description: `Consultation - ${token.User?.fullName || 'General Physician'}`,
-            unitPrice: 1500,
-            total: 1500,
-            quantity: 1
+      // Create Invoice for the Cashier
+      const invoice = await prisma.invoice.create({
+        data: {
+          patientId: token.patientId,
+          status: "DRAFT",
+          subtotal: 1500, // Standard fee
+          totalAmount: 1500,
+          lineItems: {
+            create: {
+              department: "CONSULTATION",
+              description: `Consultation - ${token.User?.fullName || 'General Physician'}`,
+              unitPrice: 1500,
+              total: 1500,
+              quantity: 1
+            }
           }
         }
-      }
-    });
+      });
 
-    return { token, invoice };
+      return { token, invoice };
+    });
   }
 }
