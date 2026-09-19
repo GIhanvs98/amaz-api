@@ -27,6 +27,10 @@ import authRoutes from "./routes/auth.routes.js";
 import patientRoutes from "./routes/patient.routes.js";
 import tokenRoutes from "./routes/token.routes.js";
 import userRoutes from "./routes/user.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
+import bookingRoutes from "./routes/booking.routes.js";
+import receptionRoutes from "./routes/reception.routes.js";
 
 app.get("/health", (_req, res) => {
     res.json({
@@ -44,5 +48,9 @@ app.use("/api/auth", authRoutes);
 app.use("/api/patients", patientRoutes);
 app.use("/api/tokens", tokenRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/admin/dashboard", dashboardRoutes);
+app.use("/api/booking", bookingRoutes);
+app.use("/api/reception", receptionRoutes);
 
 export default app;
