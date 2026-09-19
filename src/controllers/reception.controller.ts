@@ -132,7 +132,7 @@ export const generateToken = async (req: Request, res: Response) => {
     if (hasConsultation && typeof doctorId === 'string') {
       try {
         const todayStr = new Date().toISOString().split('T')[0];
-        const updatedAvailability = await BookingService.getAvailability(doctorId, todayStr);
+        const updatedAvailability = await BookingService.getAvailability(doctorId as string, todayStr as string);
         websocketService.emitToRoom(`doctor_${doctorId}_${todayStr}`, 'availability_updated', updatedAvailability);
       } catch (e) {
         console.error("Failed to broadcast availability update:", e);
