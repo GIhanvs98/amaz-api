@@ -5,16 +5,42 @@ import { SMSService } from "./sms.service.js";
 
 export class BookingService {
   static async getDoctors() {
-    // Return minimal data — do not expose internal schedule details to the public booking API
-    return withRetry(() => prisma.user.findMany({
-      where: { Role: { name: "DOCTOR" } },
-      select: {
-        id: true,
-        fullName: true,
-        specialty: true,
-        roomNumber: true
-      }
-    }));
+    return withRetry(async () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      const doctors = await prisma.user.findMany({
+        where: { Role: { name: "DOCTOR" } },
+        select: {
+          id: true,
+          fullName: true,
+          specialty: true,
+          roomNumber: true,
+          DoctorAttendance: {
+            where: {
+              date: { gte: today, lt: tomorrow },
+              status: "ARRIVED"
+            },
+            take: 1
+          }
+        }
+      });
+
+      return doctors.map(doc => {
+        const todayAttendance = doc.DoctorAttendance[0];
+        return {
+          id: doc.id,
+          fullName: doc.fullName,
+          specialty: doc.specialty,
+          // Today's specific room overrides default room
+          roomNumber: todayAttendance?.roomNumber || doc.roomNumber,
+          isArrived: !!todayAttendance
+        };
+      });
+    });
   }
 
   static async getAvailability(doctorId: string, date: string) {

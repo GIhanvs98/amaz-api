@@ -229,22 +229,49 @@ export const generateToken = async (req: Request, res: Response) => {
   }
 };
 
-export const updateDoctorRoom = async (req: Request, res: Response) => {
+export const markDoctorArrived = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { roomNumber } = req.body;
     
-    // We update the User's roomNumber.
-    // Note: Due to Neon DB being offline in dev, this might fail if DB is down.
-    // The frontend should handle it gracefully or we just rely on standard prisma error.
-    const user = await prisma.user.update({
-      where: { id: id as string },
-      data: { roomNumber: roomNumber || null }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Find if there's already an attendance record for today
+    let attendance = await prisma.doctorAttendance.findFirst({
+      where: {
+        doctorId: id as string,
+        date: { gte: today, lt: tomorrow }
+      }
     });
+
+    if (attendance) {
+      attendance = await prisma.doctorAttendance.update({
+        where: { id: attendance.id },
+        data: {
+          status: "ARRIVED",
+          roomNumber: roomNumber || null,
+          arrivedAt: attendance.arrivedAt || new Date()
+        }
+      });
+    } else {
+      attendance = await prisma.doctorAttendance.create({
+        data: {
+          doctorId: id as string,
+          date: today,
+          status: "ARRIVED",
+          roomNumber: roomNumber || null,
+          arrivedAt: new Date()
+        }
+      });
+    }
     
-    res.json({ success: true, data: { id: user.id, roomNumber: user.roomNumber } });
+    res.json({ success: true, data: attendance });
   } catch (error) {
-    console.error("Error updating doctor room:", error);
+    console.error("Error marking doctor arrived:", error);
     res.status(500).json({ success: false, error: "Internal server error" });
   }
 };
