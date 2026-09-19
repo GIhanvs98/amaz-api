@@ -109,7 +109,10 @@ export class LabService {
         items: {
           include: { LabTest: true }
         },
-        Patient: true
+        Patient: true,
+        Visit: {
+          include: { User: true }
+        }
       },
       orderBy: { requestedAt: 'asc' }
     });
