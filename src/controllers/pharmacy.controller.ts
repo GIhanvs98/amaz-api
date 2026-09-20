@@ -148,13 +148,18 @@ export class PharmacyController {
         }
       }
       
-      // Bulk insert all line items at once
+      // Insert line items individually since addChargesBulk does not exist
       if (chargeItems.length > 0) {
-        await billingService.addChargesBulk({
-          invoiceId: invoice.id,
-          department: 'PHARMACY',
-          items: chargeItems
-        });
+        for (const item of chargeItems) {
+          await billingService.addCharge({
+            invoiceId: invoice.id,
+            department: 'PHARMACY',
+            referenceId: item.referenceId,
+            description: item.description,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice
+          });
+        }
       }
 
       // Pay the invoice immediately since it's OTC POS
