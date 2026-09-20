@@ -108,6 +108,13 @@ export const markPrescriptionDispensed = async (req: Request, res: Response): Pr
             });
           }
         }
+
+        // Mark corresponding Appointment as COMPLETED
+        await tx.appointment.updateMany({
+          where: { id: rx.visitId, status: { not: "COMPLETED" } },
+          data: { status: "COMPLETED", completedAt: new Date() }
+        });
+
         return rx;
       });
     });
@@ -134,12 +141,21 @@ export const updatePrescriptionStatus = async (req: Request, res: Response): Pro
       return;
     }
 
-    const updated = await withRetry(() =>
-      (prisma as any).prescription.update({
+    const updated = await withRetry(async () => {
+      const rx = await (prisma as any).prescription.update({
         where: { id },
         data: { status },
-      })
-    );
+      });
+
+      if (status === "DISPENSED") {
+        await (prisma as any).appointment.updateMany({
+          where: { id: rx.visitId, status: { not: "COMPLETED" } },
+          data: { status: "COMPLETED", completedAt: new Date() }
+        });
+      }
+
+      return rx;
+    });
 
     res.json(updated);
   } catch (error) {
