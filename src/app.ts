@@ -24,11 +24,11 @@ import labRoutes from "./routes/lab.routes.js";
 import financeRoutes from "./routes/finance.routes.js";
 import prescriptionRoutes from "./routes/prescription.routes.js";
 import authRoutes from "./routes/auth.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
 import patientRoutes from "./routes/patient.routes.js";
 import tokenRoutes from "./routes/token.routes.js";
 import userRoutes from "./routes/user.routes.js";
-import adminRoutes from "./routes/admin.routes.js";
-import dashboardRoutes from "./routes/dashboard.routes.js";
 import bookingRoutes from "./routes/booking.routes.js";
 import receptionRoutes from "./routes/reception.routes.js";
 
