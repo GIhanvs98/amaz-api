@@ -9,7 +9,7 @@ app.use(helmet());
 
 app.use(
     cors({
-        origin: process.env.FRONTEND_URL ?? "http://localhost:3000",
+        origin: [process.env.FRONTEND_URL ?? "http://localhost:3000", "http://localhost:3001", "http://192.168.1.101:3000", "http://192.168.1.101:3001", "http://localhost:3002"],
         credentials: true,
     }),
 );
@@ -23,12 +23,14 @@ import billingRoutes from "./routes/billing.routes.js";
 import labRoutes from "./routes/lab.routes.js";
 import financeRoutes from "./routes/finance.routes.js";
 import prescriptionRoutes from "./routes/prescription.routes.js";
-import receptionRoutes from "./routes/reception.routes.js";
-import bookingRoutes from "./routes/booking.routes.js";
-import doctorRoutes from "./routes/doctor-attendance.routes.js";
-import dashboardRoutes from "./routes/dashboard.routes.js";
 import authRoutes from "./routes/auth.routes.js";
+import patientRoutes from "./routes/patient.routes.js";
+import tokenRoutes from "./routes/token.routes.js";
+import userRoutes from "./routes/user.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
+import bookingRoutes from "./routes/booking.routes.js";
+import receptionRoutes from "./routes/reception.routes.js";
 
 app.get("/health", (_req, res) => {
     res.json({
@@ -42,11 +44,13 @@ app.use("/api/billing", billingRoutes);
 app.use("/api/lab", labRoutes);
 app.use("/api/finance", financeRoutes);
 app.use("/api/prescriptions", prescriptionRoutes);
-app.use("/api/reception", receptionRoutes);
-app.use("/api/booking", bookingRoutes);
-app.use("/api/doctors", doctorRoutes);
-app.use("/api/admin/dashboard", dashboardRoutes);
-app.use("/api/admin", adminRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/patients", patientRoutes);
+app.use("/api/tokens", tokenRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/admin/dashboard", dashboardRoutes);
+app.use("/api/booking", bookingRoutes);
+app.use("/api/reception", receptionRoutes);
 
 export default app;

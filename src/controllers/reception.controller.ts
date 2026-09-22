@@ -29,7 +29,7 @@ export const getPatients = async (req: Request, res: Response) => {
     res.json({ success: true, data: patients });
   } catch (error) {
     console.error("Error fetching patients:", error);
-    res.status(500).json({ success: false, error: "Internal server error" });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -97,7 +97,38 @@ export const getMetrics = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("Error fetching metrics:", error);
-    res.status(500).json({ success: false, error: "Internal server error" });
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getPatientById = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const patient = await prisma.patient.findUnique({
+      where: { id }
+    });
+    
+    if (!patient) {
+      res.status(404).json({ error: "Patient not found" });
+      return;
+    }
+    
+    // Map to the frontend expected format
+    res.json({
+      id: patient.id,
+      name: patient.fullName,
+      age: patient.ageFallback || 30,
+      gender: patient.gender || "UNKNOWN",
+      contact: patient.phone,
+      bloodGroup: patient.bloodGroup || "O+",
+      allergies: [],
+      chronicConditions: [],
+      medicalHistory: [],
+      labResults: []
+    });
+  } catch (error) {
+    console.error("Error fetching patient:", error);
+    res.status(500).json({ error: error.message });
   }
 };
 
@@ -161,7 +192,7 @@ export const generateToken = async (req: Request, res: Response) => {
           patientId: patient!.id,
           doctorId: doctorId || null,
           department,
-          status: "BOOKED",
+          status: department === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
           bookingType: "WALK_IN",
           appointmentDate: new Date()
         }
@@ -198,7 +229,7 @@ export const generateToken = async (req: Request, res: Response) => {
           tokenNumber: tokenDisplay,
           hospitalName: "AMAZ Hospital"
         }
-      );
+      ).catch(console.error);
     }
 
     if (hasConsultation && typeof doctorId === 'string') {
@@ -225,7 +256,7 @@ export const generateToken = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("Error generating token:", error);
-    res.status(500).json({ success: false, error: "Internal server error" });
+    res.status(500).json({ success: false, error: error.message });
   }
 };
 
@@ -272,6 +303,6 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
     res.json({ success: true, data: attendance });
   } catch (error) {
     console.error("Error marking doctor arrived:", error);
-    res.status(500).json({ success: false, error: "Internal server error" });
+    res.status(500).json({ success: false, error: error.message });
   }
 };

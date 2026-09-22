@@ -144,7 +144,7 @@ model LabRequest {
   priority    String         @default("ROUTINE")
   reportUrl   String?
   visitId     String?
-  
+
   Patient     Patient  @relation(fields: [patientId], references: [id])
   Visit       Appointment? @relation(fields: [visitId], references: [id])
   items       LabRequestItem[]
@@ -156,7 +156,7 @@ model LabRequestItem {
   labRequestId  String
   labTestId     String
   price         Float
-  
+
   LabRequest    LabRequest @relation(fields: [labRequestId], references: [id])
   LabTest       LabTest    @relation(fields: [labTestId], references: [id])
 }

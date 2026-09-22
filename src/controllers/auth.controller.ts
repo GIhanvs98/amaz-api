@@ -88,7 +88,9 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     // Find user
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { Role: true },
+      include: {
+        Role: true
+      }
     });
 
     if (!user) {
@@ -117,7 +119,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         id: user.id,
         fullName: user.fullName,
         email: user.email,
-        role: user.Role?.name || "Unknown",
+        role: (user as any).Role?.name || "Unknown",
       },
     });
   } catch (error) {
