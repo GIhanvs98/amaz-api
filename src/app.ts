@@ -53,4 +53,16 @@ app.use("/api/admin/dashboard", dashboardRoutes);
 app.use("/api/booking", bookingRoutes);
 app.use("/api/reception", receptionRoutes);
 
+
+// Handle 404
+app.use((req, res) => {
+    res.status(404).json({ success: false, error: "Route not found: " + req.originalUrl });
+});
+
+// Global error handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error(err);
+    res.status(500).json({ success: false, error: "Internal server error", details: err.message });
+});
+
 export default app;
