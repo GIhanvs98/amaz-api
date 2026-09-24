@@ -22,14 +22,14 @@ export class BookingService {
           DoctorAttendance: {
             where: {
               date: { gte: today, lt: tomorrow },
-              status: "ARRIVED"
+              status: { in: ["ARRIVED", "LEFT"] }
             },
             take: 1
           }
         }
       });
 
-      return doctors.map(doc => {
+            return doctors.map(doc => {
         const todayAttendance = doc.DoctorAttendance[0];
         return {
           id: doc.id,
@@ -37,7 +37,9 @@ export class BookingService {
           specialty: doc.specialty,
           // Today's specific room overrides default room
           roomNumber: todayAttendance?.roomNumber || doc.roomNumber,
-          isArrived: !!todayAttendance
+          isArrived: todayAttendance?.status === "ARRIVED",
+          isLeft: todayAttendance?.status === "LEFT",
+          outTime: todayAttendance?.leftAt ? new Date(todayAttendance.leftAt).toISOString() : undefined
         };
       });
     });
@@ -295,7 +297,7 @@ export class BookingService {
 
       const token = await prisma.appointment.update({
         where: { id: tokenId },
-        data: { status: "ARRIVED" },
+        data: { status: { in: ["ARRIVED", "LEFT"] } },
         include: { Patient: true, User: true }
       });
 
