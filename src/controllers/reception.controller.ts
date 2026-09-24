@@ -306,3 +306,48 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+export const markDoctorOut = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { outTime } = req.body;
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const attendance = await prisma.doctorAttendance.findFirst({
+      where: {
+        doctorId: id as string,
+        date: { gte: today, lt: tomorrow }
+      }
+    });
+
+    if (!attendance) {
+      return res.status(404).json({ success: false, error: "No arrival record found for today" });
+    }
+
+    let leftAt = new Date();
+    if (outTime) {
+      // outTime is expected to be "HH:MM"
+      const [hours, minutes] = outTime.split(':');
+      leftAt = new Date();
+      leftAt.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+    }
+
+    const updated = await prisma.doctorAttendance.update({
+      where: { id: attendance.id },
+      data: {
+        status: "LEFT",
+        leftAt
+      }
+    });
+    
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    console.error("Error marking doctor out:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
