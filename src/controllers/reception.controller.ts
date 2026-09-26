@@ -355,3 +355,49 @@ export const markDoctorOut = async (req: Request, res: Response) => {
   }
 };
 
+
+
+export const updateShiftPeriod = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { startTime, endTime } = req.body;
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const attendance = await prisma.doctorAttendance.findFirst({
+      where: {
+        doctorId: id as string,
+        date: { gte: today, lt: tomorrow }
+      }
+    });
+
+    let updated;
+    if (attendance) {
+      updated = await prisma.doctorAttendance.update({
+        where: { id: attendance.id },
+        data: {
+          expectedStartTime: startTime !== undefined ? startTime : attendance.expectedStartTime,
+          expectedEndTime: endTime !== undefined ? endTime : attendance.expectedEndTime
+        }
+      });
+    } else {
+      updated = await prisma.doctorAttendance.create({
+        data: {
+          doctorId: id as string,
+          date: today,
+          status: "SCHEDULED",
+          expectedStartTime: startTime || null,
+          expectedEndTime: endTime || null
+        }
+      });
+    }
+    
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    console.error("Error updating shift period:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
