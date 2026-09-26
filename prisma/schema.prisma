@@ -384,6 +384,8 @@ model DoctorAttendance {
   date        DateTime @default(now())
   status      String   @default("SCHEDULED") // SCHEDULED, ARRIVED, IN_CONSULTATION, ON_BREAK, LEFT
   roomNumber  String?
+  expectedStartTime String?
+  expectedEndTime   String?
   arrivedAt   DateTime?
   leftAt      DateTime?
   doctor      User     @relation(fields: [doctorId], references: [id], onDelete: Cascade)

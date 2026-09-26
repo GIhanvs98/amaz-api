@@ -263,7 +263,7 @@ export const generateToken = async (req: Request, res: Response) => {
 export const markDoctorArrived = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { roomNumber } = req.body;
+    const { roomNumber, startTime, endTime } = req.body;
     
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -285,7 +285,9 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
         data: {
           status: "ARRIVED",
           roomNumber: roomNumber || null,
-          arrivedAt: attendance.arrivedAt || new Date()
+          arrivedAt: attendance.arrivedAt || new Date(),
+          expectedStartTime: startTime || attendance.expectedStartTime,
+          expectedEndTime: endTime || attendance.expectedEndTime
         }
       });
     } else {
@@ -295,7 +297,9 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
           date: today,
           status: "ARRIVED",
           roomNumber: roomNumber || null,
-          arrivedAt: new Date()
+          arrivedAt: new Date(),
+          expectedStartTime: startTime || null,
+          expectedEndTime: endTime || null
         }
       });
     }

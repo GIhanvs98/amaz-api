@@ -29,7 +29,7 @@ export class BookingService {
         }
       });
 
-            return doctors.map(doc => {
+                  return doctors.map(doc => {
         const todayAttendance = doc.DoctorAttendance[0];
         return {
           id: doc.id,
@@ -37,6 +37,8 @@ export class BookingService {
           specialty: doc.specialty,
           // Today's specific room overrides default room
           roomNumber: todayAttendance?.roomNumber || doc.roomNumber,
+          expectedStartTime: todayAttendance?.expectedStartTime,
+          expectedEndTime: todayAttendance?.expectedEndTime,
           isArrived: todayAttendance?.status === "ARRIVED",
           isLeft: todayAttendance?.status === "LEFT",
           outTime: todayAttendance?.leftAt ? new Date(todayAttendance.leftAt).toISOString() : undefined
