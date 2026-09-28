@@ -264,6 +264,11 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { roomNumber, startTime, endTime } = req.body;
+
+    if (!roomNumber || roomNumber.trim() === "") {
+      return res.status(400).json({ success: false, error: "Room number is mandatory" });
+    }
+
     
     const today = new Date();
     today.setHours(0, 0, 0, 0);
