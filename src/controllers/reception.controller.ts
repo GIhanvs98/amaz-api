@@ -167,7 +167,7 @@ export const generateToken = async (req: Request, res: Response) => {
     
     let labTestsDetails: any[] = [];
     if (hasLab) {
-      labTestsDetails = await prisma.labTestCatalog.findMany({
+      labTestsDetails = await prisma.labTest.findMany({
         where: { id: { in: testIds } }
       });
     }
