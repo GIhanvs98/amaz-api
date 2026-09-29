@@ -158,6 +158,23 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const hasConsultation = !!doctorId;
     const hasLab = Array.isArray(testIds) && testIds.length > 0;
+
+    // --- Billing Logic ---
+    let doctorDetails = null;
+    if (doctorId) {
+      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId } });
+    }
+    
+    let labTestsDetails: any[] = [];
+    if (hasLab) {
+      labTestsDetails = await prisma.labTestCatalog.findMany({
+        where: { id: { in: testIds } }
+      });
+    }
+
+    const isNonOPD = doctorDetails && doctorDetails.specialty && doctorDetails.specialty !== "General" && doctorDetails.specialty.toUpperCase() !== "OPD";
+    const needsInvoice = isNonOPD || hasLab;
+
     
     let department = "CONSULTATION";
     if (hasConsultation && hasLab) {
@@ -200,6 +217,56 @@ export const generateToken = async (req: Request, res: Response) => {
     });
 
     const tokenDisplay = token.tokenNumber;
+
+    let invoiceData = null;
+    if (needsInvoice) {
+      // Calculate line items
+      const lineItems = [];
+      let totalAmount = 0;
+
+      if (isNonOPD) {
+        // Hardcoded consultation fee for non-OPD
+        const fee = 2500;
+        lineItems.push({
+          department: "CONSULTATION",
+          description: `Specialist Consultation - ${doctorName}`,
+          quantity: 1,
+          unitPrice: fee
+        });
+        totalAmount += fee;
+      }
+
+      if (hasLab) {
+        labTestsDetails.forEach(test => {
+          lineItems.push({
+            department: "LAB",
+            referenceId: test.id,
+            description: `Lab Test: ${test.name}`,
+            quantity: 1,
+            unitPrice: test.price
+          });
+          totalAmount += test.price;
+        });
+      }
+
+      // Create Invoice
+      const invoice = await prisma.invoice.create({
+        data: {
+          visitId: token.id,
+          patientId: patient.id,
+          status: "DRAFT", // Or PAID if payment is taken immediately
+          subtotal: totalAmount,
+          totalAmount: totalAmount,
+          lineItems: {
+            create: lineItems
+          }
+        },
+        include: { lineItems: true }
+      });
+
+      invoiceData = invoice;
+    }
+
 
     if (hasLab) {
       // Import dynamically or use a service to avoid circular dependencies if any
@@ -251,7 +318,8 @@ export const generateToken = async (req: Request, res: Response) => {
         patientName: patient.fullName,
         doctorName: doctorName || (hasLab ? "Laboratory" : ""),
         department,
-        status: token.status
+        status: token.status,
+        invoice: invoiceData
       }
     });
   } catch (error) {
