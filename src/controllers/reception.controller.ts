@@ -231,7 +231,8 @@ export const generateToken = async (req: Request, res: Response) => {
           department: "CONSULTATION",
           description: `Specialist Consultation - ${doctorName}`,
           quantity: 1,
-          unitPrice: fee
+          unitPrice: fee,
+          total: fee
         });
         totalAmount += fee;
       }
@@ -243,7 +244,8 @@ export const generateToken = async (req: Request, res: Response) => {
             referenceId: test.id,
             description: `Lab Test: ${test.name}`,
             quantity: 1,
-            unitPrice: test.price
+            unitPrice: test.price,
+            total: test.price
           });
           totalAmount += test.price;
         });
