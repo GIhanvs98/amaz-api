@@ -163,3 +163,115 @@ export const updatePrescriptionStatus = async (req: Request, res: Response): Pro
     res.status(500).json({ error: "Failed to update prescription status" });
   }
 };
+
+
+export const getPrescriptionHistory = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { doctorId } = req.query;
+    const whereClause = doctorId ? { doctorId: String(doctorId) } : {};
+    
+    const prescriptions = await withRetry(() => (prisma as any).prescription.findMany({
+      where: whereClause,
+      include: {
+        items: true
+      },
+      orderBy: { createdAt: 'desc' as const }
+    }));
+    res.json(prescriptions);
+  } catch (error) {
+    console.error("Error fetching prescription history:", error);
+    res.status(500).json({ error: "Failed to fetch prescription history" });
+  }
+};
+
+
+export const deletePrescription = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    
+    // First check if it exists and what its status is
+    const rx = await withRetry(() => (prisma as any).prescription.findUnique({
+      where: { id }
+    })) as any;
+    
+    if (!rx) {
+      res.status(404).json({ error: "Prescription not found" });
+      return;
+    }
+    
+    if (rx.status === "DISPENSED") {
+      res.status(400).json({ error: "Cannot delete a prescription that has already been dispensed." });
+      return;
+    }
+    
+    // Delete items first (or let cascade handle it, but explicit is safer)
+    await withRetry(async () => {
+      return await (prisma as any).$transaction([
+        (prisma as any).prescriptionItem.deleteMany({ where: { prescriptionId: id } }),
+        (prisma as any).prescription.delete({ where: { id } })
+      ]);
+    });
+    
+    res.json({ success: true, message: "Prescription deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting prescription:", error);
+    res.status(500).json({ error: "Failed to delete prescription" });
+  }
+};
+
+
+export const updatePrescription = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { diagnosis, clinicalNotes } = req.body;
+    
+    // Check if it exists and what its status is
+    const rx = await withRetry(() => (prisma as any).prescription.findUnique({
+      where: { id }
+    })) as any;
+    
+    if (!rx) {
+      res.status(404).json({ error: "Prescription not found" });
+      return;
+    }
+    
+    if (rx.status === "DISPENSED") {
+      res.status(400).json({ error: "Cannot edit a prescription that has already been dispensed." });
+      return;
+    }
+    
+    const { items } = req.body;
+    
+    const updatedRx = await withRetry(async () => {
+      return await (prisma as any).$transaction(async (tx: any) => {
+        // 1. Delete all existing items
+        await tx.prescriptionItem.deleteMany({ where: { prescriptionId: id } });
+        
+        // 2. Update the main prescription and recreate items
+        return await tx.prescription.update({
+          where: { id },
+          data: {
+            diagnosis,
+            clinicalNotes,
+            items: {
+              create: (items || []).map((item: any) => ({
+                medicineId: item.medicineId || null,
+                drugName: item.drugName,
+                dosage: item.dosage,
+                frequency: item.frequency,
+                duration: item.duration,
+                instructions: item.instructions
+              }))
+            }
+          },
+          include: { items: true }
+        });
+      });
+    });
+    
+    res.json(updatedRx);
+  } catch (error) {
+    console.error("Error updating prescription:", error);
+    res.status(500).json({ error: "Failed to update prescription" });
+  }
+};
