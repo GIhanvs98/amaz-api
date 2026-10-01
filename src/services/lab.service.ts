@@ -127,10 +127,10 @@ export class LabService {
    */
   async submitResults(requestId: string, results: { biomarker: string; value: string; flag?: string; referenceRange?: string; isOutOfRange: boolean; notes?: string }[], reportUrl?: string) {
     return withRetry(() => prisma.$transaction(async (tx) => {
-      // 1. Mark request as completed
+      // 1. Mark request as SAVED (has results but not finalized/published)
       const request = await tx.labRequest.update({
         where: { id: requestId },
-        data: { status: "COMPLETED", reportUrl: reportUrl || null }
+        data: { status: "SAVED", reportUrl: reportUrl || null }
       });
 
       // 2. Delete old results if re-submitting
@@ -233,7 +233,7 @@ export class LabService {
       today.setHours(0, 0, 0, 0);
 
       const pendingCount = await prisma.labRequest.count({
-        where: { status: "PENDING" }
+        where: { status: { in: ["PENDING", "SAVED"] } }
       });
 
       const publishedCount = await prisma.labRequest.count({
@@ -253,7 +253,7 @@ export class LabService {
       });
 
       const urgentPending = await prisma.labRequest.findMany({
-        where: { status: "PENDING", priority: "URGENT" },
+        where: { status: { in: ["PENDING", "SAVED"] }, priority: "URGENT" },
         include: { 
           items: { include: { LabTest: true } },
           Patient: true,
@@ -273,6 +273,7 @@ export class LabService {
           doctor: req.Visit?.User?.fullName || "Unknown Doctor",
           tests: req.items.map(i => i.LabTest?.name),
           priority: req.priority,
+          status: req.status,
           requestedAt: req.requestedAt
         }))
       };
