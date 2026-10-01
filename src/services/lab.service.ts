@@ -334,6 +334,9 @@ export class LabService {
         where: { labTestId: testId },
         orderBy: { orderIndex: 'asc' }
       });
+    }, {
+      maxWait: 5000,
+      timeout: 15000
     }));
   }
 
