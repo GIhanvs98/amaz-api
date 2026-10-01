@@ -32,11 +32,22 @@ import userRoutes from "./routes/user.routes.js";
 import bookingRoutes from "./routes/booking.routes.js";
 import receptionRoutes from "./routes/reception.routes.js";
 
-app.get("/health", (_req, res) => {
-    res.json({
-        success: true,
-        message: "Amaz Hospital API is running",
-    });
+import { prisma } from "./lib/prisma.js";
+
+app.get("/health", async (_req, res) => {
+    try {
+        await prisma.$queryRaw`SELECT 1`;
+        res.json({
+            success: true,
+            message: "Amaz Hospital API and Database are running",
+        });
+    } catch (error) {
+        console.error("Health check failed:", error);
+        res.status(503).json({
+            success: false,
+            message: "Database connection failed",
+        });
+    }
 });
 
 app.use("/api/pharmacy", pharmacyRoutes);
