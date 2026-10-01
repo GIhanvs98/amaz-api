@@ -158,6 +158,23 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const hasConsultation = !!doctorId;
     const hasLab = Array.isArray(testIds) && testIds.length > 0;
+
+    // --- Billing Logic ---
+    let doctorDetails = null;
+    if (doctorId) {
+      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId } });
+    }
+    
+    let labTestsDetails: any[] = [];
+    if (hasLab) {
+      labTestsDetails = await prisma.labTest.findMany({
+        where: { id: { in: testIds } }
+      });
+    }
+
+    const isNonOPD = doctorDetails && doctorDetails.specialty && doctorDetails.specialty !== "General" && doctorDetails.specialty.toUpperCase() !== "OPD";
+    const needsInvoice = isNonOPD || hasLab;
+
     
     let department = "CONSULTATION";
     if (hasConsultation && hasLab) {
@@ -200,6 +217,58 @@ export const generateToken = async (req: Request, res: Response) => {
     });
 
     const tokenDisplay = token.tokenNumber;
+
+    let invoiceData = null;
+    if (needsInvoice) {
+      // Calculate line items
+      const lineItems = [];
+      let totalAmount = 0;
+
+      if (isNonOPD) {
+        // Hardcoded consultation fee for non-OPD
+        const fee = 2500;
+        lineItems.push({
+          department: "CONSULTATION",
+          description: `Specialist Consultation - ${doctorName}`,
+          quantity: 1,
+          unitPrice: fee,
+          total: fee
+        });
+        totalAmount += fee;
+      }
+
+      if (hasLab) {
+        labTestsDetails.forEach(test => {
+          lineItems.push({
+            department: "LAB",
+            referenceId: test.id,
+            description: `Lab Test: ${test.name}`,
+            quantity: 1,
+            unitPrice: test.price,
+            total: test.price
+          });
+          totalAmount += test.price;
+        });
+      }
+
+      // Create Invoice
+      const invoice = await prisma.invoice.create({
+        data: {
+          visitId: token.id,
+          patientId: patient.id,
+          status: "DRAFT", // Or PAID if payment is taken immediately
+          subtotal: totalAmount,
+          totalAmount: totalAmount,
+          lineItems: {
+            create: lineItems
+          }
+        },
+        include: { lineItems: true }
+      });
+
+      invoiceData = invoice;
+    }
+
 
     if (hasLab) {
       // Import dynamically or use a service to avoid circular dependencies if any
@@ -251,7 +320,8 @@ export const generateToken = async (req: Request, res: Response) => {
         patientName: patient.fullName,
         doctorName: doctorName || (hasLab ? "Laboratory" : ""),
         department,
-        status: token.status
+        status: token.status,
+        invoice: invoiceData
       }
     });
   } catch (error) {
@@ -263,7 +333,12 @@ export const generateToken = async (req: Request, res: Response) => {
 export const markDoctorArrived = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { roomNumber } = req.body;
+    const { roomNumber, startTime, endTime } = req.body;
+
+    if (!roomNumber || roomNumber.trim() === "") {
+      return res.status(400).json({ success: false, error: "Room number is mandatory" });
+    }
+
     
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -285,7 +360,9 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
         data: {
           status: "ARRIVED",
           roomNumber: roomNumber || null,
-          arrivedAt: attendance.arrivedAt || new Date()
+          arrivedAt: attendance.arrivedAt || new Date(),
+          expectedStartTime: startTime || attendance.expectedStartTime,
+          expectedEndTime: endTime || attendance.expectedEndTime
         }
       });
     } else {
@@ -295,7 +372,9 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
           date: today,
           status: "ARRIVED",
           roomNumber: roomNumber || null,
-          arrivedAt: new Date()
+          arrivedAt: new Date(),
+          expectedStartTime: startTime || null,
+          expectedEndTime: endTime || null
         }
       });
     }
@@ -303,6 +382,97 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
     res.json({ success: true, data: attendance });
   } catch (error) {
     console.error("Error marking doctor arrived:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const markDoctorOut = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { outTime } = req.body;
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const attendance = await prisma.doctorAttendance.findFirst({
+      where: {
+        doctorId: id as string,
+        date: { gte: today, lt: tomorrow }
+      }
+    });
+
+    if (!attendance) {
+      return res.status(404).json({ success: false, error: "No arrival record found for today" });
+    }
+
+    let leftAt = new Date();
+    if (outTime) {
+      // outTime is expected to be "HH:MM"
+      const [hours, minutes] = outTime.split(':');
+      leftAt = new Date();
+      leftAt.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
+    }
+
+    const updated = await prisma.doctorAttendance.update({
+      where: { id: attendance.id },
+      data: {
+        status: "LEFT",
+        leftAt
+      }
+    });
+    
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    console.error("Error marking doctor out:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+
+export const updateShiftPeriod = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { startTime, endTime } = req.body;
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const attendance = await prisma.doctorAttendance.findFirst({
+      where: {
+        doctorId: id as string,
+        date: { gte: today, lt: tomorrow }
+      }
+    });
+
+    let updated;
+    if (attendance) {
+      updated = await prisma.doctorAttendance.update({
+        where: { id: attendance.id },
+        data: {
+          expectedStartTime: startTime !== undefined ? startTime : attendance.expectedStartTime,
+          expectedEndTime: endTime !== undefined ? endTime : attendance.expectedEndTime
+        }
+      });
+    } else {
+      updated = await prisma.doctorAttendance.create({
+        data: {
+          doctorId: id as string,
+          date: today,
+          status: "SCHEDULED",
+          expectedStartTime: startTime || null,
+          expectedEndTime: endTime || null
+        }
+      });
+    }
+    
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    console.error("Error updating shift period:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };

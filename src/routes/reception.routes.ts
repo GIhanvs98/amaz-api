@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived } from "../controllers/reception.controller.js";
+import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod } from "../controllers/reception.controller.js";
 
 const router = Router();
 
@@ -17,5 +17,11 @@ router.post("/token", generateToken);
 
 // POST /api/reception/doctors/:id/arrive
 router.post("/doctors/:id/arrive", markDoctorArrived);
+
+// POST /api/reception/doctors/:id/out
+router.post("/doctors/:id/out", markDoctorOut);
+
+// POST /api/reception/doctors/:id/shift
+router.post("/doctors/:id/shift", updateShiftPeriod);
 
 export default router;
