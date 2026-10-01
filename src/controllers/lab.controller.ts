@@ -121,6 +121,67 @@ export class LabController {
       res.status(500).json({ success: false, error: error.message });
     }
   }
+
+  async getBiomarkers(req: Request, res: Response) {
+    try {
+      const biomarkers = await labService.getBiomarkers(req.params.testId as string);
+      res.json({ success: true, data: biomarkers });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async updateBiomarkers(req: Request, res: Response) {
+    try {
+      const biomarkers = await labService.updateBiomarkers(req.params.testId as string, req.body.biomarkers);
+      res.json({ success: true, data: biomarkers });
+    } catch (error: any) {
+      res.status(400).json({ success: false, error: error.message });
+    }
+  }
+
+  async getRequestByToken(req: Request, res: Response) {
+    try {
+      const appointment = await labService.getRequestByToken(req.params.token as string);
+      res.json({ success: true, data: appointment });
+    } catch (error: any) {
+      res.status(404).json({ success: false, error: error.message });
+    }
+  }
+
+  async getReportByRef(req: Request, res: Response) {
+    try {
+      const report = await labService.getReportByRef(req.params.referenceNo as string);
+      res.json({ success: true, data: report });
+    } catch (error: any) {
+      res.status(404).json({ success: false, error: error.message });
+    }
+  }
+
+  async publishReport(req: Request, res: Response) {
+    try {
+      const requestId = req.params.requestId as string;
+      const { results, reportUrl, referenceNo, testProfile } = req.body;
+
+      if (!results || !Array.isArray(results)) {
+        return res.status(400).json({ error: 'Results array is required' });
+      }
+
+      const refNo = (referenceNo as string) || requestId.slice(0, 8).toUpperCase();
+
+      const result = await labService.publishReport(
+        requestId,
+        results,
+        (reportUrl as string) || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reports/${refNo}`,
+        refNo,
+        (testProfile as string) || 'Lab Report'
+      );
+
+      res.json(result);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  }
 }
 
 export const labController = new LabController();

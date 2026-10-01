@@ -133,6 +133,19 @@ model LabTest {
   updatedAt   DateTime @updatedAt
 
   items       LabRequestItem[]
+  biomarkers  LabTestBiomarker[]
+}
+
+model LabTestBiomarker {
+  id             String   @id @default(uuid())
+  labTestId      String
+  name           String   
+  category       String?  
+  unit           String?  
+  referenceRange String?  
+  orderIndex     Int      @default(0)
+  
+  LabTest        LabTest  @relation(fields: [labTestId], references: [id], onDelete: Cascade)
 }
 
 model LabRequest {
@@ -162,14 +175,16 @@ model LabRequestItem {
 }
 
 model LabResult {
-  id           String     @id @default(uuid())
-  requestId    String
-  biomarker    String
-  value        String
-  isOutOfRange Boolean    @default(false)
-  notes        String?
-  recordedAt   DateTime   @default(now())
-  request      LabRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  id             String     @id @default(uuid())
+  requestId      String
+  biomarker      String
+  value          String
+  flag           String?    // H, L, N
+  referenceRange String?
+  isOutOfRange   Boolean    @default(false)
+  notes          String?
+  recordedAt     DateTime   @default(now())
+  request        LabRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 }
 
 model Expense {

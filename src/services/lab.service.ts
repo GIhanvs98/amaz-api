@@ -1,5 +1,6 @@
 import { billingService } from './billing.service.js';
 import { prisma as sharedPrisma, withRetry } from '../lib/prisma.js';
+import { NotificationService } from './notification.service.js';
 
 // Use shared singleton to avoid multiple connection pools
 const prisma = sharedPrisma;
@@ -110,7 +111,7 @@ export class LabService {
       where: { status: "PENDING" },
       include: {
         items: {
-          include: { LabTest: true }
+          include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }
         },
         Patient: true,
         Visit: {
@@ -124,7 +125,7 @@ export class LabService {
   /**
    * Submit biomarker results for a specific request
    */
-  async submitResults(requestId: string, results: { biomarker: string; value: string; isOutOfRange: boolean; notes?: string }[], reportUrl?: string) {
+  async submitResults(requestId: string, results: { biomarker: string; value: string; flag?: string; referenceRange?: string; isOutOfRange: boolean; notes?: string }[], reportUrl?: string) {
     return withRetry(() => prisma.$transaction(async (tx) => {
       // 1. Mark request as completed
       const request = await tx.labRequest.update({
@@ -132,13 +133,18 @@ export class LabService {
         data: { status: "COMPLETED", reportUrl: reportUrl || null }
       });
 
-      // 2. Insert all results
+      // 2. Delete old results if re-submitting
+      await tx.labResult.deleteMany({ where: { requestId } });
+
+      // 3. Insert all results with flag and referenceRange
       const createdResults = await Promise.all(
         results.map(res => tx.labResult.create({
           data: {
-            requestId: requestId,
+            requestId,
             biomarker: res.biomarker,
             value: res.value,
+            flag: res.flag || 'N',
+            referenceRange: res.referenceRange || '',
             isOutOfRange: res.isOutOfRange,
             notes: res.notes
           }
@@ -150,6 +156,58 @@ export class LabService {
   }
 
   /**
+   * Publish a completed lab report: save results, set COMPLETED, store reportUrl, and fire SMS to patient.
+   */
+  async publishReport(
+    requestId: string,
+    results: { biomarker: string; value: string; flag?: string; referenceRange?: string; isOutOfRange: boolean; notes?: string }[],
+    reportUrl: string,
+    referenceNo: string,
+    testProfile: string
+  ) {
+    return withRetry(async () => {
+      // 1. Mark request as completed and store report URL
+      const labReq = await prisma.labRequest.update({
+        where: { id: requestId },
+        data: { status: 'COMPLETED', reportUrl },
+        include: { Patient: true }
+      });
+
+      // 2. Delete old results if re-publishing, then insert new
+      await prisma.labResult.deleteMany({ where: { requestId } });
+      await prisma.labResult.createMany({
+        data: results.map(r => ({
+          requestId,
+          biomarker: r.biomarker,
+          value: r.value,
+          flag: r.flag || 'N',
+          referenceRange: r.referenceRange || '',
+          isOutOfRange: r.isOutOfRange,
+          notes: r.notes
+        }))
+      });
+
+      // 3. Fire SMS — non-blocking (fire and forget)
+      const patient = labReq.Patient;
+      if (patient?.phone) {
+        NotificationService.sendTemplatedSMS(
+          patient.id,
+          patient.phone,
+          'LAB_REPORT_READY',
+          {
+            patientName: patient.fullName,
+            testProfile,
+            referenceNo,
+            reportLink: reportUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reports/${referenceNo}`
+          }
+        ).catch(console.error);
+      }
+
+      return { success: true, requestId, reportUrl };
+    });
+  }
+
+  /**
    * Get all completed (published) lab requests
    */
   async getPublishedReports() {
@@ -157,7 +215,7 @@ export class LabService {
       where: { status: "COMPLETED" },
       include: {
         items: {
-          include: { LabTest: true }
+          include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }
         },
         results: true,
         Patient: true
@@ -240,6 +298,105 @@ export class LabService {
         },
         orderBy: { createdAt: 'asc' }
       });
+    });
+  }
+
+  /**
+   * Get biomarkers for a specific test
+   */
+  async getBiomarkers(testId: string) {
+    return withRetry(() => prisma.labTestBiomarker.findMany({
+      where: { labTestId: testId },
+      orderBy: { orderIndex: 'asc' }
+    }));
+  }
+
+  /**
+   * Update biomarkers for a specific test
+   */
+  async updateBiomarkers(testId: string, biomarkers: { name: string; category?: string; unit?: string; referenceRange?: string; orderIndex: number }[]) {
+    return withRetry(() => prisma.$transaction(async (tx) => {
+      // Delete existing
+      await tx.labTestBiomarker.deleteMany({ where: { labTestId: testId } });
+      
+      // Create new
+      if (biomarkers.length > 0) {
+        await tx.labTestBiomarker.createMany({
+          data: biomarkers.map(b => ({
+            ...b,
+            labTestId: testId
+          }))
+        });
+      }
+      
+      return tx.labTestBiomarker.findMany({
+        where: { labTestId: testId },
+        orderBy: { orderIndex: 'asc' }
+      });
+    }));
+  }
+
+  /**
+   * Resolve a token to its patient and pending lab requests
+   */
+  async getRequestByToken(tokenNumber: string) {
+    return withRetry(async () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const appointment = await prisma.appointment.findFirst({
+        where: {
+          tokenNumber: tokenNumber,
+          appointmentDate: { gte: today },
+          status: { notIn: ["CANCELLED"] }
+        },
+        include: {
+          Patient: true,
+          LabRequests: {
+            where: { status: "PENDING" },
+            include: {
+              items: {
+                include: { LabTest: { include: { biomarkers: true } } }
+              }
+            }
+          }
+        }
+      });
+
+      if (!appointment) {
+        throw new Error("Token not found or expired today");
+      }
+      
+      return appointment;
+    });
+  }
+  /**
+   * Fetch a published report by its reference number (first 8 chars of requestId, uppercase)
+   */
+  async getReportByRef(referenceNo: string) {
+    return withRetry(async () => {
+      // referenceNo is first 8 chars of the UUID in uppercase
+      const report = await prisma.labRequest.findFirst({
+        where: {
+          id: { startsWith: referenceNo.toLowerCase() },
+          status: 'COMPLETED'
+        },
+        include: {
+          Patient: true,
+          results: { orderBy: { recordedAt: 'asc' } },
+          items: {
+            include: {
+              LabTest: {
+                include: { biomarkers: { orderBy: { orderIndex: 'asc' } } }
+              }
+            }
+          },
+          Visit: { include: { User: true } }
+        }
+      });
+
+      if (!report) throw new Error('Report not found or not yet published');
+      return report;
     });
   }
 }
