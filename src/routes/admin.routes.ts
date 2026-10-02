@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { getAdminMetrics, getStaff, createStaff, updateStaff, deleteStaff } from "../controllers/admin.controller.js";
+import departmentRoutes from "./department.routes.js";
 
 const router = Router();
 
@@ -9,5 +10,8 @@ router.get("/staff", getStaff);
 router.post("/staff", createStaff);
 router.put("/staff/:id", updateStaff);
 router.delete("/staff/:id", deleteStaff);
+
+// Departments
+router.use("/departments", departmentRoutes);
 
 export default router;

@@ -24,6 +24,16 @@ model Medicine {
   stockBatches      StockBatch[]
 }
 
+model Department {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  Users       User[]   // Doctors assigned to this department
+}
+
 model Supplier {
   id             String          @id @default(uuid())
   name           String
@@ -319,6 +329,9 @@ model User {
   specialty      String?
   title          String?
   roomNumber     String?
+  consultationFee Float?   @default(2500)
+  feeType        String    @default("POST") // UPFRONT or POST
+  departmentId   String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   Appointment    Appointment[]
@@ -326,6 +339,7 @@ model User {
   DoctorAttendance DoctorAttendance[]
   ActivityLog    ActivityLog[]
   Role           Role     @relation(fields: [roleId], references: [id])
+  Department     Department? @relation(fields: [departmentId], references: [id])
 }
 
 model DoctorSchedule {

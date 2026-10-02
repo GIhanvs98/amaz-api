@@ -232,12 +232,11 @@ export const generateToken = async (req: Request, res: Response) => {
       const lineItems = [];
       let totalAmount = 0;
 
-      if (isNonOPD) {
-        // Hardcoded consultation fee for non-OPD
-        const fee = 2500;
+      if (isNonOPD && doctorDetails?.feeType === "UPFRONT") {
+        const fee = doctorDetails.consultationFee || 2500;
         lineItems.push({
           department: "CONSULTATION",
-          description: `Specialist Consultation - ${doctorName}`,
+          description: `Specialist Consultation (Upfront) - ${doctorName}`,
           quantity: 1,
           unitPrice: fee,
           total: fee

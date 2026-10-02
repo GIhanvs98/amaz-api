@@ -104,14 +104,21 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
         });
 
         if (visitId) {
-          await billingService.addCharge({
-            visitId,
-            patientId,
-            department: "CONSULTATION",
-            description: "Doctor Consultation Fee",
-            quantity: 1,
-            unitPrice: 2500 // Assuming flat fee for now
-          }, tx);
+          const doctor = await tx.user.findUnique({
+            where: { id: doctorId },
+            select: { consultationFee: true, feeType: true }
+          });
+          
+          if (doctor?.feeType === "POST" || !doctor?.feeType) {
+            await billingService.addCharge({
+              visitId,
+              patientId,
+              department: "CONSULTATION",
+              description: "Doctor Consultation Fee (Post)",
+              quantity: 1,
+              unitPrice: doctor?.consultationFee ?? 2500
+            }, tx);
+          }
         }
 
         return rx;
