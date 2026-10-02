@@ -406,6 +406,7 @@ model DoctorAttendance {
   expectedEndTime   String?
   arrivedAt   DateTime?
   leftAt      DateTime?
+  assignedNurseId String?
   doctor      User     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
 }
 

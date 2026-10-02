@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { createPrescription, getPendingPrescriptions, markPrescriptionDispensed, updatePrescriptionStatus, getPrescriptionHistory, deletePrescription, updatePrescription } from "../controllers/prescription.controller.js";
+import { createPrescription, getPendingPrescriptions, markPrescriptionDispensed, updatePrescriptionStatus, getPrescriptionHistory, deletePrescription, updatePrescription, getPrescriptionById } from "../controllers/prescription.controller.js";
 
 const router = Router();
 
@@ -8,6 +8,7 @@ router.get("/", getPrescriptionHistory);
 router.get("/pending", getPendingPrescriptions);
 router.patch("/:id/status", updatePrescriptionStatus);
 router.post("/:id/dispense", markPrescriptionDispensed);
+router.get("/:id", getPrescriptionById);
 
 export default router;
 

@@ -134,7 +134,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
 
 export const generateToken = async (req: Request, res: Response) => {
   try {
-    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds } = req.body;
+    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds, customLabPrices } = req.body;
 
     // Find or create patient
     let patient;
@@ -239,15 +239,19 @@ export const generateToken = async (req: Request, res: Response) => {
 
       if (hasLab) {
         labTestsDetails.forEach(test => {
+          const finalPrice = customLabPrices && customLabPrices[test.id] !== undefined 
+            ? Number(customLabPrices[test.id]) 
+            : test.price;
+            
           lineItems.push({
             department: "LAB",
             referenceId: test.id,
             description: `Lab Test: ${test.name}`,
             quantity: 1,
-            unitPrice: test.price,
-            total: test.price
+            unitPrice: finalPrice,
+            total: finalPrice
           });
-          totalAmount += test.price;
+          totalAmount += finalPrice;
         });
       }
 
@@ -309,6 +313,11 @@ export const generateToken = async (req: Request, res: Response) => {
       } catch (e) {
         console.error("Failed to broadcast availability update:", e);
       }
+    }
+
+    // Broadcast token update for frontdesk arrivals page
+    if (websocketService.getIO()) {
+      websocketService.getIO().emit("TOKEN_STATUS_UPDATED", { tokenId: token.id });
     }
 
     res.status(201).json({

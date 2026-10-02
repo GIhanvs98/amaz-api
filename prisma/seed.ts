@@ -27,7 +27,7 @@ async function main() {
     );
   }
 
-  const roleNames = ['Superadmin', 'Admin', 'Receptionist', 'Doctor', 'Pharmacist', 'LabTech', 'Cashier'];
+  const roleNames = ['Superadmin', 'Admin', 'Receptionist', 'Doctor', 'Pharmacist', 'LabTech', 'Cashier', 'Nurse'];
   const roles = [];
   for (const name of roleNames) {
     roles.push(
@@ -52,6 +52,7 @@ async function main() {
     { email: 'labtech@amaz.com', fullName: 'Charlie Lab', role: 'LabTech' },
     { email: 'cashier@amaz.com', fullName: 'Diana Cashier', role: 'Cashier' },
     { email: 'doctor2@amaz.com', fullName: 'Dr. Jane Smith', role: 'Doctor', specialty: 'Cardiology' },
+    { email: 'nurse@amaz.com', fullName: 'Nancy Nurse', role: 'Nurse' },
   ];
 
   const users = [];
@@ -60,7 +61,9 @@ async function main() {
     users.push(
       await prisma.user.upsert({
         where: { email: u.email },
-        update: {},
+        update: {
+          roleId: role!.id
+        },
         create: {
           email: u.email,
           fullName: u.fullName,

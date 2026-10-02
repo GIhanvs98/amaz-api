@@ -18,6 +18,60 @@ const withRetry = async <T>(operation: () => Promise<T>, retries = 3, delay = 10
   }
 };
 
+export const getPrescriptionById = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const prescription = await prisma.prescription.findUnique({
+      where: { id },
+      include: {
+        patient: { select: { fullName: true, phone: true } },
+        doctor: { select: { fullName: true } },
+        items: {
+          include: {
+            medicine: {
+              include: { stockBatches: { orderBy: { expiryDate: 'asc' }, take: 1 } }
+            }
+          }
+        }
+      }
+    });
+
+    if (!prescription) {
+      return res.status(404).json({ success: false, error: "Prescription not found" });
+    }
+
+    // Format like getPendingPrescriptions does
+    const formatted = {
+      id: prescription.id,
+      patientName: prescription.patient.fullName,
+      patientPhone: prescription.patient.phone,
+      doctorName: prescription.doctor.fullName,
+      status: prescription.status,
+      createdAt: prescription.createdAt,
+      items: prescription.items.map(i => ({
+        id: i.id,
+        drugName: i.drugName,
+        dosage: i.dosage,
+        frequency: i.frequency,
+        duration: i.duration,
+        instructions: i.instructions,
+        dispenseQty: i.dispenseQty,
+        medicineId: i.medicineId,
+        medicine: i.medicine ? {
+          id: i.medicine.id,
+          name: i.medicine.name,
+          stockBatches: i.medicine.stockBatches
+        } : null
+      }))
+    };
+
+    res.json(formatted);
+  } catch (error: any) {
+    console.error("Error fetching prescription:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export const createPrescription = async (req: Request, res: Response): Promise<void> => {
   try {
     const { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items } = req.body;
