@@ -222,7 +222,7 @@ export const generateToken = async (req: Request, res: Response) => {
       department = "LAB";
     }
 
-    // Generate Token Number via Transaction
+    // Generate Token Number robustly to prevent duplication
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
@@ -230,30 +230,75 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const refNo = Math.floor(10000000 + Math.random() * 90000000).toString(); 
 
-    const token = await prisma.$transaction(async (tx) => {
-      const tokenCount = await tx.appointment.count({
+    let token = null;
+    let attempts = 0;
+    
+    // Get the baseline token number to start from
+    const lastToken = await prisma.appointment.findFirst({
+      where: {
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        department,
+        doctorId: doctorId || null
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    let nextTokenInt = 1;
+    if (lastToken && !isNaN(parseInt(lastToken.tokenNumber))) {
+      nextTokenInt = parseInt(lastToken.tokenNumber) + 1;
+    } else {
+      const count = await prisma.appointment.count({
         where: {
           appointmentDate: { gte: startOfDay, lte: endOfDay },
-          department
-        }
-      });
-
-      const queueNumber = (tokenCount + 1).toString().padStart(3, "0");
-      const prefix = department === "LAB" ? "LAB-" : (department === "MULTI" ? "MLT-" : "");
-      const tokenDisplay = `${prefix}${queueNumber}`;
-
-      return await tx.appointment.create({
-        data: {
-          tokenNumber: tokenDisplay,
-          patientId: patient!.id,
-          doctorId: doctorId || null,
           department,
-          status: department === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-          bookingType: "WALK_IN",
-          appointmentDate: new Date()
+          doctorId: doctorId || null
         }
       });
-    });
+      nextTokenInt = count + 1;
+    }
+
+    while (!token && attempts < 20) {
+      const tokenDisplay = nextTokenInt.toString().padStart(2, "0");
+      
+      // Double check existence (crucial for concurrency)
+      const exists = await prisma.appointment.findFirst({
+        where: {
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          department,
+          doctorId: doctorId || null,
+          tokenNumber: tokenDisplay
+        }
+      });
+
+      if (exists) {
+        nextTokenInt++;
+        attempts++;
+        continue;
+      }
+
+      try {
+        token = await prisma.appointment.create({
+          data: {
+            tokenNumber: tokenDisplay,
+            patientId: patient!.id,
+            doctorId: doctorId || null,
+            department,
+            status: department === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+            bookingType: "WALK_IN",
+            appointmentDate: new Date(),
+            bookingReference: refNo
+          }
+        });
+      } catch (e: any) {
+        // If unique constraint violation or another concurrency issue
+        nextTokenInt++;
+        attempts++;
+      }
+    }
+
+    if (!token) {
+      throw new Error("System under high load: Unable to generate a unique token. Please try again.");
+    }
 
     const tokenDisplay = token.tokenNumber;
 

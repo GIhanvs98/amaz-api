@@ -31,6 +31,10 @@ export class PharmacyController {
         return res.status(400).json({ error: "Missing required fields: name, category, or unit." });
       }
       
+      if (barcode && !/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be strictly 10 digits" });
+      }
+      
       const isMedical = !itemType || itemType === "MEDICINE";
       if (isMedical && !form) {
         return res.status(400).json({ error: "Medical items require a form (e.g., Tablet)." });

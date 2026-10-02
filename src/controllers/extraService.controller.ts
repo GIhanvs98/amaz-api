@@ -19,6 +19,11 @@ export const extraServiceController = {
   createService: async (req: Request, res: Response) => {
     try {
       const { title, description, price, barcode } = req.body;
+      
+      if (!/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be strictly 10 digits" });
+      }
+
       const service = await prisma.extraService.create({
         data: {
           title,
@@ -42,6 +47,10 @@ export const extraServiceController = {
       const id = req.params.id as string;
       const { title, description, price, barcode } = req.body;
       
+      if (barcode && !/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be strictly 10 digits" });
+      }
+
       const service = await prisma.extraService.update({
         where: { id },
         data: {
