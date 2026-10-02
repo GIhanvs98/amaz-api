@@ -165,7 +165,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
 
 export const generateToken = async (req: Request, res: Response) => {
   try {
-    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds, customLabPrices } = req.body;
+    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds, customLabPrices, serviceIds, customServicePrices } = req.body;
 
     // Find or create patient
     let patient;
@@ -189,6 +189,7 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const hasConsultation = !!doctorId;
     const hasLab = Array.isArray(testIds) && testIds.length > 0;
+    const hasService = Array.isArray(serviceIds) && serviceIds.length > 0;
 
     // --- Billing Logic ---
     let doctorDetails = null;
@@ -203,8 +204,15 @@ export const generateToken = async (req: Request, res: Response) => {
       });
     }
 
+    let extraServicesDetails: any[] = [];
+    if (hasService) {
+      extraServicesDetails = await prisma.extraService.findMany({
+        where: { id: { in: serviceIds } }
+      });
+    }
+
     const isNonOPD = doctorDetails && doctorDetails.specialty && doctorDetails.specialty !== "General" && doctorDetails.specialty.toUpperCase() !== "OPD";
-    const needsInvoice = isNonOPD || hasLab;
+    const needsInvoice = isNonOPD || hasLab || hasService;
 
     
     let department = "CONSULTATION";
@@ -277,6 +285,24 @@ export const generateToken = async (req: Request, res: Response) => {
             department: "LAB",
             referenceId: test.id,
             description: `Lab Test: ${test.name}`,
+            quantity: 1,
+            unitPrice: finalPrice,
+            total: finalPrice
+          });
+          totalAmount += finalPrice;
+        });
+      }
+
+      if (hasService) {
+        extraServicesDetails.forEach(svc => {
+          const finalPrice = customServicePrices && customServicePrices[svc.id] !== undefined 
+            ? Number(customServicePrices[svc.id]) 
+            : svc.price;
+            
+          lineItems.push({
+            department: "OTHER",
+            referenceId: svc.id,
+            description: `Extra Service: ${svc.title}`,
             quantity: 1,
             unitPrice: finalPrice,
             total: finalPrice

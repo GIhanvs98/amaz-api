@@ -436,3 +436,14 @@ model ActivityLog {
   createdAt   DateTime @default(now())
 }
 
+model ExtraService {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  price       Float
+  barcode     String   @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
