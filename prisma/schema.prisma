@@ -139,6 +139,7 @@ model LabTest {
   price       Float
   category    String?
   sampleType  String?
+  roomNumber  String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -442,6 +443,7 @@ model ExtraService {
   description String?
   price       Float
   barcode     String   @unique
+  roomNumber  String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

@@ -288,15 +288,17 @@ export const generateToken = async (req: Request, res: Response) => {
       return token;
     };
 
-    const tokensToGenerate: { dept: string, docId: string | null, name: string }[] = [];
+    const tokensToGenerate: { dept: string, docId: string | null, name: string, roomNumber: string | null }[] = [];
     if (hasConsultation) {
-      tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician" });
+      tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician", roomNumber: doctorDetails?.roomNumber || null });
     }
     if (hasLab) {
-      tokensToGenerate.push({ dept: "LAB", docId: null, name: "Laboratory" });
+      const firstLabRoom = labTestsDetails.find((t: any) => t.roomNumber)?.roomNumber || null;
+      tokensToGenerate.push({ dept: "LAB", docId: null, name: "Laboratory", roomNumber: firstLabRoom });
     }
     if (hasService) {
-      tokensToGenerate.push({ dept: "EXTRA_SERVICE", docId: null, name: "Extra Services" });
+      const firstServiceRoom = extraServicesDetails.find((s: any) => s.roomNumber)?.roomNumber || null;
+      tokensToGenerate.push({ dept: "EXTRA_SERVICE", docId: null, name: "Extra Services", roomNumber: firstServiceRoom });
     }
 
     if (tokensToGenerate.length === 0) {
@@ -314,7 +316,8 @@ export const generateToken = async (req: Request, res: Response) => {
         status: token.status,
         doctorName: t.name,
         patientName: patient.fullName,
-        appointmentDate: token.appointmentDate
+        appointmentDate: token.appointmentDate,
+        roomNumber: t.roomNumber
       });
     }
 

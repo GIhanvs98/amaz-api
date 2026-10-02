@@ -18,7 +18,7 @@ export const extraServiceController = {
 
   createService: async (req: Request, res: Response) => {
     try {
-      const { title, description, price, barcode } = req.body;
+      const { title, description, price, barcode, roomNumber } = req.body;
       
       if (!/^\d{10}$/.test(barcode)) {
         return res.status(400).json({ error: "Barcode must be strictly 10 digits" });
@@ -29,7 +29,8 @@ export const extraServiceController = {
           title,
           description,
           price: parseFloat(price),
-          barcode
+          barcode,
+          roomNumber
         }
       });
       res.status(201).json(service);
@@ -45,7 +46,7 @@ export const extraServiceController = {
   updateService: async (req: Request, res: Response) => {
     try {
       const id = req.params.id as string;
-      const { title, description, price, barcode } = req.body;
+      const { title, description, price, barcode, roomNumber } = req.body;
       
       if (barcode && !/^\d{10}$/.test(barcode)) {
         return res.status(400).json({ error: "Barcode must be strictly 10 digits" });
@@ -57,7 +58,8 @@ export const extraServiceController = {
           title,
           description,
           price: price !== undefined ? parseFloat(price) : undefined,
-          barcode
+          barcode,
+          roomNumber
         }
       });
       res.json(service);

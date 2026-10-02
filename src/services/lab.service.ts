@@ -25,6 +25,7 @@ export class LabService {
     category: string;
     price: number;
     sampleType?: string;
+    roomNumber?: string;
   }) {
     return withRetry(() => prisma.labTest.create({ data }));
   }
