@@ -18,10 +18,10 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
 
     if (patient) {
       // Optionally update details if they changed
-      if (patient.fullName !== fullName || patient.age !== age) {
+      if (patient.fullName !== fullName || patient.ageFallback !== age) {
         patient = await prisma.patient.update({
           where: { id: patient.id },
-          data: { fullName, age: age ? parseInt(age.toString()) : null },
+          data: { fullName, ageFallback: age ? parseInt(age.toString()) : null },
         });
       }
     } else {
@@ -29,7 +29,7 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
         data: {
           fullName,
           phone,
-          age: age ? parseInt(age.toString()) : null,
+          ageFallback: age ? parseInt(age.toString()) : null,
         },
       });
     }
@@ -73,7 +73,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
     }
 
     const patient = await prisma.patient.findUnique({
-      where: { id },
+      where: { id: id as string },
     });
 
     if (!patient) {

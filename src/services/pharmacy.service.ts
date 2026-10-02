@@ -1,4 +1,4 @@
-import { prisma, withRetry } from '../lib/prisma';
+import { prisma, withRetry } from "../lib/prisma.js";
 
 export class PharmacyService {
   async getAllMedicines(barcode?: string) {

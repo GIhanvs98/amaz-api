@@ -93,6 +93,16 @@ export class BillingService {
   }
 
   /**
+   * Fetch all invoices
+   */
+  async getAllInvoices() {
+    return prisma.invoice.findMany({
+      include: { lineItems: true, payments: true },
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
+  /**
    * Pay an invoice
    */
   async payInvoice(invoiceId: string, amount: number, method: string, tokenId?: string) {

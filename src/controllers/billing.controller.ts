@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { billingService } from '../services/billing.service';
+import { billingService } from "../services/billing.service.js";
 
 export class BillingController {
   async charge(req: Request, res: Response) {

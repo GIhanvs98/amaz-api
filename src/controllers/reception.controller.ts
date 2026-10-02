@@ -27,7 +27,7 @@ export const getPatients = async (req: Request, res: Response) => {
     });
     
     res.json({ success: true, data: patients });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error fetching patients:", error);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -105,7 +105,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
   try {
     const { id } = req.params;
     const patient = await prisma.patient.findUnique({
-      where: { id }
+      where: { id: id as string }
     });
     
     if (!patient) {
@@ -126,7 +126,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       medicalHistory: [],
       labResults: []
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error fetching patient:", error);
     res.status(500).json({ error: error.message });
   }
@@ -324,7 +324,7 @@ export const generateToken = async (req: Request, res: Response) => {
         invoice: invoiceData
       }
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error generating token:", error);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -380,7 +380,7 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
     }
     
     res.json({ success: true, data: attendance });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error marking doctor arrived:", error);
     res.status(500).json({ success: false, error: error.message });
   }

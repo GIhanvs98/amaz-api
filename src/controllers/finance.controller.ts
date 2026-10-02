@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { financeService } from '../services/finance.service';
+import { financeService } from "../services/finance.service.js";
 
 class FinanceController {
   async getDashboardData(req: Request, res: Response) {

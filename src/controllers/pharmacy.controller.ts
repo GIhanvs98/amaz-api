@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { pharmacyService } from '../services/pharmacy.service';
+import { pharmacyService } from "../services/pharmacy.service.js";
 import { billingService } from '../services/billing.service.js';
 import { websocketService } from '../services/websocket.service.js';
 

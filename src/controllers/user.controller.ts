@@ -14,7 +14,7 @@ export const getUsersByRole = async (req: Request, res: Response): Promise<void>
 
     const users = await prisma.user.findMany({
       where: {
-        role: {
+        Role: {
           name: role as string,
         },
       },
@@ -22,7 +22,7 @@ export const getUsersByRole = async (req: Request, res: Response): Promise<void>
         id: true,
         fullName: true,
         email: true,
-        role: {
+        Role: {
           select: { name: true }
         }
       },
@@ -35,7 +35,7 @@ export const getUsersByRole = async (req: Request, res: Response): Promise<void>
   }
 };
 
-import { UserService } from '../services/user.service';
+import { UserService } from "../services/user.service.js";
 const userService = new UserService();
 
 export const getProfile = async (req: Request, res: Response) => {
