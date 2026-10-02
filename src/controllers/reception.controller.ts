@@ -101,6 +101,29 @@ export const getMetrics = async (req: Request, res: Response) => {
   }
 };
 
+export const getActiveDoctors = async (req: Request, res: Response) => {
+  try {
+    const doctors = await prisma.user.findMany({
+      where: {
+        Role: { name: 'DOCTOR' },
+        departmentId: { not: null } // Only doctors actively assigned to a department
+      },
+      select: {
+        id: true,
+        fullName: true,
+        specialty: true,
+        consultationFee: true,
+        feeType: true
+      }
+    });
+
+    res.json({ success: true, data: doctors });
+  } catch (error: any) {
+    console.error("Error fetching active doctors:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export const getPatientById = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;

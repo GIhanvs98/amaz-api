@@ -13,7 +13,8 @@ model Medicine {
   name              String
   genericName       String?
   category          String
-  form              String
+  itemType          String              @default("MEDICINE") // MEDICINE, CONSUMABLE, EQUIPMENT
+  form              String?
   unit              String
   reorderLevel      Int                 @default(50)
   createdAt         DateTime            @default(now())

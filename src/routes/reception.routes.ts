@@ -1,11 +1,14 @@
 import { Router } from "express";
-import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod } from "../controllers/reception.controller.js";
+import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod, getActiveDoctors } from "../controllers/reception.controller.js";
 import { updatePatient } from "../controllers/patient.controller.js";
 
 const router = Router();
 
 // GET /api/reception/patients
 router.get("/patients", getPatients);
+
+// GET /api/reception/doctors
+router.get("/doctors", getActiveDoctors);
 
 // GET /api/reception/metrics
 router.get("/metrics", getMetrics);

@@ -14,7 +14,7 @@ export class PharmacyService {
     }));
   }
 
-  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; form: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number }) {
+  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; itemType?: string; form?: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number }) {
     return withRetry(() => prisma.$transaction(async (tx) => {
       const medicine = await tx.medicine.create({
         data: {
@@ -22,6 +22,7 @@ export class PharmacyService {
           barcode: data.barcode,
           genericName: data.genericName,
           category: data.category,
+          itemType: data.itemType || "MEDICINE",
           form: data.form,
           unit: data.unit,
           reorderLevel: data.reorderLevel,
