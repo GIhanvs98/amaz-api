@@ -15,27 +15,28 @@ export class BillingService {
     description: string;
     quantity: number;
     unitPrice: number;
-  }) {
+  }, tx?: any) {
+    const db = tx || prisma;
     const total = data.quantity * data.unitPrice;
 
     // 1. Try to find an open DRAFT invoice for this visit (or patient if walk-in)
     let invoice = null;
     
     if (data.invoiceId) {
-      invoice = await prisma.invoice.findUnique({ where: { id: data.invoiceId } });
+      invoice = await db.invoice.findUnique({ where: { id: data.invoiceId } });
     } else if (data.visitId) {
-      invoice = await prisma.invoice.findFirst({
+      invoice = await db.invoice.findFirst({
         where: { visitId: data.visitId, status: "DRAFT" }
       });
     } else if (data.patientId) {
-       invoice = await prisma.invoice.findFirst({
+       invoice = await db.invoice.findFirst({
         where: { patientId: data.patientId, status: "DRAFT" }
       });
     }
 
     // 2. If no open invoice, create one
     if (!invoice) {
-      invoice = await prisma.invoice.create({
+      invoice = await db.invoice.create({
         data: {
           visitId: data.visitId,
           patientId: data.patientId,
@@ -47,7 +48,7 @@ export class BillingService {
     }
 
     // 3. Add the line item
-    const lineItem = await prisma.invoiceLineItem.create({
+    const lineItem = await db.invoiceLineItem.create({
       data: {
         invoiceId: invoice.id,
         department: data.department,
@@ -60,7 +61,7 @@ export class BillingService {
     });
 
     // 4. Update invoice totals
-    const updatedInvoice = await prisma.invoice.update({
+    const updatedInvoice = await db.invoice.update({
       where: { id: invoice.id },
       data: {
         subtotal: { increment: total },
@@ -121,11 +122,90 @@ export class BillingService {
       }
     });
 
-    return prisma.invoice.update({
+    const updatedInvoice = await prisma.invoice.update({
       where: { id: invoiceId },
       data: { status: "PAID" },
       include: { lineItems: true, payments: true }
     });
+
+    if (updatedInvoice.visitId) {
+      await prisma.appointment.updateMany({
+        where: { id: updatedInvoice.visitId, status: { not: "COMPLETED" } },
+        data: { status: "COMPLETED", completedAt: new Date() }
+      });
+    }
+
+    return updatedInvoice;
+  }
+
+  async getCashierMetrics() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [pendingInvoices, completedToday, todayRevenueObj, recentPayments, pendingDrafts] = await Promise.all([
+      prisma.invoice.aggregate({
+        where: { status: 'DRAFT' },
+        _count: { _all: true }
+      }),
+      prisma.payment.aggregate({
+        where: { createdAt: { gte: today }, status: 'COMPLETED' },
+        _count: { _all: true }
+      }),
+      prisma.payment.aggregate({
+        where: { createdAt: { gte: today }, status: 'COMPLETED' },
+        _sum: { amount: true }
+      }),
+      prisma.payment.findMany({
+        take: 5,
+        orderBy: { createdAt: 'desc' },
+        include: { invoice: { include: { lineItems: true } } }
+      }),
+      prisma.invoice.findMany({
+        where: { status: 'DRAFT' },
+        take: 5,
+        orderBy: { createdAt: 'desc' }
+      })
+    ]);
+
+    const totalRevenue = todayRevenueObj._sum.amount || 0;
+    const cashInDrawer = totalRevenue * 0.4; // Estimate 40% is cash for UI purposes
+
+    const recentTransactions: any[] = [];
+
+    // Map recent drafts
+    pendingDrafts.forEach(d => {
+      recentTransactions.push({
+        id: (d.id.split('-')[0] || '').toUpperCase(),
+        patientName: d.patientId || "Walk-in Patient",
+        type: "Pending Bill",
+        amount: d.totalAmount,
+        status: "PENDING",
+        time: d.createdAt.toISOString()
+      });
+    });
+
+    // Map recent payments
+    recentPayments.forEach(p => {
+      recentTransactions.push({
+        id: (p.id.split('-')[0] || '').toUpperCase(),
+        patientName: p.invoice?.patientId || "Walk-in Patient",
+        type: "Payment",
+        amount: p.amount,
+        status: p.status,
+        time: p.createdAt.toISOString()
+      });
+    });
+
+    // Sort combined by date desc, take 10
+    recentTransactions.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+
+    return {
+      pendingPayments: pendingInvoices._count._all,
+      processedToday: completedToday._count._all,
+      totalRevenue,
+      cashInDrawer,
+      recentTransactions: recentTransactions.slice(0, 10)
+    };
   }
 }
 

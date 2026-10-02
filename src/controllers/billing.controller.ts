@@ -69,6 +69,15 @@ export class BillingController {
       res.status(500).json({ error: error.message || 'Failed to pay invoice' });
     }
   }
+  async getCashierMetrics(req: Request, res: Response) {
+    try {
+      const data = await billingService.getCashierMetrics();
+      res.json(data);
+    } catch (error: any) {
+      console.error('Get Cashier Metrics Error:', error);
+      res.status(500).json({ error: error.message || 'Failed to fetch metrics' });
+    }
+  }
 }
 
 export const billingController = new BillingController();

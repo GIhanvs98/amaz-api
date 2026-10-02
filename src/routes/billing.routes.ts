@@ -3,6 +3,9 @@ import { billingController } from "../controllers/billing.controller.js";
 
 const router = Router();
 
+// GET /api/billing/cashier-metrics
+router.get('/cashier-metrics', billingController.getCashierMetrics.bind(billingController));
+
 // GET /api/billing/invoices?visitId=...
 router.get('/invoices', billingController.getInvoice.bind(billingController));
 

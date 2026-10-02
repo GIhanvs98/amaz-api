@@ -105,7 +105,14 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
   try {
     const { id } = req.params;
     const patient = await prisma.patient.findUnique({
-      where: { id: id as string }
+      where: { id: id as string },
+      include: {
+        Appointment: {
+          where: { status: { not: "COMPLETED" } },
+          orderBy: { createdAt: "desc" },
+          take: 1
+        }
+      }
     });
     
     if (!patient) {
@@ -124,7 +131,8 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       allergies: [],
       chronicConditions: [],
       medicalHistory: [],
-      labResults: []
+      labResults: [],
+      activeVisitId: patient.Appointment[0]?.id || null
     });
   } catch (error: any) {
     console.error("Error fetching patient:", error);
@@ -316,8 +324,8 @@ export const generateToken = async (req: Request, res: Response) => {
     }
 
     // Broadcast token update for frontdesk arrivals page
-    if (websocketService.getIO()) {
-      websocketService.getIO().emit("TOKEN_STATUS_UPDATED", { tokenId: token.id });
+    if (websocketService.getIo()) {
+      websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: token.id });
     }
 
     res.status(201).json({

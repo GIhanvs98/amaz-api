@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import { websocketService } from "../services/websocket.service.js";
+import { billingService } from "../services/billing.service.js";
 
 const prisma = new PrismaClient();
 
@@ -22,10 +23,9 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const prescription = await prisma.prescription.findUnique({
-      where: { id },
+      where: { id: id as string },
       include: {
-        patient: { select: { fullName: true, phone: true } },
-        doctor: { select: { fullName: true } },
+        Patient: { select: { fullName: true, phone: true } },
         items: {
           include: {
             medicine: {
@@ -43,12 +43,12 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
     // Format like getPendingPrescriptions does
     const formatted = {
       id: prescription.id,
-      patientName: prescription.patient.fullName,
-      patientPhone: prescription.patient.phone,
-      doctorName: prescription.doctor.fullName,
+      patientName: prescription.Patient.fullName,
+      patientPhone: prescription.Patient.phone,
+      doctorName: prescription.doctorName,
       status: prescription.status,
       createdAt: prescription.createdAt,
-      items: prescription.items.map(i => ({
+      items: prescription.items.map((i: any) => ({
         id: i.id,
         drugName: i.drugName,
         dosage: i.dosage,
@@ -76,30 +76,47 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
   try {
     const { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items } = req.body;
 
-    const newPrescription = await withRetry(() => (prisma as any).prescription.create({
-      data: {
-        patientId,
-        patientName,
-        visitId,
-        doctorId,
-        doctorName,
-        diagnosis,
-        clinicalNotes,
-        items: {
-          create: items.map((item: any) => ({
-            medicineId: item.medicineId || null,
-            drugName: item.drugName,
-            dosage: item.dosage,
-            frequency: item.frequency,
-            duration: item.duration,
-            instructions: item.instructions
-          }))
+    const newPrescription = await withRetry(async () => {
+      return await (prisma as any).$transaction(async (tx: any) => {
+        const rx = await tx.prescription.create({
+          data: {
+            patientId,
+            patientName,
+            visitId,
+            doctorId,
+            doctorName,
+            diagnosis,
+            clinicalNotes,
+            items: {
+              create: items ? items.map((item: any) => ({
+                medicineId: item.medicineId || null,
+                drugName: item.drugName,
+                dosage: item.dosage,
+                frequency: item.frequency,
+                duration: item.duration,
+                instructions: item.instructions
+              })) : []
+            }
+          },
+          include: {
+            items: true
+          }
+        });
+
+        if (visitId) {
+          await billingService.addCharge({
+            visitId,
+            patientId,
+            department: "CONSULTATION",
+            description: "Doctor Consultation Fee",
+            quantity: 1,
+            unitPrice: 2500 // Assuming flat fee for now
+          }, tx);
         }
-      },
-      include: {
-        items: true
-      }
-    }));
+
+        return rx;
+      });
+    });
 
     // Broadcast via WebSockets
     websocketService.broadcast("prescription_created", newPrescription);
@@ -150,24 +167,55 @@ export const markPrescriptionDispensed = async (req: Request, res: Response): Pr
         const rx = await tx.prescription.update({
           where: { id },
           data: { status: "DISPENSED" },
-          include: { items: true }
+          include: { items: { include: { medicine: true } } }
         });
 
-        // Update dispensed quantities
+        let totalPharmacyCost = 0;
+
+        // Update dispensed quantities and deduct stock
         if (dispensedItems && Array.isArray(dispensedItems)) {
           for (const di of dispensedItems) {
-            await tx.prescriptionItem.update({
+            const rxItem = await tx.prescriptionItem.update({
               where: { id: di.itemId },
-              data: { dispenseQty: di.dispenseQty }
+              data: { dispenseQty: di.dispenseQty },
+              include: { medicine: true }
             });
+
+            if (rxItem.medicineId && di.dispenseQty > 0) {
+              let remainingToDeduct = di.dispenseQty;
+              const batches = await tx.stockBatch.findMany({
+                where: { medicineId: rxItem.medicineId, currentQuantity: { gt: 0 } },
+                orderBy: { expiryDate: 'asc' }
+              });
+
+              for (const batch of batches) {
+                if (remainingToDeduct <= 0) break;
+                const deductAmount = Math.min(batch.currentQuantity, remainingToDeduct);
+                
+                await tx.stockBatch.update({
+                  where: { id: batch.id },
+                  data: { currentQuantity: { decrement: deductAmount } }
+                });
+                
+                totalPharmacyCost += (deductAmount * batch.unitPrice);
+                remainingToDeduct -= deductAmount;
+              }
+            }
           }
         }
 
-        // Mark corresponding Appointment as COMPLETED
-        await tx.appointment.updateMany({
-          where: { id: rx.visitId, status: { not: "COMPLETED" } },
-          data: { status: "COMPLETED", completedAt: new Date() }
-        });
+        // Add charge atomically in the same transaction
+        if (totalPharmacyCost > 0 && rx.visitId) {
+          await billingService.addCharge({
+            visitId: rx.visitId,
+            patientId: rx.patientId,
+            department: "PHARMACY",
+            referenceId: rx.id,
+            description: "Pharmacy Medication Charge",
+            quantity: 1,
+            unitPrice: totalPharmacyCost
+          }, tx);
+        }
 
         return rx;
       });
@@ -200,13 +248,6 @@ export const updatePrescriptionStatus = async (req: Request, res: Response): Pro
         where: { id },
         data: { status },
       });
-
-      if (status === "DISPENSED") {
-        await (prisma as any).appointment.updateMany({
-          where: { id: rx.visitId, status: { not: "COMPLETED" } },
-          data: { status: "COMPLETED", completedAt: new Date() }
-        });
-      }
 
       return rx;
     });

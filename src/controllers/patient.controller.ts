@@ -98,7 +98,7 @@ export const updatePatient = async (req: Request, res: Response): Promise<void> 
     const { age, gender, bloodGroup, fullName, phone } = req.body;
 
     const patient = await prisma.patient.update({
-      where: { id },
+      where: { id: id as string },
       data: {
         ...(fullName !== undefined && { fullName }),
         ...(phone !== undefined && { phone }),
