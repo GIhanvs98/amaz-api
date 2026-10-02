@@ -214,97 +214,113 @@ export const generateToken = async (req: Request, res: Response) => {
     const isNonOPD = doctorDetails && doctorDetails.specialty && doctorDetails.specialty !== "General" && doctorDetails.specialty.toUpperCase() !== "OPD";
     const needsInvoice = isNonOPD || hasLab || hasService;
 
-    
-    let department = "CONSULTATION";
-    if (hasConsultation && hasLab) {
-      department = "MULTI";
-    } else if (hasLab && !hasConsultation) {
-      department = "LAB";
-    }
+    // Helper to robustly generate a single token
+    const generateSpecificToken = async (dept: string, docId: string | null) => {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date();
+      endOfDay.setHours(23, 59, 59, 999);
 
-    // Generate Token Number robustly to prevent duplication
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+      let token = null;
+      let attempts = 0;
 
-    const refNo = Math.floor(10000000 + Math.random() * 90000000).toString(); 
-
-    let token = null;
-    let attempts = 0;
-    
-    // Get the baseline token number to start from
-    const lastToken = await prisma.appointment.findFirst({
-      where: {
-        appointmentDate: { gte: startOfDay, lte: endOfDay },
-        department,
-        doctorId: doctorId || null
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-    
-    let nextTokenInt = 1;
-    if (lastToken && !isNaN(parseInt(lastToken.tokenNumber))) {
-      nextTokenInt = parseInt(lastToken.tokenNumber) + 1;
-    } else {
-      const count = await prisma.appointment.count({
+      const lastToken = await prisma.appointment.findFirst({
         where: {
           appointmentDate: { gte: startOfDay, lte: endOfDay },
-          department,
-          doctorId: doctorId || null
-        }
-      });
-      nextTokenInt = count + 1;
-    }
-
-    while (!token && attempts < 20) {
-      const tokenDisplay = nextTokenInt.toString().padStart(2, "0");
-      
-      // Double check existence (crucial for concurrency)
-      const exists = await prisma.appointment.findFirst({
-        where: {
-          appointmentDate: { gte: startOfDay, lte: endOfDay },
-          department,
-          doctorId: doctorId || null,
-          tokenNumber: tokenDisplay
-        }
+          department: dept,
+          doctorId: docId || null
+        },
+        orderBy: { createdAt: 'desc' }
       });
 
-      if (exists) {
-        nextTokenInt++;
-        attempts++;
-        continue;
-      }
-
-      try {
-        token = await prisma.appointment.create({
-          data: {
-            tokenNumber: tokenDisplay,
-            patientId: patient!.id,
-            doctorId: doctorId || null,
-            department,
-            status: department === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-            bookingType: "WALK_IN",
-            appointmentDate: new Date(),
-            bookingReference: refNo
+      let nextTokenInt = 1;
+      if (lastToken && !isNaN(parseInt(lastToken.tokenNumber))) {
+        nextTokenInt = parseInt(lastToken.tokenNumber) + 1;
+      } else {
+        const count = await prisma.appointment.count({
+          where: {
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            department: dept,
+            doctorId: docId || null
           }
         });
-      } catch (e: any) {
-        // If unique constraint violation or another concurrency issue
-        nextTokenInt++;
-        attempts++;
+        nextTokenInt = count + 1;
       }
+
+      while (!token && attempts < 20) {
+        const tokenDisplay = nextTokenInt.toString().padStart(2, "0");
+        const exists = await prisma.appointment.findFirst({
+          where: {
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            department: dept,
+            doctorId: docId || null,
+            tokenNumber: tokenDisplay
+          }
+        });
+
+        if (exists) {
+          nextTokenInt++;
+          attempts++;
+          continue;
+        }
+
+        try {
+          const refNo = Math.floor(10000000 + Math.random() * 90000000).toString();
+          token = await prisma.appointment.create({
+            data: {
+              tokenNumber: tokenDisplay,
+              patientId: patient!.id,
+              doctorId: docId || null,
+              department: dept,
+              status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+              bookingType: "WALK_IN",
+              appointmentDate: new Date(),
+              bookingReference: refNo
+            }
+          });
+        } catch (e: any) {
+          nextTokenInt++;
+          attempts++;
+        }
+      }
+      
+      if (!token) throw new Error(`Failed to generate token for ${dept}`);
+      return token;
+    };
+
+    const tokensToGenerate: { dept: string, docId: string | null, name: string }[] = [];
+    if (hasConsultation) {
+      tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician" });
+    }
+    if (hasLab) {
+      tokensToGenerate.push({ dept: "LAB", docId: null, name: "Laboratory" });
+    }
+    if (hasService) {
+      tokensToGenerate.push({ dept: "EXTRA_SERVICE", docId: null, name: "Extra Services" });
     }
 
-    if (!token) {
-      throw new Error("System under high load: Unable to generate a unique token. Please try again.");
+    if (tokensToGenerate.length === 0) {
+      return res.status(400).json({ success: false, error: "No services selected to generate token." });
     }
 
-    const tokenDisplay = token.tokenNumber;
+    const generatedTokens = [];
+    for (const t of tokensToGenerate) {
+      const token = await generateSpecificToken(t.dept, t.docId);
+      generatedTokens.push({
+        id: token.id,
+        refNo: token.bookingReference,
+        tokenNumber: token.tokenNumber,
+        department: token.department,
+        status: token.status,
+        doctorName: t.name,
+        patientName: patient.fullName,
+        appointmentDate: token.appointmentDate
+      });
+    }
 
+    // --- Invoice Generation ---
     let invoiceData = null;
     if (needsInvoice) {
-      // Calculate line items
       const lineItems = [];
       let totalAmount = 0;
 
@@ -325,7 +341,6 @@ export const generateToken = async (req: Request, res: Response) => {
           const finalPrice = customLabPrices && customLabPrices[test.id] !== undefined 
             ? Number(customLabPrices[test.id]) 
             : test.price;
-            
           lineItems.push({
             department: "LAB",
             referenceId: test.id,
@@ -343,7 +358,6 @@ export const generateToken = async (req: Request, res: Response) => {
           const finalPrice = customServicePrices && customServicePrices[svc.id] !== undefined 
             ? Number(customServicePrices[svc.id]) 
             : svc.price;
-            
           lineItems.push({
             department: "OTHER",
             referenceId: svc.id,
@@ -356,31 +370,27 @@ export const generateToken = async (req: Request, res: Response) => {
         });
       }
 
-      // Create Invoice
       const invoice = await prisma.invoice.create({
         data: {
-          visitId: token.id,
+          visitId: generatedTokens[0]?.id || "", // Associate invoice with the first primary token
           patientId: patient.id,
-          status: "DRAFT", // Or PAID if payment is taken immediately
+          status: "DRAFT",
           subtotal: totalAmount,
           totalAmount: totalAmount,
-          lineItems: {
-            create: lineItems
-          }
+          lineItems: { create: lineItems }
         },
         include: { lineItems: true }
       });
-
       invoiceData = invoice;
     }
 
-
+    // --- Post Generation Hooks ---
     if (hasLab) {
-      // Import dynamically or use a service to avoid circular dependencies if any
       const { labService } = await import('../services/lab.service.js');
+      const labToken = generatedTokens.find(t => t.department === "LAB");
       await labService.createRequest({
         patientId: patient.id,
-        visitId: token.id,
+        visitId: labToken?.id || generatedTokens[0]?.id || "",
         testIds,
         doctorId: doctorId || null,
         priority: "ROUTINE"
@@ -388,19 +398,15 @@ export const generateToken = async (req: Request, res: Response) => {
     }
 
     if (patientPhone && !patientPhone.startsWith('WALKIN')) {
-      let doctorDisplay = "Laboratory";
-      if (hasConsultation && hasLab) doctorDisplay = `${doctorName || "General Physician"} + Lab`;
-      else if (hasConsultation) doctorDisplay = doctorName || "General Physician";
-
       await NotificationService.sendTemplatedSMS(
         patient.id,
         patientPhone,
         'APPOINTMENT_BOOKED',
         {
           patientName: patient.fullName,
-          doctorName: doctorDisplay,
+          doctorName: generatedTokens.map(t => t.doctorName).join(", "),
           appointmentDate: new Date().toLocaleDateString(),
-          tokenNumber: tokenDisplay,
+          tokenNumber: generatedTokens.map(t => `${t.department === 'LAB' ? 'LAB-' : ''}${t.tokenNumber}`).join(", "),
           hospitalName: "AMAZ Hospital"
         }
       ).catch(console.error);
@@ -411,26 +417,19 @@ export const generateToken = async (req: Request, res: Response) => {
         const todayStr = new Date().toISOString().split('T')[0];
         const updatedAvailability = await BookingService.getAvailability(doctorId as string, todayStr as string);
         websocketService.emitToRoom(`doctor_${doctorId}_${todayStr}`, 'availability_updated', updatedAvailability);
-      } catch (e) {
-        console.error("Failed to broadcast availability update:", e);
-      }
+      } catch (e) {}
     }
 
-    // Broadcast token update for frontdesk arrivals page
     if (websocketService.getIo()) {
-      websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: token.id });
+      generatedTokens.forEach(t => {
+        websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: t.id });
+      });
     }
 
     res.status(201).json({
       success: true,
       data: {
-        id: token.id,
-        refNo,
-        queueNumber: tokenDisplay,
-        patientName: patient.fullName,
-        doctorName: doctorName || (hasLab ? "Laboratory" : ""),
-        department,
-        status: token.status,
+        tokens: generatedTokens, // Send all tokens to POS
         invoice: invoiceData
       }
     });
