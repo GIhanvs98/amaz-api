@@ -57,6 +57,7 @@ app.use("/api/lab", labRoutes);
 app.use("/api/finance", financeRoutes);
 app.use("/api/prescriptions", prescriptionRoutes);
 app.use("/api/auth", authRoutes);
+app.patch("/api/testpatch/:id", (req, res) => { res.send("OK"); });
 app.use("/api/patients", patientRoutes);
 app.use("/api/tokens", tokenRoutes);
 app.use("/api/users", userRoutes);

@@ -86,3 +86,31 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
     res.status(500).json({ error: "Internal server error" });
   }
 };
+
+export const updatePatient = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+       res.status(400).json({ error: "Patient ID is required" });
+       return;
+    }
+
+    const { age, gender, bloodGroup, fullName, phone } = req.body;
+
+    const patient = await prisma.patient.update({
+      where: { id },
+      data: {
+        ...(fullName !== undefined && { fullName }),
+        ...(phone !== undefined && { phone }),
+        ...(age !== undefined && { ageFallback: parseInt(age) }),
+        ...(gender !== undefined && { gender }),
+        ...(bloodGroup !== undefined && { bloodGroup }),
+      },
+    });
+
+    res.status(200).json(patient);
+  } catch (error) {
+    console.error("Error updating patient:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
