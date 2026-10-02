@@ -12,7 +12,7 @@ export class FrontdeskService {
     // Find all doctors
     const doctors = await prisma.user.findMany({
       where: { Role: { name: 'Doctor' } },
-      select: { id: true, fullName: true, specialty: true, roomNumber: true }
+      select: { id: true, fullName: true, specialty: true, title: true, roomNumber: true }
     });
 
     // Find today's attendance records
@@ -36,14 +36,25 @@ export class FrontdeskService {
       }
     });
 
+    // Find ongoing tokens
+    const ongoingTokens = await prisma.appointment.findMany({
+      where: {
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: 'CONSULTATION'
+      },
+      select: { doctorId: true, tokenNumber: true }
+    });
+
     return doctors.map((doc: any) => {
       const docAttendance = attendance.find((a: any) => a.doctorId === doc.id);
       const docSchedule = schedules.find((s: any) => s.doctorId === doc.id);
+      const currentToken = ongoingTokens.find((t: any) => t.doctorId === doc.id);
       
       return {
         ...doc,
         attendance: docAttendance || null,
-        sessions: docSchedule?.sessions || []
+        sessions: docSchedule?.sessions || [],
+        currentlyServing: currentToken ? currentToken.tokenNumber : null
       };
     });
   }
