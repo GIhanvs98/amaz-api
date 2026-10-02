@@ -31,6 +31,7 @@ import tokenRoutes from "./routes/token.routes.js";
 import userRoutes from "./routes/user.routes.js";
 import bookingRoutes from "./routes/booking.routes.js";
 import receptionRoutes from "./routes/reception.routes.js";
+import frontdeskRoutes from "./routes/frontdesk.routes.js";
 
 import { prisma } from "./lib/prisma.js";
 
@@ -63,6 +64,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/admin/dashboard", dashboardRoutes);
 app.use("/api/booking", bookingRoutes);
 app.use("/api/reception", receptionRoutes);
+app.use("/api/frontdesk", frontdeskRoutes);
 
 
 // Handle 404

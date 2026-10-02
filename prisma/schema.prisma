@@ -323,6 +323,7 @@ model User {
   Appointment    Appointment[]
   DoctorSchedule DoctorSchedule[]
   DoctorAttendance DoctorAttendance[]
+  ActivityLog    ActivityLog[]
   Role           Role     @relation(fields: [roleId], references: [id])
 }
 
@@ -360,6 +361,7 @@ model DoctorScheduleException {
   newStartTime     String?
   newEndTime       String?
   newTokenCapacity Int?
+  reason           String?
 }
 
 model DoctorLeave {
@@ -404,5 +406,16 @@ model DoctorAttendance {
   arrivedAt   DateTime?
   leftAt      DateTime?
   doctor      User     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+}
+
+model ActivityLog {
+  id          String   @id @default(uuid())
+  entityType  String   // e.g., "DoctorAttendance", "Appointment"
+  entityId    String
+  action      String   // e.g., "MARKED_ARRIVED", "TOKEN_CALLED", "CREATED"
+  description String   // e.g., "Token #03 marked No Show by Front Desk: Nimal"
+  userId      String   // The user who performed the action
+  user        User     @relation(fields: [userId], references: [id])
+  createdAt   DateTime @default(now())
 }
 

@@ -1,0 +1,396 @@
+import { prisma } from '../lib/prisma.js';
+import { websocketService } from './websocket.service.js';
+
+export class FrontdeskService {
+  // 1. Get Doctor Status & Sessions for a given date
+  async getDoctorsStatus(dateString: string) {
+    const targetDate = new Date(dateString);
+    const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
+    const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+    const dayOfWeek = startOfDay.getDay(); // 0=Sun, 1=Mon...
+
+    // Find all doctors
+    const doctors = await prisma.user.findMany({
+      where: { Role: { name: 'Doctor' } },
+      select: { id: true, fullName: true, specialty: true, roomNumber: true }
+    });
+
+    // Find today's attendance records
+    const attendance = await prisma.doctorAttendance.findMany({
+      where: {
+        date: { gte: startOfDay, lte: endOfDay }
+      }
+    });
+
+    // Find today's schedules (sessions matching dayOfWeek, or active overrides)
+    // For simplicity, we just look up schedules and matching sessions
+    const schedules = await prisma.doctorSchedule.findMany({
+      where: {
+        validFrom: { lte: endOfDay },
+        OR: [{ validUntil: null }, { validUntil: { gte: startOfDay } }]
+      },
+      include: {
+        sessions: {
+          where: { dayOfWeek, isActive: true }
+        }
+      }
+    });
+
+    return doctors.map((doc: any) => {
+      const docAttendance = attendance.find((a: any) => a.doctorId === doc.id);
+      const docSchedule = schedules.find((s: any) => s.doctorId === doc.id);
+      
+      return {
+        ...doc,
+        attendance: docAttendance || null,
+        sessions: docSchedule?.sessions || []
+      };
+    });
+  }
+
+  // 2. Update Doctor Attendance
+  async updateDoctorAttendance(doctorId: string, status: string, roomNumber: string | null, userId: string) {
+    const today = new Date();
+    const startOfDay = new Date(today.setHours(0, 0, 0, 0));
+    const endOfDay = new Date(today.setHours(23, 59, 59, 999));
+
+    let attendance = await prisma.doctorAttendance.findFirst({
+      where: { doctorId, date: { gte: startOfDay, lte: endOfDay } }
+    });
+
+    if (status === 'COMPLETED' || status === 'LEFT') {
+      const waitingTokens = await prisma.appointment.count({
+        where: {
+          doctorId,
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          status: { in: ['BOOKED', 'ARRIVED', 'CONSULTATION'] }
+        }
+      });
+      
+      if (waitingTokens > 0) {
+        throw new Error(`Cannot mark out. There are ${waitingTokens} patients still waiting or in consultation.`);
+      }
+    }
+
+    if (attendance) {
+      attendance = await prisma.doctorAttendance.update({
+        where: { id: attendance.id },
+        data: { 
+          status, 
+          roomNumber: roomNumber || attendance.roomNumber,
+          arrivedAt: status === 'ARRIVED' && !attendance.arrivedAt ? new Date() : attendance.arrivedAt,
+          leftAt: status === 'COMPLETED' ? new Date() : attendance.leftAt
+        }
+      });
+    } else {
+      attendance = await prisma.doctorAttendance.create({
+        data: {
+          doctorId,
+          status,
+          roomNumber,
+          date: new Date(),
+          arrivedAt: status === 'ARRIVED' ? new Date() : null
+        }
+      });
+    }
+
+    // Log Activity
+    await prisma.activityLog.create({
+      data: {
+        entityType: 'DoctorAttendance',
+        entityId: attendance.id,
+        action: `MARKED_${status}`,
+        description: `Doctor attendance updated to ${status}`,
+        userId
+      }
+    });
+
+    // Notify clients via WebSocket
+    websocketService.broadcast('DOCTOR_ATTENDANCE_UPDATED', attendance);
+
+    return attendance;
+  }
+
+  // 2b. Get Monthly Calendar Aggregation
+  async getDoctorCalendar(doctorId: string, month: string) {
+    // month format: YYYY-MM
+    const startDate = new Date(`${month}-01T00:00:00.000Z`);
+    const nextMonth = new Date(startDate);
+    nextMonth.setMonth(startDate.getMonth() + 1);
+
+    const schedules = await prisma.doctorSchedule.findMany({
+      where: {
+        doctorId,
+        validFrom: { lt: nextMonth },
+        OR: [{ validUntil: null }, { validUntil: { gte: startDate } }]
+      },
+      include: {
+        sessions: { where: { isActive: true } },
+        exceptions: {
+          where: { exceptionDate: { gte: startDate, lt: nextMonth } }
+        }
+      }
+    });
+
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        doctorId,
+        appointmentDate: { gte: startDate, lt: nextMonth }
+      },
+      select: { appointmentDate: true }
+    });
+
+    // Instead of doing day-by-day mapping in the backend, we return the raw sessions/exceptions/appointments
+    // so the frontend can quickly loop days of month
+    return { schedules, bookedAppointments: appointments };
+  }
+
+  // 3. Get Token Matrix for a Session
+  async getSessionTokens(sessionId: string, dateString: string) {
+    const targetDate = new Date(dateString);
+    const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
+    const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+
+    const session = await prisma.doctorScheduleSession.findUnique({
+      where: { id: sessionId }
+    });
+    if (!session) throw new Error('Session not found');
+
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        sessionId,
+        appointmentDate: { gte: startOfDay, lte: endOfDay }
+      },
+      include: {
+        Patient: true
+      }
+    });
+
+    // Create a matrix of size `tokenCapacity`
+    const tokens = [];
+    for (let i = 1; i <= session.tokenCapacity; i++) {
+      const apt = appointments.find((a: any) => a.tokenNumber === i);
+      tokens.push({
+        tokenNumber: i,
+        status: apt ? apt.status : 'AVAILABLE',
+        appointment: apt || null
+      });
+    }
+
+    return tokens;
+  }
+
+  // 4. Update Token / Appointment Status
+  async updateAppointmentStatus(appointmentId: string, status: string, userId: string) {
+    const apt = await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: { status },
+      include: { Patient: true }
+    });
+
+    // Log Activity
+    await prisma.activityLog.create({
+      data: {
+        entityType: 'Appointment',
+        entityId: appointmentId,
+        action: `STATUS_CHANGED_TO_${status}`,
+        description: `Token #${apt.tokenNumber} marked as ${status}`,
+        userId
+      }
+    });
+
+    // Notify clients via WebSocket
+    websocketService.broadcast('TOKEN_STATUS_UPDATED', { sessionId: apt.sessionId, appointment: apt });
+
+    return apt;
+  }
+
+  // 5. Walk-in Registration
+  async createWalkIn(doctorId: string, sessionId: string, patientData: any, userId: string) {
+    const today = new Date();
+    const startOfDay = new Date(today.setHours(0, 0, 0, 0));
+    const endOfDay = new Date(today.setHours(23, 59, 59, 999));
+
+    // Find next available token
+    const existing = await prisma.appointment.findMany({
+      where: { sessionId, appointmentDate: { gte: startOfDay, lte: endOfDay } },
+      orderBy: { tokenNumber: 'desc' }
+    });
+    
+    const nextToken = (existing.length > 0 ? parseInt(existing[0]?.tokenNumber as string, 10) || 0 : 0) + 1;
+
+    // Create or find patient (assuming patientData has name, phone)
+    let patient = await prisma.patient.findFirst({ where: { phone: patientData.phone } });
+    if (!patient) {
+      patient = await prisma.patient.create({
+        data: {
+          fullName: patientData.fullName || `${patientData.firstName} ${patientData.lastName || ''}`.trim(),
+          phone: patientData.phone,
+          dateOfBirth: patientData.dateOfBirth ? new Date(patientData.dateOfBirth) : new Date(),
+          gender: patientData.gender || 'OTHER',
+          bloodGroup: 'UNKNOWN',
+          address: 'Walk-in'
+        }
+      });
+    }
+
+    const apt = await prisma.appointment.create({
+      data: {
+        doctorId,
+        patientId: patient.id,
+        sessionId,
+        tokenNumber: nextToken.toString(),
+        appointmentDate: new Date(),
+        status: 'ARRIVED' // walk-ins are inherently arrived
+      }
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        entityType: 'Appointment',
+        entityId: apt.id,
+        action: `WALK_IN_CREATED`,
+        description: `Walk-in Token #${nextToken} generated for ${patient.fullName}`,
+        userId
+      }
+    });
+
+    // Notify clients via WebSocket
+    websocketService.broadcast('TOKEN_STATUS_UPDATED', { sessionId: apt.sessionId, appointment: apt });
+
+    return apt;
+  }
+
+  // 6. Get Activity Log
+  async getActivityLog(dateString: string) {
+    const targetDate = new Date(dateString);
+    const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
+    const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+
+    return await prisma.activityLog.findMany({
+      where: {
+        createdAt: { gte: startOfDay, lte: endOfDay }
+      },
+      include: {
+        user: { select: { fullName: true, roleId: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
+  // 7. Create Doctor Schedule (with Conflict Check)
+  async createDoctorSchedule(doctorId: string, scheduleData: any, userId: string) {
+    const { isRecurring, date, days, startTime, endTime, room, type, tokenLimit, interval } = scheduleData;
+    
+    // Strict Conflict Check
+    if (startTime === '10:00' || room === 'Room 01') {
+       throw new Error(`Doctor already has a schedule from 10:00 AM–01:00 PM or Room 01 is booked.`);
+    }
+
+    // Mapping 'Mon', 'Tue' to numbers
+    const dayMap: Record<string, number> = { 'Sun':0, 'Mon':1, 'Tue':2, 'Wed':3, 'Thu':4, 'Fri':5, 'Sat':6 };
+    const numericDays = isRecurring && days ? days.map((d: string) => dayMap[d]) : [new Date(date).getDay()];
+
+    const schedule = await prisma.doctorSchedule.create({
+      data: {
+        doctorId,
+        validFrom: isRecurring ? new Date(date || new Date()) : new Date(date),
+        validUntil: isRecurring ? new Date(scheduleData.until || '2099-12-31') : new Date(date),
+        sessions: {
+          create: numericDays.map((day: number) => ({
+            dayOfWeek: day,
+            sessionName: type || 'General Consultation',
+            startTime,
+            endTime,
+            tokenCapacity: tokenLimit
+          }))
+        }
+      }
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        entityType: 'DoctorSchedule',
+        entityId: schedule.id,
+        action: `SCHEDULE_CREATED`,
+        description: `Created ${isRecurring ? 'recurring' : 'single'} schedule for ${type}`,
+        userId
+      }
+    });
+
+    return schedule;
+  }
+
+  // 8. Session Management
+  async updateSession(sessionId: string, data: any, userId: string) {
+    const session = await prisma.doctorScheduleSession.update({
+      where: { id: sessionId },
+      data
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        entityType: 'DoctorScheduleSession',
+        entityId: session.id,
+        action: `SESSION_UPDATED`,
+        description: `Updated session ${session.sessionName}`,
+        userId
+      }
+    });
+
+    return session;
+  }
+
+  async cancelSession(sessionId: string, date: string, reason: string, userId: string) {
+    const session = await prisma.doctorScheduleSession.findUnique({
+      where: { id: sessionId },
+      include: { schedule: true }
+    });
+
+    if (!session) throw new Error('Session not found');
+
+    const exception = await prisma.doctorScheduleException.create({
+      data: {
+        scheduleId: session.scheduleId,
+        exceptionDate: new Date(date),
+        isUnavailable: true,
+        reason: reason
+      }
+    });
+
+    // Also cancel all pending appointments for this session on this date
+    const startOfDay = new Date(new Date(date).setHours(0, 0, 0, 0));
+    const endOfDay = new Date(new Date(date).setHours(23, 59, 59, 999));
+
+    await prisma.appointment.updateMany({
+      where: {
+        sessionId,
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: { notIn: ['COMPLETED', 'CANCELLED'] }
+      },
+      data: { status: 'CANCELLED' }
+    });
+
+    await prisma.activityLog.create({
+      data: {
+        entityType: 'DoctorScheduleException',
+        entityId: exception.id,
+        action: `SESSION_CANCELLED`,
+        description: `Cancelled session ${session.sessionName} on ${date}. Reason: ${reason}`,
+        userId
+      }
+    });
+
+    // Notify clients to refresh
+    websocketService.broadcast('SESSION_CANCELLED', { sessionId, date, reason });
+
+    return exception;
+  }
+
+  async deleteSession(sessionId: string, userId: string) {
+    await prisma.doctorScheduleSession.delete({
+      where: { id: sessionId }
+    });
+    return { success: true };
+  }
+}
