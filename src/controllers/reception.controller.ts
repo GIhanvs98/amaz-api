@@ -165,7 +165,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
 
 export const generateToken = async (req: Request, res: Response) => {
   try {
-    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds, customLabPrices, serviceIds, customServicePrices } = req.body;
+    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds, customLabPrices, serviceIds, customServicePrices, doctorTokenNumber, labTokenNumber, serviceTokenNumber } = req.body;
 
     // Find or create patient
     let patient;
@@ -215,15 +215,46 @@ export const generateToken = async (req: Request, res: Response) => {
     const needsInvoice = isNonOPD || hasLab || hasService;
 
     // Helper to robustly generate a single token
-    const generateSpecificToken = async (dept: string, docId: string | null) => {
+    const generateSpecificToken = async (dept: string, docId: string | null, requestedTokenNumber?: number) => {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date();
       endOfDay.setHours(23, 59, 59, 999);
 
       let token = null;
-      let attempts = 0;
 
+      if (requestedTokenNumber) {
+        const tokenDisplay = requestedTokenNumber.toString().padStart(2, "0");
+        const exists = await prisma.appointment.findFirst({
+          where: {
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            department: dept,
+            doctorId: docId || null,
+            tokenNumber: tokenDisplay
+          }
+        });
+
+        if (exists) {
+          throw new Error(`Token ${requestedTokenNumber} for ${dept} is already booked.`);
+        }
+
+        const refNo = Math.floor(10000000 + Math.random() * 90000000).toString();
+        token = await prisma.appointment.create({
+          data: {
+            tokenNumber: tokenDisplay,
+            patientId: patient!.id,
+            doctorId: docId || null,
+            department: dept,
+            status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+            bookingType: "WALK_IN",
+            appointmentDate: new Date(),
+            bookingReference: refNo
+          }
+        });
+        return token;
+      }
+
+      let attempts = 0;
       const lastToken = await prisma.appointment.findFirst({
         where: {
           appointmentDate: { gte: startOfDay, lte: endOfDay },
@@ -288,17 +319,17 @@ export const generateToken = async (req: Request, res: Response) => {
       return token;
     };
 
-    const tokensToGenerate: { dept: string, docId: string | null, name: string, roomNumber: string | null }[] = [];
+    const tokensToGenerate: { dept: string, docId: string | null, name: string, roomNumber: string | null, requestedTokenNumber?: number }[] = [];
     if (hasConsultation) {
-      tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician", roomNumber: doctorDetails?.roomNumber || null });
+      tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician", roomNumber: doctorDetails?.roomNumber || null, requestedTokenNumber: doctorTokenNumber });
     }
     if (hasLab) {
       const firstLabRoom = labTestsDetails.find((t: any) => t.roomNumber)?.roomNumber || null;
-      tokensToGenerate.push({ dept: "LAB", docId: null, name: "Laboratory", roomNumber: firstLabRoom });
+      tokensToGenerate.push({ dept: "LAB", docId: null, name: "Laboratory", roomNumber: firstLabRoom, requestedTokenNumber: labTokenNumber });
     }
     if (hasService) {
       const firstServiceRoom = extraServicesDetails.find((s: any) => s.roomNumber)?.roomNumber || null;
-      tokensToGenerate.push({ dept: "EXTRA_SERVICE", docId: null, name: "Extra Services", roomNumber: firstServiceRoom });
+      tokensToGenerate.push({ dept: "EXTRA_SERVICE", docId: null, name: "Extra Services", roomNumber: firstServiceRoom, requestedTokenNumber: serviceTokenNumber });
     }
 
     if (tokensToGenerate.length === 0) {
@@ -307,7 +338,7 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const generatedTokens = [];
     for (const t of tokensToGenerate) {
-      const token = await generateSpecificToken(t.dept, t.docId);
+      const token = await generateSpecificToken(t.dept, t.docId, t.requestedTokenNumber);
       generatedTokens.push({
         id: token.id,
         refNo: token.bookingReference,
@@ -584,7 +615,80 @@ export const updateShiftPeriod = async (req: Request, res: Response) => {
     
     res.json({ success: true, data: updated });
   } catch (error: any) {
-    console.error("Error updating shift period:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const checkoutAppointment = async (req: Request, res: Response) => {
+  try {
+    const { appointmentId, fee, isUpfront } = req.body;
+    if (!appointmentId) {
+      return res.status(400).json({ success: false, error: "appointmentId is required" });
+    }
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id: appointmentId },
+      include: { Patient: true, User: true }
+    });
+
+    if (!appointment) {
+      return res.status(404).json({ success: false, error: "Appointment not found" });
+    }
+
+    if (appointment.status === "COMPLETED" || appointment.status === "CANCELLED" || appointment.status === "WAITING") {
+      return res.status(400).json({ success: false, error: `Cannot checkout appointment in status: ${appointment.status}` });
+    }
+
+    const updatedAppointment = await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: { status: "WAITING" }
+    });
+
+    let invoice = null;
+    if (isUpfront && fee > 0) {
+      invoice = await prisma.invoice.create({
+        data: {
+          patientId: appointment.patientId,
+          subtotal: fee,
+          totalAmount: fee,
+          status: "PAID",
+          payments: {
+            create: [{
+              amount: fee,
+              method: "CASH",
+              status: "COMPLETED",
+              appointmentId: appointment.id
+            }]
+          },
+          lineItems: {
+            create: [
+              {
+                description: `Consultation - Dr. ${appointment.User?.fullName || 'General'}`,
+                quantity: 1,
+                unitPrice: fee,
+                total: fee,
+                department: "CONSULTATION"
+              }
+            ]
+          }
+        },
+        include: { lineItems: true }
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        appointment: updatedAppointment,
+        invoice,
+        tokenNumber: appointment.tokenNumber,
+        department: appointment.department,
+        doctorName: appointment.User?.fullName,
+        patientName: appointment.Patient?.fullName
+      }
+    });
+  } catch (error: any) {
+    console.error("Error checking out appointment:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };

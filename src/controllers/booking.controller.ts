@@ -24,6 +24,19 @@ export const getAvailability = async (req: Request, res: Response) => {
   }
 };
 
+export const getDepartmentAvailability = async (req: Request, res: Response) => {
+  try {
+    const { department, date } = req.query;
+    if (!department || !date) {
+      return res.status(400).json({ success: false, error: "department and date are required" });
+    }
+    const availability = await BookingService.getDepartmentAvailability(department as string, date as string);
+    res.json({ success: true, data: availability });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export const getAvailableDates = async (req: Request, res: Response) => {
   try {
     const { doctorId } = req.query;

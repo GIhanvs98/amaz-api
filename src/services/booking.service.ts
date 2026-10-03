@@ -19,6 +19,8 @@ export class BookingService {
           fullName: true,
           specialty: true,
           roomNumber: true,
+          consultationFee: true,
+          feeType: true,
           DoctorAttendance: {
             where: {
               date: { gte: today, lt: tomorrow },
@@ -35,12 +37,14 @@ export class BookingService {
           id: doc.id,
           fullName: doc.fullName,
           specialty: doc.specialty,
-          // Today's specific room overrides default room
           roomNumber: todayAttendance?.roomNumber || doc.roomNumber,
+          consultationFee: doc.consultationFee,
+          feeType: doc.feeType,
           expectedStartTime: todayAttendance?.expectedStartTime,
           expectedEndTime: todayAttendance?.expectedEndTime,
           isArrived: todayAttendance?.status === "ARRIVED",
           isLeft: todayAttendance?.status === "LEFT",
+          arrivedAt: todayAttendance?.arrivedAt ? new Date(todayAttendance.arrivedAt).toISOString() : undefined,
           outTime: todayAttendance?.leftAt ? new Date(todayAttendance.leftAt).toISOString() : undefined
         };
       });
@@ -140,6 +144,44 @@ export class BookingService {
         endTime: effectiveEndTime
       };
     });
+  }
+
+  static async getDepartmentAvailability(department: string, date: string) {
+    const targetDate = new Date(date);
+    const startOfDay = new Date(date);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(date);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const existingTokens = await prisma.appointment.findMany({
+      where: {
+        department,
+        appointmentDate: {
+          gte: startOfDay,
+          lte: endOfDay
+        },
+        status: { notIn: ["CANCELLED", "NO_SHOW"] }
+      },
+      select: { tokenNumber: true }
+    });
+
+    const bookedNumbers = new Set(existingTokens.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
+    const tokens = [];
+    const capacity = 100; // Hardcoded capacity for non-doctor departments
+
+    for (let i = 1; i <= capacity; i++) {
+      tokens.push({
+        tokenNumber: i,
+        status: bookedNumbers.has(i) ? "BOOKED" : "AVAILABLE"
+      });
+    }
+
+    return {
+      available: bookedNumbers.size < capacity,
+      bookedSlots: bookedNumbers.size,
+      totalSlots: capacity,
+      tokens
+    };
   }
 
   static async getAvailableDates(doctorId: string) {
