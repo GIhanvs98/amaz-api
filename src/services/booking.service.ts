@@ -219,7 +219,10 @@ export class BookingService {
     const endOfDay = new Date(date);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const token = await withRetry(() => prisma.$transaction(async (tx) => {
+    let retries = 0;
+    while (retries < 3) {
+      try {
+        const token = await withRetry(() => prisma.$transaction(async (tx) => {
       const session = await tx.doctorScheduleSession.findFirst({
         where: { 
           dayOfWeek, 
@@ -304,37 +307,48 @@ export class BookingService {
       });
     }));
 
-    try {
-      await NotificationService.sendTemplatedSMS(
-        token.patientId,
-        phone,
-        'APPOINTMENT_BOOKED',
-        {
-          patientName: fullName,
-          doctorName: token.User?.fullName || 'General Physician',
-          appointmentDate: appointmentDate.toLocaleDateString(),
-          tokenNumber: token.tokenNumber,
-          hospitalName: "AMAZ Hospital"
+        try {
+          await NotificationService.sendTemplatedSMS(
+            token.patientId,
+            phone,
+            'APPOINTMENT_BOOKED',
+            {
+              patientName: fullName,
+              doctorName: token.User?.fullName || 'General Physician',
+              appointmentDate: appointmentDate.toLocaleDateString(),
+              tokenNumber: token.tokenNumber,
+              hospitalName: "AMAZ Hospital"
+            }
+          );
+        } catch (e) {
+          console.error("Failed to queue SMS job:", e);
         }
-      );
-    } catch (e) {
-      console.error("Failed to queue SMS job:", e);
-    }
 
-    try {
-      const updatedAvailability = await BookingService.getAvailability(doctorId, date);
-      websocketService.emitToRoom(`doctor_${doctorId}_${date}`, 'availability_updated', updatedAvailability);
-    } catch (e) {
-      console.error("Failed to broadcast availability update:", e);
-    }
+        try {
+          const updatedAvailability = await BookingService.getAvailability(doctorId, date);
+          websocketService.emitToRoom(`doctor_${doctorId}_${date}`, 'availability_updated', updatedAvailability);
+        } catch (e) {
+          console.error("Failed to broadcast availability update:", e);
+        }
 
-    try {
-      SMSService.syncContact(phone, fullName).catch(console.error);
-    } catch (e) {
-      console.error("Failed to sync contact:", e);
-    }
+        try {
+          SMSService.syncContact(phone, fullName).catch(console.error);
+        } catch (e) {
+          console.error("Failed to sync contact:", e);
+        }
 
-    return token;
+        return token;
+      } catch (error: any) {
+        if (error.code === 'P2002' && !selectedTokenNumber && retries < 2) {
+          retries++;
+          continue;
+        }
+        if (error.code === 'P2002' && selectedTokenNumber) {
+          throw new Error(`Token ${selectedTokenNumber} was just booked by another user.`);
+        }
+        throw error;
+      }
+    }
   }
 
   static async markArrived(tokenId: string) {

@@ -132,3 +132,34 @@ export const deleteSession = async (req: Request, res: Response) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+export const createDoctorLeave = async (req: Request, res: Response) => {
+  try {
+    const { scheduleId, startDate, endDate, reason } = req.body;
+    const data = await frontdeskService.createDoctorLeave(scheduleId, startDate, endDate, reason);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export const getDoctorLeaves = async (req: Request, res: Response) => {
+  try {
+    const doctorId = req.params.id as string;
+    const data = await frontdeskService.getDoctorLeaves(doctorId);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export const updateDoctorLeaveStatus = async (req: Request, res: Response) => {
+  try {
+    const leaveId = req.params.id as string;
+    const { status } = req.body;
+    const data = await frontdeskService.updateDoctorLeaveStatus(leaveId, status);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};

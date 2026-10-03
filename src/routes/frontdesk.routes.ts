@@ -29,4 +29,9 @@ router.put('/sessions/:id', frontdeskController.updateSession);
 router.post('/sessions/:id/cancel', frontdeskController.cancelSession);
 router.delete('/sessions/:id', frontdeskController.deleteSession);
 
+// Doctor Leave Management
+router.post('/doctors/leaves', frontdeskController.createDoctorLeave);
+router.get('/doctors/:id/leaves', frontdeskController.getDoctorLeaves);
+router.put('/doctors/leaves/:id/status', frontdeskController.updateDoctorLeaveStatus);
+
 export default router;

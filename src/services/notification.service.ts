@@ -27,6 +27,11 @@ export class NotificationService {
             id: 'temp', name: 'DOCTOR_ARRIVED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
             content: 'Your doctor has arrived. Please proceed to AMAZ Hospital for your appointment. Token: {{tokenNumber}}.'
           };
+        } else if (templateName === 'SESSION_CANCELLED') {
+          template = {
+            id: 'temp', name: 'SESSION_CANCELLED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
+            content: 'Dear {{patientName}}, your appointment with {{doctorName}} on {{date}} has been cancelled. Reason: {{reason}}. We apologize for the inconvenience. - {{hospitalName}}'
+          };
         } else {
           console.warn(`SMS Template ${templateName} not found in DB and no fallback available.`);
           return null;

@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma.js';
 import { websocketService } from './websocket.service.js';
+import { NotificationService } from './notification.service.js';
 
 export class FrontdeskService {
   // 1. Get Doctor Status & Sessions for a given date
@@ -257,21 +258,6 @@ export class FrontdeskService {
       throw new Error("Walk-in slots are fully booked for this session");
     }
 
-    // Find next available token across ALL bookings for the session (Phone + Walk-in)
-    const existing = await prisma.appointment.findMany({
-      where: { sessionId, appointmentDate: { gte: startOfDay, lte: endOfDay } },
-      orderBy: { tokenNumber: 'desc' }
-    });
-    
-    // Tokens might not just be numbers if they have prefixes, but parsing as int is what was here before.
-    let nextTokenNumberStr = "";
-    const bookedNums = new Set(existing.map(t => parseInt(t.tokenNumber.replace(/\\D/g, ''), 10)));
-    let nextAvailable = 1;
-    while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
-      nextAvailable++;
-    }
-    nextTokenNumberStr = nextAvailable.toString().padStart(3, "0");
-
     // Create or find patient (assuming patientData has name, phone)
     let patient = await prisma.patient.findFirst({ where: { phone: patientData.phone } });
     if (!patient) {
@@ -287,24 +273,57 @@ export class FrontdeskService {
       });
     }
 
-    const apt = await prisma.appointment.create({
-      data: {
-        doctorId,
-        patientId: patient.id,
-        sessionId,
-        tokenNumber: nextTokenNumberStr,
-        appointmentDate: new Date(),
-        status: 'ARRIVED', // walk-ins are inherently arrived
-        bookingType: 'WALK_IN'
+    let apt;
+    let retries = 0;
+    while (retries < 3) {
+      try {
+        // Find next available token across ALL bookings for the session (Phone + Walk-in)
+        const existing = await prisma.appointment.findMany({
+          where: { sessionId, appointmentDate: { gte: startOfDay, lte: endOfDay } },
+          orderBy: { tokenNumber: 'desc' }
+        });
+        
+        let nextTokenNumberStr = "";
+        const bookedNums = new Set(existing.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
+        let nextAvailable = 1;
+        while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
+          nextAvailable++;
+        }
+        
+        if (nextAvailable > session.tokenCapacity) {
+          throw new Error("No slots available for this date");
+        }
+        nextTokenNumberStr = nextAvailable.toString().padStart(3, "0");
+
+        apt = await prisma.appointment.create({
+          data: {
+            doctorId,
+            patientId: patient.id,
+            sessionId,
+            tokenNumber: nextTokenNumberStr,
+            appointmentDate: new Date(),
+            status: 'ARRIVED', // walk-ins are inherently arrived
+            bookingType: 'WALK_IN'
+          }
+        });
+        break; // Success, exit loop
+      } catch (error: any) {
+        if (error.code === 'P2002' && retries < 2) {
+          retries++;
+          continue; // Retry on token collision
+        }
+        throw error;
       }
-    });
+    }
+    
+    if (!apt) throw new Error("Failed to create appointment after retries.");
 
     await prisma.activityLog.create({
       data: {
         entityType: 'Appointment',
         entityId: apt.id,
         action: `WALK_IN_CREATED`,
-        description: `Walk-in Token #${nextTokenNumberStr} generated for ${patient.fullName}`,
+        description: `Walk-in Token #${apt.tokenNumber} generated for ${patient.fullName}`,
         userId
       }
     });
@@ -336,14 +355,28 @@ export class FrontdeskService {
   async createDoctorSchedule(doctorId: string, scheduleData: any, userId: string) {
     const { isRecurring, date, days, startTime, endTime, room, type, tokenLimit, interval } = scheduleData;
     
-    // Strict Conflict Check
-    if (startTime === '10:00' || room === 'Room 01') {
-       throw new Error(`Doctor already has a schedule from 10:00 AM–01:00 PM or Room 01 is booked.`);
-    }
-
     // Mapping 'Mon', 'Tue' to numbers
     const dayMap: Record<string, number> = { 'Sun':0, 'Mon':1, 'Tue':2, 'Wed':3, 'Thu':4, 'Fri':5, 'Sat':6 };
     const numericDays = isRecurring && days ? days.map((d: string) => dayMap[d]) : [new Date(date).getDay()];
+
+    // Strict Conflict Check against database
+    const existingSessions = await prisma.doctorScheduleSession.findMany({
+      where: {
+        schedule: { doctorId },
+        dayOfWeek: { in: numericDays },
+        isActive: true
+      },
+      include: { schedule: true }
+    });
+
+    for (const session of existingSessions) {
+      // String time comparison works well for HH:mm format (e.g. "08:00" < "12:00")
+      if (startTime < session.endTime && endTime > session.startTime) {
+        const dayNames = Object.keys(dayMap);
+        const dayStr = dayNames.find(key => dayMap[key] === session.dayOfWeek);
+        throw new Error(`Doctor already has an overlapping schedule on ${dayStr} from ${session.startTime} to ${session.endTime}.`);
+      }
+    }
 
     const schedule = await prisma.doctorSchedule.create({
       data: {
@@ -416,6 +449,15 @@ export class FrontdeskService {
     const startOfDay = new Date(new Date(date).setHours(0, 0, 0, 0));
     const endOfDay = new Date(new Date(date).setHours(23, 59, 59, 999));
 
+    const pendingApts = await prisma.appointment.findMany({
+      where: {
+        sessionId,
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: { notIn: ['COMPLETED', 'CANCELLED'] }
+      },
+      include: { Patient: true, User: true }
+    });
+
     await prisma.appointment.updateMany({
       where: {
         sessionId,
@@ -424,6 +466,24 @@ export class FrontdeskService {
       },
       data: { status: 'CANCELLED' }
     });
+
+    // Dispatch SMS asynchronously
+    for (const apt of pendingApts) {
+      if (apt.Patient?.phone) {
+        NotificationService.sendTemplatedSMS(
+          apt.patientId,
+          apt.Patient.phone,
+          'SESSION_CANCELLED',
+          {
+            patientName: apt.Patient.fullName,
+            doctorName: apt.User?.fullName || 'Doctor',
+            date: date,
+            reason: reason,
+            hospitalName: "AMAZ Hospital"
+          }
+        ).catch(console.error);
+      }
+    }
 
     await prisma.activityLog.create({
       data: {
@@ -446,5 +506,35 @@ export class FrontdeskService {
       where: { id: sessionId }
     });
     return { success: true };
+  }
+
+  // 9. Doctor Leave Management
+  async createDoctorLeave(scheduleId: string, startDate: string, endDate: string, reason: string) {
+    const leave = await prisma.doctorLeave.create({
+      data: {
+        scheduleId,
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
+        reason
+      }
+    });
+    return leave;
+  }
+
+  async getDoctorLeaves(doctorId: string) {
+    return prisma.doctorLeave.findMany({
+      where: {
+        schedule: { doctorId }
+      },
+      orderBy: { startDate: 'desc' }
+    });
+  }
+
+  async updateDoctorLeaveStatus(leaveId: string, status: string) {
+    const leave = await prisma.doctorLeave.update({
+      where: { id: leaveId },
+      data: { status }
+    });
+    return leave;
   }
 }
