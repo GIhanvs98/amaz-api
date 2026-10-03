@@ -33,6 +33,7 @@ import bookingRoutes from "./routes/booking.routes.js";
 import receptionRoutes from "./routes/reception.routes.js";
 import frontdeskRoutes from "./routes/frontdesk.routes.js";
 import extraServiceRoutes from "./routes/extraService.routes.js";
+import barcodeRoutes from "./routes/barcode.routes.js";
 
 import { prisma } from "./lib/prisma.js";
 
@@ -57,6 +58,7 @@ app.use("/api/billing", billingRoutes);
 app.use("/api/lab", labRoutes);
 app.use("/api/finance", financeRoutes);
 app.use("/api/prescriptions", prescriptionRoutes);
+app.use("/api/barcode", barcodeRoutes);
 app.use("/api/auth", authRoutes);
 app.patch("/api/testpatch/:id", (req, res) => { res.send("OK"); });
 app.use("/api/patients", patientRoutes);

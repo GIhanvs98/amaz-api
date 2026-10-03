@@ -32,8 +32,8 @@ export class PharmacyController {
         return res.status(400).json({ error: "Missing required fields: name, category, or unit." });
       }
       
-      if (barcode && !/^\d{10}$/.test(barcode)) {
-        return res.status(400).json({ error: "Barcode must be strictly 10 digits" });
+      if (barcode && !/^[a-zA-Z0-9-]{6,15}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be between 6 and 15 alphanumeric characters." });
       }
       
       const isMedical = !itemType || itemType === "MEDICINE";
@@ -55,7 +55,11 @@ export class PharmacyController {
       });
       res.status(201).json(medicine);
     } catch (error: any) {
-      res.status(400).json({ error: error.message });
+      if (error.code === 'P2002') {
+        res.status(400).json({ error: "Barcode must be unique" });
+      } else {
+        res.status(500).json({ error: error.message });
+      }
     }
   }
 
