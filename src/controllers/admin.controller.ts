@@ -142,3 +142,69 @@ export const deleteStaff = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+export const getRoles = async (req: Request, res: Response) => {
+  try {
+    const roles = await prisma.role.findMany({
+      include: {
+        RolePermission: {
+          include: {
+            Permission: true
+          }
+        }
+      }
+    });
+    res.json({ success: true, data: roles });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const createRole = async (req: Request, res: Response) => {
+  try {
+    const { name, description } = req.body;
+    const role = await prisma.role.create({
+      data: {
+        name: name.toUpperCase(),
+        description
+      }
+    });
+    res.json({ success: true, data: role });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const updateRolePermissions = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { permissions } = req.body; // array of { action, resource }
+    
+    // First clear old permissions
+    await prisma.rolePermission.deleteMany({
+      where: { roleId: id as string }
+    });
+
+    // Create missing permissions if any and link them
+    for (const p of permissions) {
+      let perm = await prisma.permission.findFirst({
+        where: { action: p.action, resource: p.resource }
+      });
+      if (!perm) {
+        perm = await prisma.permission.create({
+          data: { action: p.action, resource: p.resource }
+        });
+      }
+      await prisma.rolePermission.create({
+        data: {
+          roleId: id as string,
+          permissionId: perm.id
+        }
+      });
+    }
+
+    res.json({ success: true, message: "Permissions updated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
