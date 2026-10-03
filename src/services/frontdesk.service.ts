@@ -52,6 +52,7 @@ export class FrontdeskService {
       
       return {
         ...doc,
+        roomNumber: docAttendance?.roomNumber || doc.roomNumber,
         attendance: docAttendance || null,
         sessions: docSchedule?.sessions || [],
         currentlyServing: currentToken ? currentToken.tokenNumber : null
@@ -60,7 +61,7 @@ export class FrontdeskService {
   }
 
   // 2. Update Doctor Attendance
-  async updateDoctorAttendance(doctorId: string, status: string, roomNumber: string | null, userId: string) {
+  async updateDoctorAttendance(doctorId: string, status: string, roomNumber: string | null, userId: string, forceExit: boolean = false) {
     const today = new Date();
     const startOfDay = new Date(today.setHours(0, 0, 0, 0));
     const endOfDay = new Date(today.setHours(23, 59, 59, 999));
@@ -79,7 +80,20 @@ export class FrontdeskService {
       });
       
       if (waitingTokens > 0) {
-        throw new Error(`Cannot mark out. There are ${waitingTokens} patients still waiting or in consultation.`);
+        if (!forceExit) {
+          throw new Error(`Cannot mark out. There are ${waitingTokens} patients still waiting or in consultation.`);
+        } else {
+          // Bulk update stranded tokens to NO_SHOW
+          await prisma.appointment.updateMany({
+            where: {
+              doctorId,
+              appointmentDate: { gte: startOfDay, lte: endOfDay },
+              status: { in: ['BOOKED', 'ARRIVED', 'CONSULTATION'] }
+            },
+            data: { status: 'NO_SHOW' }
+          });
+          // Broadcast to websocket could be done here if needed
+        }
       }
     }
 
@@ -222,13 +236,41 @@ export class FrontdeskService {
     const startOfDay = new Date(today.setHours(0, 0, 0, 0));
     const endOfDay = new Date(today.setHours(23, 59, 59, 999));
 
-    // Find next available token
+    // Fetch session to check walk-in capacity
+    const session = await prisma.doctorScheduleSession.findUnique({
+      where: { id: sessionId }
+    });
+    if (!session) throw new Error('Session not found');
+
+    const walkInBookedCount = await prisma.appointment.count({
+      where: {
+        sessionId,
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        bookingType: "WALK_IN",
+        status: { notIn: ["CANCELLED", "NO_SHOW"] }
+      }
+    });
+
+    const walkInCapacity = Math.floor(session.tokenCapacity * (session.walkInPercentage / 100));
+
+    if (walkInBookedCount >= walkInCapacity) {
+      throw new Error("Walk-in slots are fully booked for this session");
+    }
+
+    // Find next available token across ALL bookings for the session (Phone + Walk-in)
     const existing = await prisma.appointment.findMany({
       where: { sessionId, appointmentDate: { gte: startOfDay, lte: endOfDay } },
       orderBy: { tokenNumber: 'desc' }
     });
     
-    const nextToken = (existing.length > 0 ? parseInt(existing[0]?.tokenNumber as string, 10) || 0 : 0) + 1;
+    // Tokens might not just be numbers if they have prefixes, but parsing as int is what was here before.
+    let nextTokenNumberStr = "";
+    const bookedNums = new Set(existing.map(t => parseInt(t.tokenNumber.replace(/\\D/g, ''), 10)));
+    let nextAvailable = 1;
+    while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
+      nextAvailable++;
+    }
+    nextTokenNumberStr = nextAvailable.toString().padStart(3, "0");
 
     // Create or find patient (assuming patientData has name, phone)
     let patient = await prisma.patient.findFirst({ where: { phone: patientData.phone } });
@@ -250,9 +292,10 @@ export class FrontdeskService {
         doctorId,
         patientId: patient.id,
         sessionId,
-        tokenNumber: nextToken.toString(),
+        tokenNumber: nextTokenNumberStr,
         appointmentDate: new Date(),
-        status: 'ARRIVED' // walk-ins are inherently arrived
+        status: 'ARRIVED', // walk-ins are inherently arrived
+        bookingType: 'WALK_IN'
       }
     });
 
@@ -261,7 +304,7 @@ export class FrontdeskService {
         entityType: 'Appointment',
         entityId: apt.id,
         action: `WALK_IN_CREATED`,
-        description: `Walk-in Token #${nextToken} generated for ${patient.fullName}`,
+        description: `Walk-in Token #${nextTokenNumberStr} generated for ${patient.fullName}`,
         userId
       }
     });

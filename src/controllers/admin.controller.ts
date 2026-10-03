@@ -51,7 +51,7 @@ export const getAdminMetrics = async (req: Request, res: Response) => {
 export const getStaff = async (req: Request, res: Response) => {
   try {
     const staff = await prisma.user.findMany({
-      include: { Role: true },
+      include: { Role: true, Department: true },
       orderBy: { createdAt: 'desc' }
     });
     
@@ -62,7 +62,12 @@ export const getStaff = async (req: Request, res: Response) => {
       role: s.Role.name,
       status: "ACTIVE", // Mocked as active since there's no status field
       roomNumber: s.roomNumber,
-      specialty: s.specialty
+      specialty: s.specialty,
+      title: s.title,
+      departmentId: s.departmentId,
+      departmentName: s.Department?.name,
+      consultationFee: s.consultationFee,
+      feeType: s.feeType
     }));
     
     res.json({ data: formattedStaff });
@@ -73,7 +78,7 @@ export const getStaff = async (req: Request, res: Response) => {
 
 export const createStaff = async (req: Request, res: Response) => {
   try {
-    const { name, email, password, roleName, specialty, roomNumber } = req.body;
+    const { name, email, password, roleName, specialty, roomNumber, title, departmentId, consultationFee, feeType } = req.body;
     
     // Find or create role
     let role = await prisma.role.findUnique({ where: { name: roleName } });
@@ -88,9 +93,13 @@ export const createStaff = async (req: Request, res: Response) => {
         password, // In a real app, hash this
         roleId: role.id,
         specialty: specialty || null,
-        roomNumber: roomNumber || null
+        roomNumber: roomNumber || null,
+        title: title || null,
+        departmentId: departmentId || null,
+        consultationFee: consultationFee ? parseFloat(consultationFee) : null,
+        feeType: feeType || "POST"
       },
-      include: { Role: true }
+      include: { Role: true, Department: true }
     });
 
     res.json({ success: true, data: newStaff });
@@ -102,7 +111,7 @@ export const createStaff = async (req: Request, res: Response) => {
 export const updateStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, email, password, roleName, specialty, roomNumber } = req.body;
+    const { name, email, password, roleName, specialty, roomNumber, title, departmentId, consultationFee, feeType } = req.body;
     
     let roleId;
     if (roleName) {
@@ -120,11 +129,15 @@ export const updateStaff = async (req: Request, res: Response) => {
     if (roleId) data.roleId = roleId;
     if (specialty !== undefined) data.specialty = specialty || null;
     if (roomNumber !== undefined) data.roomNumber = roomNumber || null;
+    if (title !== undefined) data.title = title || null;
+    if (departmentId !== undefined) data.departmentId = departmentId || null;
+    if (consultationFee !== undefined) data.consultationFee = consultationFee ? parseFloat(consultationFee) : null;
+    if (feeType !== undefined) data.feeType = feeType || "POST";
 
     const updatedStaff = await prisma.user.update({
       where: { id: id as string },
       data,
-      include: { Role: true }
+      include: { Role: true, Department: true }
     });
 
     res.json({ success: true, data: updatedStaff });

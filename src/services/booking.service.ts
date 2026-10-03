@@ -250,15 +250,19 @@ export class BookingService {
         if (selectedTokenNumber > session.tokenCapacity) throw new Error("Invalid token number");
       }
 
-      const bookedCount = await tx.appointment.count({
+      const phoneBookedCount = await tx.appointment.count({
         where: {
           doctorId,
-          appointmentDate: { gte: startOfDay, lte: endOfDay }
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          bookingType: "PHONE",
+          status: { notIn: ["CANCELLED", "NO_SHOW"] }
         }
       });
 
-      if (bookedCount >= session.tokenCapacity) {
-        throw new Error("No slots available for this date");
+      const phoneCapacity = Math.ceil(session.tokenCapacity * ((100 - session.walkInPercentage) / 100));
+
+      if (phoneBookedCount >= phoneCapacity) {
+        throw new Error("No phone slots available for this date");
       }
 
       const patient = await tx.patient.upsert({
