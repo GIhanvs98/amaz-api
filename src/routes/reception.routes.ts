@@ -1,17 +1,18 @@
 import { Router } from "express";
 import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod, getActiveDoctors, checkoutAppointment } from "../controllers/reception.controller.js";
+import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import { updatePatient } from "../controllers/patient.controller.js";
 
 const router = Router();
 
 // GET /api/reception/patients
-router.get("/patients", getPatients);
+router.get("/patients", cacheMiddleware(60), getPatients);
 
 // GET /api/reception/doctors
-router.get("/doctors", getActiveDoctors);
+router.get("/doctors", cacheMiddleware(300), getActiveDoctors);
 
 // GET /api/reception/metrics
-router.get("/metrics", getMetrics);
+router.get("/metrics", cacheMiddleware(300), getMetrics);
 
 // GET /api/reception/patients/:id
 router.get("/patients/:id", getPatientById);

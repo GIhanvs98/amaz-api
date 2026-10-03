@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { verifyToken, requirePermission } from '../middlewares/auth.middleware.js';
 import * as frontdeskController from '../controllers/frontdesk.controller.js';
+import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
@@ -10,11 +11,11 @@ router.use(verifyToken);
 // router.use(requirePermission('manage', 'frontdesk')); // Temporarily disabled until RBAC UI is seeded
 
 // Doctor Status & Attendance
-router.get('/doctors/status', frontdeskController.getDoctorsStatus);
+router.get('/doctors/status', cacheMiddleware(30), frontdeskController.getDoctorsStatus);
 router.put('/doctors/:id/attendance', frontdeskController.updateDoctorAttendance);
 
 // Tokens & Appointments
-router.get('/sessions/:sessionId/tokens', frontdeskController.getSessionTokens);
+router.get('/sessions/:sessionId/tokens', cacheMiddleware(10), frontdeskController.getSessionTokens);
 router.put('/appointments/:id/status', frontdeskController.updateAppointmentStatus);
 router.post('/appointments/walk-in', frontdeskController.createWalkIn);
 
@@ -22,7 +23,7 @@ router.post('/appointments/walk-in', frontdeskController.createWalkIn);
 router.get('/activity', frontdeskController.getActivityLog);
 
 // Calendar & Scheduling
-router.get('/doctors/:id/calendar', frontdeskController.getDoctorCalendar);
+router.get('/doctors/:id/calendar', cacheMiddleware(300), frontdeskController.getDoctorCalendar);
 router.post('/doctors/schedules', frontdeskController.createDoctorSchedule);
 router.put('/sessions/:id', frontdeskController.updateSession);
 router.post('/sessions/:id/cancel', frontdeskController.cancelSession);

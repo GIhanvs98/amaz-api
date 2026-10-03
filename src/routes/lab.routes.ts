@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { labController } from "../controllers/lab.controller.js";
+import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
@@ -10,7 +11,7 @@ router.get('/upload-url', labController.getUploadUrl.bind(labController));
 router.get('/queue', labController.getQueueTokens.bind(labController));
 
 // GET /api/lab/catalog
-router.get('/catalog', labController.getCatalog.bind(labController));
+router.get('/catalog', cacheMiddleware(3600), labController.getCatalog.bind(labController));
 
 // POST /api/lab/catalog
 router.post('/catalog', labController.addTestToCatalog.bind(labController));
@@ -37,7 +38,7 @@ router.get('/reports', labController.getPublishedReports.bind(labController));
 router.post('/requests/:requestId/results', labController.submitResults.bind(labController));
 
 // GET /api/lab/metrics
-router.get('/metrics', labController.getMetrics.bind(labController));
+router.get('/metrics', cacheMiddleware(300), labController.getMetrics.bind(labController));
 
 // GET /api/lab/reports/:referenceNo  — public report viewer (no auth required)
 router.get('/reports/:referenceNo', labController.getReportByRef.bind(labController));

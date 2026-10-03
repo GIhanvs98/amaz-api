@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { billingController } from "../controllers/billing.controller.js";
+import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
 // GET /api/billing/cashier-metrics
-router.get('/cashier-metrics', billingController.getCashierMetrics.bind(billingController));
+router.get('/cashier-metrics', cacheMiddleware(300), billingController.getCashierMetrics.bind(billingController));
 
 // GET /api/billing/invoices?visitId=...
 router.get('/invoices', billingController.getInvoice.bind(billingController));
