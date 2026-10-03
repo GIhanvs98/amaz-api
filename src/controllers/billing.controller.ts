@@ -78,6 +78,30 @@ export class BillingController {
       res.status(500).json({ error: error.message || 'Failed to fetch metrics' });
     }
   }
+
+  async removeCharge(req: Request, res: Response) {
+    try {
+      const { invoiceId, lineItemId } = req.params;
+      const updatedInvoice = await billingService.removeCharge(invoiceId as string, lineItemId as string);
+      res.json(updatedInvoice);
+    } catch (error: any) {
+      console.error('Remove Charge Error:', error);
+      const status = error.message?.includes('DRAFT') ? 400 : 500;
+      res.status(status).json({ error: error.message || 'Failed to remove charge' });
+    }
+  }
+
+  async deleteInvoice(req: Request, res: Response) {
+    try {
+      const { invoiceId } = req.params;
+      await billingService.deleteDraftInvoice(invoiceId as string);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('Delete Invoice Error:', error);
+      const status = error.message?.includes('DRAFT') ? 400 : 500;
+      res.status(status).json({ error: error.message || 'Failed to delete invoice' });
+    }
+  }
 }
 
 export const billingController = new BillingController();

@@ -253,6 +253,24 @@ export class FinanceService {
     });
   }
 
+  async updateExpense(id: string, data: { category?: string; amount?: number; description?: string; date?: string }) {
+    return prisma.expense.update({
+      where: { id },
+      data: {
+        ...(data.category && { category: data.category }),
+        ...(data.amount !== undefined && { amount: Number(data.amount) }),
+        ...(data.description && { description: data.description }),
+        ...(data.date && { date: new Date(data.date) }),
+      }
+    });
+  }
+
+  async deleteExpense(id: string) {
+    return prisma.expense.delete({
+      where: { id }
+    });
+  }
+
   // --- Purchase Orders API ---
 
   async createPurchaseOrder(data: { supplierId: string; items: { medicineId: string; quantity: number; unitPrice: number; }[] }) {
@@ -306,6 +324,43 @@ export class FinanceService {
       where: { id },
       data: { status },
       include: { items: true, supplier: true }
+    });
+  }
+
+  // --- Suppliers API ---
+
+  async createSupplier(data: { name: string; contactPerson?: string; email?: string; phone?: string; address?: string }) {
+    return prisma.supplier.create({
+      data
+    });
+  }
+
+  async getSuppliers() {
+    return prisma.supplier.findMany({
+      orderBy: { name: 'asc' }
+    });
+  }
+
+  async updateSupplier(id: string, data: { name?: string; contactPerson?: string; email?: string; phone?: string; address?: string }) {
+    return prisma.supplier.update({
+      where: { id },
+      data
+    });
+  }
+
+  async deleteSupplier(id: string) {
+    // Check constraints: if POs exist, prevent delete
+    const supplier = await prisma.supplier.findUnique({
+      where: { id },
+      include: { _count: { select: { purchaseOrders: true } } }
+    });
+
+    if (supplier && supplier._count.purchaseOrders > 0) {
+      throw new Error("Cannot delete supplier with existing Purchase Orders.");
+    }
+
+    return prisma.supplier.delete({
+      where: { id }
     });
   }
 }

@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
+import bcrypt from "bcryptjs";
 
 export const getAdminMetrics = async (req: Request, res: Response) => {
   try {
@@ -80,17 +81,24 @@ export const createStaff = async (req: Request, res: Response) => {
   try {
     const { name, email, password, roleName, specialty, roomNumber, title, departmentId, consultationFee, feeType } = req.body;
     
+    if (!name || !email || !password || !roleName) {
+      return res.status(400).json({ success: false, error: "Name, email, password, and roleName are required" });
+    }
+
     // Find or create role
     let role = await prisma.role.findUnique({ where: { name: roleName } });
     if (!role) {
       role = await prisma.role.create({ data: { name: roleName } });
     }
 
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
     const newStaff = await prisma.user.create({
       data: {
         fullName: name,
         email,
-        password, // In a real app, hash this
+        password: hashedPassword,
         roleId: role.id,
         specialty: specialty || null,
         roomNumber: roomNumber || null,
@@ -104,6 +112,9 @@ export const createStaff = async (req: Request, res: Response) => {
 
     res.json({ success: true, data: newStaff });
   } catch (error: any) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ success: false, error: "User with this email already exists" });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -125,7 +136,10 @@ export const updateStaff = async (req: Request, res: Response) => {
     const data: any = {};
     if (name) data.fullName = name;
     if (email) data.email = email;
-    if (password) data.password = password;
+    if (password) {
+      const salt = await bcrypt.genSalt(10);
+      data.password = await bcrypt.hash(password, salt);
+    }
     if (roleId) data.roleId = roleId;
     if (specialty !== undefined) data.specialty = specialty || null;
     if (roomNumber !== undefined) data.roomNumber = roomNumber || null;
@@ -142,6 +156,9 @@ export const updateStaff = async (req: Request, res: Response) => {
 
     res.json({ success: true, data: updatedStaff });
   } catch (error: any) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ success: false, error: "User with this email already exists" });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 };

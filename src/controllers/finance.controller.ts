@@ -45,6 +45,28 @@ class FinanceController {
     }
   }
 
+  async updateExpense(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const data = await financeService.updateExpense(id as string, req.body);
+      res.json({ success: true, data });
+    } catch (error: any) {
+      console.error("Error updating expense:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async deleteExpense(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      await financeService.deleteExpense(id as string);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error deleting expense:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
   async createPurchaseOrder(req: Request, res: Response) {
     try {
       const data = await financeService.createPurchaseOrder(req.body);
@@ -73,6 +95,59 @@ class FinanceController {
       res.json({ success: true, data });
     } catch (error: any) {
       console.error("Error updating PO status:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  // --- Suppliers ---
+
+  async createSupplier(req: Request, res: Response) {
+    try {
+      if (!req.body.name || req.body.name.trim() === "") {
+        return res.status(400).json({ success: false, error: "Supplier name is required" });
+      }
+      const data = await financeService.createSupplier(req.body);
+      res.status(201).json({ success: true, data });
+    } catch (error: any) {
+      console.error("Error creating supplier:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async getSuppliers(req: Request, res: Response) {
+    try {
+      const data = await financeService.getSuppliers();
+      res.json({ success: true, data });
+    } catch (error: any) {
+      console.error("Error fetching suppliers:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async updateSupplier(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      if (req.body.name !== undefined && req.body.name.trim() === "") {
+        return res.status(400).json({ success: false, error: "Supplier name cannot be empty" });
+      }
+      const data = await financeService.updateSupplier(id as string, req.body);
+      res.json({ success: true, data });
+    } catch (error: any) {
+      console.error("Error updating supplier:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async deleteSupplier(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      await financeService.deleteSupplier(id as string);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error deleting supplier:", error);
+      if (error.message.includes("Cannot delete")) {
+        return res.status(400).json({ success: false, error: error.message });
+      }
       res.status(500).json({ success: false, error: error.message });
     }
   }

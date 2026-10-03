@@ -7,6 +7,8 @@ const router = Router();
 router.get('/metrics', cacheMiddleware(300), pharmacyController.getMetrics);
 router.get('/medicines', cacheMiddleware(3600), pharmacyController.getMedicines);
 router.post('/medicines', pharmacyController.addMedicine);
+router.patch('/medicines/:id', pharmacyController.updateMedicine.bind(pharmacyController));
+router.delete('/medicines/:id', pharmacyController.deleteMedicine.bind(pharmacyController));
 
 router.post('/stock', pharmacyController.addStockBatch);
 router.post('/dispense', pharmacyController.dispense);

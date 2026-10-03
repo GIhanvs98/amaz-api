@@ -39,6 +39,24 @@ export class LabController {
     }
   }
 
+  async updateTestInCatalog(req: Request, res: Response) {
+    try {
+      const test = await labService.updateTestInCatalog(req.params.testId as string, req.body);
+      res.json(test);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+
+  async deleteTestFromCatalog(req: Request, res: Response) {
+    try {
+      await labService.deleteTestFromCatalog(req.params.testId as string);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+
   async createRequest(req: Request, res: Response) {
     try {
       const { patientPhone, patientName, patientId, testIds, doctorId, priority, visitId } = req.body;

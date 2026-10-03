@@ -9,10 +9,8 @@ router.get("/", cacheMiddleware(60), getPrescriptionHistory);
 router.get("/pending", cacheMiddleware(60), getPendingPrescriptions);
 router.patch("/:id/status", updatePrescriptionStatus);
 router.post("/:id/dispense", markPrescriptionDispensed);
+router.put("/:id", updatePrescription);
+router.delete("/:id", deletePrescription);
 router.get("/:id", cacheMiddleware(60), getPrescriptionById);
 
 export default router;
-
-router.delete("/:id", deletePrescription);
-
-router.put("/:id", updatePrescription);

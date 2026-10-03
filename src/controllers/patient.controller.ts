@@ -64,6 +64,18 @@ export const searchPatient = async (req: Request, res: Response): Promise<void> 
   }
 };
 
+export const getAllPatients = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const patients = await prisma.patient.findMany({
+      orderBy: { createdAt: 'desc' }
+    });
+    res.status(200).json(patients);
+  } catch (error) {
+    console.error("Error fetching all patients:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
 export const getPatientById = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
@@ -109,8 +121,49 @@ export const updatePatient = async (req: Request, res: Response): Promise<void> 
     });
 
     res.status(200).json(patient);
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error updating patient:", error);
+    if (error.code === 'P2002') {
+      res.status(400).json({ error: "Phone number already exists" });
+      return;
+    }
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const deletePatient = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+       res.status(400).json({ error: "Patient ID is required" });
+       return;
+    }
+
+    // Check for constraints
+    const patient = await prisma.patient.findUnique({
+      where: { id: id as string },
+      include: {
+        _count: {
+          select: { Appointment: true, LabRequests: true, Prescription: true }
+        }
+      }
+    });
+
+    if (!patient) {
+      res.status(404).json({ error: "Patient not found" });
+      return;
+    }
+
+    const count = (patient as any)._count;
+    if (count.Appointment > 0 || count.LabRequests > 0 || count.Prescription > 0) {
+      res.status(400).json({ error: "Cannot delete patient with existing records" });
+      return;
+    }
+
+    await prisma.patient.delete({ where: { id: id as string } });
+    res.status(200).json({ success: true });
+  } catch (error: any) {
+    console.error("Error deleting patient:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };

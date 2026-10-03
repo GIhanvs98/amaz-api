@@ -16,4 +16,10 @@ router.post('/charge', billingController.charge.bind(billingController));
 // POST /api/billing/invoices/:invoiceId/pay
 router.post('/invoices/:invoiceId/pay', billingController.payInvoice.bind(billingController));
 
+// DELETE /api/billing/invoices/:invoiceId/items/:lineItemId
+router.delete('/invoices/:invoiceId/items/:lineItemId', billingController.removeCharge.bind(billingController));
+
+// DELETE /api/billing/invoices/:invoiceId
+router.delete('/invoices/:invoiceId', billingController.deleteInvoice.bind(billingController));
+
 export default router;

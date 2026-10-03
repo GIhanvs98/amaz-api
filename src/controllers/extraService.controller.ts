@@ -6,8 +6,11 @@ const prisma = new PrismaClient();
 export const extraServiceController = {
   getServices: async (req: Request, res: Response) => {
     try {
+      const { all } = req.query;
+      const whereClause = all === "true" ? {} : { isActive: true };
+      
       const services = await prisma.extraService.findMany({
-        where: { isActive: true },
+        where: whereClause,
         orderBy: { createdAt: 'desc' }
       });
       res.json(services);
@@ -64,7 +67,11 @@ export const extraServiceController = {
       });
       res.json(service);
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      if (e.code === 'P2002') {
+        res.status(400).json({ error: "Barcode must be unique" });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
     }
   },
 

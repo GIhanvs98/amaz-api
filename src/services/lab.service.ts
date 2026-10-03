@@ -30,6 +30,22 @@ export class LabService {
     return withRetry(() => prisma.labTest.create({ data }));
   }
 
+  async updateTestInCatalog(id: string, data: {
+    name?: string;
+    price?: number;
+    category?: string;
+    sampleType?: string;
+    roomNumber?: string;
+    isActive?: boolean;
+  }) {
+    return withRetry(() => prisma.labTest.update({ where: { id }, data }));
+  }
+
+  async deleteTestFromCatalog(id: string) {
+    // Soft delete: mark as inactive
+    return withRetry(() => prisma.labTest.update({ where: { id }, data: { isActive: false } }));
+  }
+
   /**
    * Resolve patientId from phone/name, creating patient if needed
    */

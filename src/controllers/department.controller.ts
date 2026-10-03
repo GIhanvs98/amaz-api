@@ -67,6 +67,10 @@ export class DepartmentController {
     try {
       const { name, description, isActive } = req.body;
       
+      if (!name || name.trim() === "") {
+        return res.status(400).json({ error: "Department name is required" });
+      }
+      
       const existing = await prisma.department.findUnique({
         where: { name }
       });
@@ -101,6 +105,10 @@ export class DepartmentController {
       const { id } = req.params;
       const { name, description, isActive } = req.body;
 
+      if (name !== undefined && name.trim() === "") {
+        return res.status(400).json({ error: "Department name cannot be empty" });
+      }
+
       const department = await prisma.department.update({
         where: { id: id as string },
         data: { name, description, isActive },
@@ -121,6 +129,9 @@ export class DepartmentController {
       res.json(department);
     } catch (error: any) {
       console.error("Update Department Error:", error);
+      if (error.code === 'P2002') {
+        return res.status(400).json({ error: "Department with this name already exists" });
+      }
       res.status(500).json({ error: "Failed to update department" });
     }
   }

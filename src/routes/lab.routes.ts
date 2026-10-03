@@ -16,6 +16,12 @@ router.get('/catalog', cacheMiddleware(3600), labController.getCatalog.bind(labC
 // POST /api/lab/catalog
 router.post('/catalog', labController.addTestToCatalog.bind(labController));
 
+// PATCH /api/lab/tests/:testId
+router.patch('/tests/:testId', labController.updateTestInCatalog.bind(labController));
+
+// DELETE /api/lab/tests/:testId
+router.delete('/tests/:testId', labController.deleteTestFromCatalog.bind(labController));
+
 // GET /api/lab/tests/:testId/biomarkers
 router.get('/tests/:testId/biomarkers', labController.getBiomarkers.bind(labController));
 

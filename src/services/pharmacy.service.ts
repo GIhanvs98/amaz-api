@@ -202,6 +202,26 @@ export class PharmacyService {
       };
     });
   }
+
+  async updateMedicine(id: string, data: { name?: string; genericName?: string; category?: string; form?: string; unit?: string; reorderLevel?: number; barcode?: string }) {
+    return withRetry(() => prisma.medicine.update({
+      where: { id },
+      data
+    }));
+  }
+
+  async deleteMedicine(id: string) {
+    // Check if medicine has active stock batches
+    const batches = await prisma.stockBatch.findMany({
+      where: { medicineId: id, currentQuantity: { gt: 0 } }
+    });
+    if (batches.length > 0) {
+      throw new Error("Cannot delete medicine with active stock. Deplete or adjust stock first.");
+    }
+    // Hard delete (cascade stock batches via relations)
+    await prisma.stockBatch.deleteMany({ where: { medicineId: id } });
+    return prisma.medicine.delete({ where: { id } });
+  }
 }
 
 export const pharmacyService = new PharmacyService();

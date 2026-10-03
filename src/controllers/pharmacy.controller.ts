@@ -130,6 +130,38 @@ export class PharmacyController {
     }
   }
 
+  async updateMedicine(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { name, genericName, category, form, unit, reorderLevel, barcode } = req.body;
+
+      if (barcode && !/^[a-zA-Z0-9-]{6,15}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be between 6 and 15 alphanumeric characters." });
+      }
+
+      const medicine = await pharmacyService.updateMedicine(id as string, { name, genericName, category, form, unit, reorderLevel: reorderLevel ? Number(reorderLevel) : undefined, barcode });
+      res.json(medicine);
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        return res.status(400).json({ error: "Barcode must be unique" });
+      }
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  async deleteMedicine(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      await pharmacyService.deleteMedicine(id as string);
+      res.json({ success: true });
+    } catch (error: any) {
+      if (error.message?.includes('Cannot delete')) {
+        return res.status(400).json({ error: error.message });
+      }
+      res.status(500).json({ error: error.message });
+    }
+  }
+
   async sell(req: Request, res: Response) {
     try {
       const { items, paymentMethod, prescriptionId, visitId, patientId } = req.body;

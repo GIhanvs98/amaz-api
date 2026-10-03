@@ -252,6 +252,47 @@ export class BillingService {
 
     return refund;
   }
+
+  /**
+   * Remove a line item from a DRAFT invoice and update totals.
+   */
+  async removeCharge(invoiceId: string, lineItemId: string) {
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { lineItems: true }
+    });
+
+    if (!invoice) throw new Error("Invoice not found");
+    if (invoice.status !== "DRAFT") throw new Error("Can only remove charges from DRAFT invoices");
+
+    const lineItem = invoice.lineItems.find(li => li.id === lineItemId);
+    if (!lineItem) throw new Error("Line item not found on this invoice");
+
+    await prisma.invoiceLineItem.delete({ where: { id: lineItemId } });
+
+    return prisma.invoice.update({
+      where: { id: invoiceId },
+      data: {
+        subtotal: { decrement: lineItem.total },
+        totalAmount: { decrement: lineItem.total }
+      },
+      include: { lineItems: true }
+    });
+  }
+
+  /**
+   * Cancel/delete a DRAFT invoice and all its line items.
+   */
+  async deleteDraftInvoice(invoiceId: string) {
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!invoice) throw new Error("Invoice not found");
+    if (invoice.status !== "DRAFT") throw new Error("Can only delete DRAFT invoices");
+
+    await prisma.invoiceLineItem.deleteMany({ where: { invoiceId } });
+    await prisma.invoice.delete({ where: { id: invoiceId } });
+
+    return { success: true };
+  }
 }
 
 export const billingService = new BillingService();
