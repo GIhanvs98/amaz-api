@@ -73,28 +73,63 @@ export class FrontdeskService {
     });
 
     if (status === 'COMPLETED' || status === 'LEFT') {
-      const waitingTokens = await prisma.appointment.count({
+      const pendingApts = await prisma.appointment.findMany({
         where: {
           doctorId,
           appointmentDate: { gte: startOfDay, lte: endOfDay },
           status: { in: ['BOOKED', 'ARRIVED', 'CONSULTATION'] }
-        }
+        },
+        include: { Patient: true, User: true }
       });
       
-      if (waitingTokens > 0) {
+      if (pendingApts.length > 0) {
         if (!forceExit) {
-          throw new Error(`Cannot mark out. There are ${waitingTokens} patients still waiting or in consultation.`);
+          throw new Error(`Cannot mark out. There are ${pendingApts.length} patients still waiting or in consultation.`);
         } else {
-          // Bulk update stranded tokens to NO_SHOW
+          // Update stranded tokens to CANCELLED
           await prisma.appointment.updateMany({
             where: {
               doctorId,
               appointmentDate: { gte: startOfDay, lte: endOfDay },
               status: { in: ['BOOKED', 'ARRIVED', 'CONSULTATION'] }
             },
-            data: { status: 'NO_SHOW' }
+            data: { status: 'CANCELLED' }
           });
-          // Broadcast to websocket could be done here if needed
+
+          // Handle automated refunds for prepaid appointments and send SMS
+          for (const apt of pendingApts) {
+            const invoice = await prisma.invoice.findFirst({
+              where: { visitId: apt.id, status: 'PAID' },
+              include: { payments: true }
+            });
+            
+            if (invoice) {
+              for (const p of invoice.payments) {
+                if (p.status === "COMPLETED") {
+                  try {
+                    await billingService.processRefund(p.id, p.amount, `Doctor left early`);
+                  } catch (err) {
+                    console.error(`Failed to process refund for payment ${p.id}:`, err);
+                  }
+                }
+              }
+            }
+
+            if (apt.Patient?.phone) {
+              NotificationService.sendTemplatedSMS(
+                apt.patientId,
+                apt.Patient.phone,
+                'SESSION_CANCELLED',
+                {
+                  patientName: apt.Patient.fullName,
+                  doctorName: apt.User?.fullName || 'Doctor',
+                  date: today.toLocaleDateString(),
+                  reason: 'Doctor had to leave early due to an emergency.',
+                  hospitalName: "AMAZ Hospital"
+                }
+              ).catch(console.error);
+            }
+          }
         }
       }
     }
@@ -247,7 +282,7 @@ export class FrontdeskService {
     const walkInBookedCount = await prisma.appointment.count({
       where: {
         sessionId,
-        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        appointmentDate: startOfDay,
         bookingType: "WALK_IN",
         status: { notIn: ["CANCELLED", "NO_SHOW"] }
       }
@@ -280,7 +315,7 @@ export class FrontdeskService {
       try {
         // Find next available token across ALL bookings for the session (Phone + Walk-in)
         const existing = await prisma.appointment.findMany({
-          where: { sessionId, appointmentDate: { gte: startOfDay, lte: endOfDay } },
+          where: { sessionId, appointmentDate: startOfDay },
           orderBy: { tokenNumber: 'desc' }
         });
         
@@ -302,7 +337,7 @@ export class FrontdeskService {
             patientId: patient.id,
             sessionId,
             tokenNumber: nextTokenNumberStr,
-            appointmentDate: new Date(),
+            appointmentDate: startOfDay,
             status: 'ARRIVED', // walk-ins are inherently arrived
             bookingType: 'WALK_IN'
           }

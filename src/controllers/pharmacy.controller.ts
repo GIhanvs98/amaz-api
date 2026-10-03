@@ -165,96 +165,125 @@ export class PharmacyController {
   async sell(req: Request, res: Response) {
     try {
       const { items, paymentMethod, prescriptionId, visitId, patientId } = req.body;
-      
-      const invoice = await billingService.addCharge({
-        visitId,
-        patientId,
-        department: 'PHARMACY',
-        description: prescriptionId ? 'Pharmacy Prescription Sales' : 'Over The Counter Sales',
-        quantity: 1,
-        unitPrice: 0 // Invoice creation hook
-      });
 
-      let totalCost = 0;
-      const chargeItems: { referenceId?: string; description: string; quantity: number; unitPrice: number; medicineId?: string }[] = [];
+      if (!items || items.length === 0) {
+        return res.status(400).json({ error: 'No items provided' });
+      }
 
-      for (const item of items) {
-        // We still need to call dispenseMedicine to deduct inventory correctly
-        const result = await pharmacyService.dispenseMedicine(item.id, Number(item.qty));
-        
-        let itemCost = 0;
-        let totalDispensed = 0;
-        result.batchesUsed.forEach((b: any) => {
-          itemCost += b.quantityDispensed * b.unitPrice;
-          totalDispensed += b.quantityDispensed;
-        });
+      // Execute the entire sale atomically in a single transaction
+      const result = await prisma.$transaction(async (tx) => {
+        // 1. Validate and dispense all items, collecting charges
+        const charges: { referenceId?: string; description: string; quantity: number; unitPrice: number; medicineId: string }[] = [];
 
-        if (itemCost > 0) {
-          totalCost += itemCost;
-          chargeItems.push({
+        for (const item of items) {
+          const qty = Number(item.qty);
+
+          // Get available FIFO batches for this medicine
+          const availableBatches = await tx.stockBatch.findMany({
+            where: {
+              medicineId: item.id,
+              currentQuantity: { gt: 0 },
+              expiryDate: { gt: new Date() },
+            },
+            orderBy: { expiryDate: 'asc' },
+          });
+
+          const totalAvailable = availableBatches.reduce((sum: number, b: any) => sum + b.currentQuantity, 0);
+          if (totalAvailable < qty) {
+            throw new Error(`Insufficient stock for "${item.name}". Requested: ${qty}, Available: ${totalAvailable}`);
+          }
+
+          let remaining = qty;
+          let itemCost = 0;
+
+          for (const batch of availableBatches) {
+            if (remaining <= 0) break;
+            const fromBatch = Math.min(batch.currentQuantity, remaining);
+            itemCost += fromBatch * batch.unitPrice;
+            remaining -= fromBatch;
+
+            await tx.stockBatch.update({
+              where: { id: batch.id },
+              data: { currentQuantity: batch.currentQuantity - fromBatch },
+            });
+          }
+
+          charges.push({
             referenceId: item.id,
             description: item.name || 'Pharmacy Medication',
             quantity: 1,
             unitPrice: itemCost,
-            medicineId: item.id
+            medicineId: item.id,
           });
         }
-      }
-      
-      // Insert line items individually since addChargesBulk does not exist
-      if (chargeItems.length > 0) {
-        for (const item of chargeItems) {
-          await billingService.addCharge({
-            invoiceId: invoice.id,
+
+        const totalCost = charges.reduce((sum, c) => sum + c.unitPrice, 0);
+
+        // 2. Create invoice + add all line items atomically (using bulk method)
+        const invoice = await billingService.addChargesBulk({
+          visitId,
+          patientId,
+          charges: charges.map(c => ({
             department: 'PHARMACY',
-            referenceId: item.referenceId,
-            description: item.description,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice
-          });
-        }
-      }
+            referenceId: c.referenceId,
+            description: c.description,
+            quantity: c.quantity,
+            unitPrice: c.unitPrice,
+          })),
+        }, tx);
 
-      // If tied to a prescription, update the prescription quantities and status
-      if (prescriptionId) {
-        const rx = await prisma.prescription.findUnique({
-          where: { id: prescriptionId },
-          include: { items: true }
-        });
-        if (rx) {
-          for (const rxItem of rx.items) {
-            const chargeItem = chargeItems.find(c => c.medicineId === rxItem.medicineId);
-            if (chargeItem) {
-               // We dispensed it. (The total quantity was passed in item.qty and deducted from batches)
-               // The exact dispensed amount is tracked, we can just use the requested qty as the dispenseQty for now,
-               // or lookup the original requested item in req.body.items.
-               const requestedItem = items.find((i: any) => i.id === rxItem.medicineId);
-               if (requestedItem) {
-                 await prisma.prescriptionItem.update({
-                   where: { id: rxItem.id },
-                   data: { dispenseQty: Number(requestedItem.qty) }
-                 });
-               }
-            }
-          }
-          await prisma.prescription.update({
+        if (!invoice) throw new Error('Failed to create pharmacy invoice');
+
+        // 3. Update prescription status if dispensed from a prescription
+        if (prescriptionId) {
+          const rx = await tx.prescription.findUnique({
             where: { id: prescriptionId },
-            data: { status: "DISPENSED" }
+            include: { items: true },
           });
+          if (rx) {
+            for (const rxItem of rx.items) {
+              const soldItem = items.find((i: any) => i.id === rxItem.medicineId);
+              if (soldItem) {
+                await tx.prescriptionItem.update({
+                  where: { id: rxItem.id },
+                  data: { dispenseQty: Number(soldItem.qty) },
+                });
+              }
+            }
+            await tx.prescription.update({
+              where: { id: prescriptionId },
+              data: { status: 'DISPENSED' },
+            });
+          }
         }
-      }
 
-      // Pay the invoice immediately since it's OTC POS
-      const finalInvoice = await billingService.payInvoice(invoice.id, totalCost, paymentMethod);
+        // 4. Pay the invoice immediately (POS = instant payment)
+        await tx.payment.create({
+          data: {
+            invoiceId: invoice.id,
+            amount: totalCost,
+            method: paymentMethod,
+            status: 'COMPLETED',
+          },
+        });
 
-      // Announce payment success via WebSockets
-      websocketService.broadcast('pos_payment_success', {
-        invoiceId: finalInvoice.id,
-        totalAmount: finalInvoice.totalAmount,
-        paymentMethod
+        const finalInvoice = await tx.invoice.update({
+          where: { id: invoice.id },
+          data: { status: 'PAID' },
+          include: { lineItems: true, payments: true },
+        });
+
+        return { invoice: finalInvoice, totalCost };
       });
 
-      res.json({ success: true, invoice: finalInvoice });
+      // Announce payment success via WebSockets (outside the tx — non-critical)
+      websocketService.broadcast('pos_payment_success', {
+        invoiceId: result.invoice.id,
+        totalAmount: result.invoice.totalAmount,
+        paymentMethod,
+      });
+
+      res.json({ success: true, invoice: result.invoice });
     } catch (error: any) {
       console.error(error);
       res.status(400).json({ error: error.message });

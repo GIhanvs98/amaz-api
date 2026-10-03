@@ -320,10 +320,46 @@ export class FinanceService {
       throw new Error(`Invalid status. Must be one of: ${validStatuses.join(', ')}`);
     }
 
-    return prisma.purchaseOrder.update({
-      where: { id },
-      data: { status },
-      include: { items: true, supplier: true }
+    return prisma.$transaction(async (tx) => {
+      const po = await tx.purchaseOrder.findUnique({
+        where: { id },
+        include: { items: true }
+      });
+
+      if (!po) throw new Error('Purchase Order not found');
+
+      // Guard against idempotency issue — no double-delivering
+      if (status === 'DELIVERED' && (po.status === 'DELIVERED' || po.status === 'COMPLETED')) {
+        throw new Error('This Purchase Order has already been delivered and stock has been received.');
+      }
+
+      const updatedPO = await tx.purchaseOrder.update({
+        where: { id },
+        data: { status },
+        include: { items: true, supplier: true }
+      });
+
+      // AUTO STOCK RECEIVING: When goods are marked as delivered,
+      // automatically create new stock batches for each ordered item.
+      if (status === 'DELIVERED') {
+        const batchTimestamp = Date.now();
+        await Promise.all(
+          po.items.map((item, index) =>
+            tx.stockBatch.create({
+              data: {
+                medicineId: item.medicineId,
+                batchNumber: `PO-${id.slice(-6).toUpperCase()}-${batchTimestamp + index}`,
+                expiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1)),
+                initialQuantity: item.quantity,
+                currentQuantity: item.quantity,
+                unitPrice: item.unitPrice,
+              }
+            })
+          )
+        );
+      }
+
+      return updatedPO;
     });
   }
 

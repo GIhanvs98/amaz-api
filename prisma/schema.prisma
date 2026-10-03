@@ -319,7 +319,7 @@ model Appointment {
   Session           DoctorScheduleSession? @relation(fields: [sessionId], references: [id])
   LabRequests       LabRequest[]
 
-  @@unique([doctorId, appointmentDate, tokenNumber])
+  @@unique([sessionId, appointmentDate, tokenNumber])
 }
 
 model User {

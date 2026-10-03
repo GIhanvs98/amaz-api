@@ -107,24 +107,24 @@ export class LabService {
         }
       });
 
-      // 2. Add the charge to the centralized billing engine
+      // 2. Add all charges atomically using bulk billing
       if (data.visitId || data.patientId) {
-        // Create separate charges for each test
-        for (const test of tests) {
-          const finalPrice = data.customPrices && data.customPrices[test.id] !== undefined 
-            ? Number(data.customPrices[test.id]) 
-            : test.price;
-
-          await billingService.addCharge({
-            visitId: data.visitId,
-            patientId: data.patientId,
-            department: 'LAB',
-            referenceId: request.id,
-            description: `Lab Test: ${test.name}`,
-            quantity: 1,
-            unitPrice: finalPrice
-          });
-        }
+        await billingService.addChargesBulk({
+          visitId: data.visitId,
+          patientId: data.patientId,
+          charges: tests.map(test => {
+            const finalPrice = data.customPrices && data.customPrices[test.id] !== undefined
+              ? Number(data.customPrices[test.id])
+              : test.price;
+            return {
+              department: 'LAB',
+              referenceId: request.id,
+              description: `Lab Test: ${test.name}`,
+              quantity: 1,
+              unitPrice: finalPrice
+            };
+          })
+        });
       }
 
       return request;

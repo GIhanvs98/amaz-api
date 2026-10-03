@@ -76,6 +76,75 @@ export class BillingService {
   }
 
   /**
+   * Adds multiple charges atomically to a DRAFT invoice (or creates one).
+   * Optimized for bulk operations: finds invoice once, createMany line items, updates total once.
+   */
+  async addChargesBulk(data: {
+    invoiceId?: string;
+    visitId?: string;
+    patientId?: string;
+    charges: {
+      department: string;
+      referenceId?: string;
+      description: string;
+      quantity: number;
+      unitPrice: number;
+    }[];
+  }, tx?: any) {
+    if (!data.charges || data.charges.length === 0) return null;
+
+    const db = tx || prisma;
+    const totalToIncrement = data.charges.reduce((acc, curr) => acc + (curr.quantity * curr.unitPrice), 0);
+
+    // 1. Find or create a DRAFT invoice
+    let invoice = null;
+    if (data.invoiceId) {
+      invoice = await db.invoice.findUnique({ where: { id: data.invoiceId } });
+    } else if (data.visitId) {
+      invoice = await db.invoice.findFirst({ where: { visitId: data.visitId, status: 'DRAFT' } });
+    } else if (data.patientId) {
+      invoice = await db.invoice.findFirst({ where: { patientId: data.patientId, status: 'DRAFT' } });
+    }
+
+    if (!invoice) {
+      invoice = await db.invoice.create({
+        data: {
+          visitId: data.visitId,
+          patientId: data.patientId,
+          status: 'DRAFT',
+          subtotal: 0,
+          totalAmount: 0
+        }
+      });
+    }
+
+    // 2. Bulk insert all line items in a single query
+    await db.invoiceLineItem.createMany({
+      data: data.charges.map(charge => ({
+        invoiceId: invoice!.id,
+        department: charge.department,
+        referenceId: charge.referenceId,
+        description: charge.description,
+        quantity: charge.quantity,
+        unitPrice: charge.unitPrice,
+        total: charge.quantity * charge.unitPrice
+      }))
+    });
+
+    // 3. Update invoice totals exactly once
+    const updatedInvoice = await db.invoice.update({
+      where: { id: invoice.id },
+      data: {
+        subtotal: { increment: totalToIncrement },
+        totalAmount: { increment: totalToIncrement }
+      },
+      include: { lineItems: true }
+    });
+
+    return updatedInvoice;
+  }
+
+  /**
    * Fetch an invoice by visit ID or Invoice ID
    */
   async getInvoice(query: { invoiceId?: string, visitId?: string }) {

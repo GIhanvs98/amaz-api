@@ -244,8 +244,8 @@ export class BookingService {
       if (selectedTokenNumber) {
         const existingToken = await tx.appointment.findFirst({
           where: {
-            doctorId,
-            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            sessionId: session.id,
+            appointmentDate: startOfDay,
             tokenNumber: selectedTokenNumber.toString().padStart(3, "0")
           }
         });
@@ -255,8 +255,8 @@ export class BookingService {
 
       const phoneBookedCount = await tx.appointment.count({
         where: {
-          doctorId,
-          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          sessionId: session.id,
+          appointmentDate: startOfDay,
           bookingType: "PHONE",
           status: { notIn: ["CANCELLED", "NO_SHOW"] }
         }
@@ -280,7 +280,7 @@ export class BookingService {
       } else {
         // Find next lowest available token
         const existingTokens = await tx.appointment.findMany({
-          where: { doctorId, appointmentDate: { gte: startOfDay, lte: endOfDay } },
+          where: { sessionId: session.id, appointmentDate: startOfDay },
           select: { tokenNumber: true }
         });
         const bookedNums = new Set(existingTokens.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
@@ -296,7 +296,7 @@ export class BookingService {
           tokenNumber: nextTokenNumberStr,
           patientId: patient.id,
           doctorId: doctorId,
-          appointmentDate,
+          appointmentDate: startOfDay,
           sessionId: session.id,
           status: "BOOKED",
           bookingType: "PHONE" // Always set explicitly for phone bookings
@@ -363,24 +363,52 @@ export class BookingService {
         include: { Patient: true, User: true }
       });
 
-      // Create Invoice for the Cashier
-      const invoice = await prisma.invoice.create({
-        data: {
-          patientId: token.patientId,
-          status: "DRAFT",
-          subtotal: 1500, // Standard fee
-          totalAmount: 1500,
-          lineItems: {
-            create: {
-              department: "CONSULTATION",
-              description: `Consultation - ${token.User?.fullName || 'General Physician'}`,
-              unitPrice: 1500,
-              total: 1500,
-              quantity: 1
+      // Fetch the doctor's actual consultation fee and fee type
+      const doctor = token.doctorId
+        ? await prisma.user.findUnique({
+            where: { id: token.doctorId },
+            select: { consultationFee: true, feeType: true, fullName: true }
+          })
+        : null;
+
+      const consultationFee = doctor?.consultationFee ?? 2500;
+      const feeType = doctor?.feeType ?? "POST";
+      const doctorName = doctor?.fullName || token.User?.fullName || 'General Physician';
+
+      let invoice;
+
+      if (feeType === "UPFRONT") {
+        // UPFRONT: Charge consultation fee immediately at check-in
+        invoice = await prisma.invoice.create({
+          data: {
+            visitId: token.id,
+            patientId: token.patientId,
+            status: "DRAFT",
+            subtotal: consultationFee,
+            totalAmount: consultationFee,
+            lineItems: {
+              create: {
+                department: "CONSULTATION",
+                description: `Consultation (Upfront) - Dr. ${doctorName}`,
+                unitPrice: consultationFee,
+                total: consultationFee,
+                quantity: 1
+              }
             }
           }
-        }
-      });
+        });
+      } else {
+        // POST: Create empty invoice now; fee added when prescription is submitted
+        invoice = await prisma.invoice.create({
+          data: {
+            visitId: token.id,
+            patientId: token.patientId,
+            status: "DRAFT",
+            subtotal: 0,
+            totalAmount: 0
+          }
+        });
+      }
 
       return { token, invoice };
     });
