@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma.js';
 import { websocketService } from './websocket.service.js';
 import { NotificationService } from './notification.service.js';
+import { billingService } from './billing.service.js';
 
 export class FrontdeskService {
   // 1. Get Doctor Status & Sessions for a given date
@@ -466,6 +467,26 @@ export class FrontdeskService {
       },
       data: { status: 'CANCELLED' }
     });
+
+    // Handle automated refunds for prepaid appointments
+    for (const apt of pendingApts) {
+      const invoice = await prisma.invoice.findFirst({
+        where: { visitId: apt.id, status: 'PAID' },
+        include: { payments: true }
+      });
+      
+      if (invoice) {
+        for (const p of invoice.payments) {
+          if (p.status === "COMPLETED") {
+            try {
+              await billingService.processRefund(p.id, p.amount, `Session cancelled by hospital (Reason: ${reason})`);
+            } catch (err) {
+              console.error(`Failed to process refund for payment ${p.id}:`, err);
+            }
+          }
+        }
+      }
+    }
 
     // Dispatch SMS asynchronously
     for (const apt of pendingApts) {

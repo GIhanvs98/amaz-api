@@ -154,6 +154,160 @@ export class FinanceService {
     // Keep it ordered chronologically
     return chartData;
   }
+
+  /**
+   * Generates a dynamic ledger of payables owed to Doctors for completed appointments.
+   * Calculates based on 85% revenue share of the consultation fee.
+   */
+  async getDoctorSettlements(startDate?: string, endDate?: string) {
+    const start = startDate ? new Date(startDate) : new Date(new Date().setHours(0, 0, 0, 0));
+    const end = endDate ? new Date(endDate) : new Date(new Date().setHours(23, 59, 59, 999));
+
+    // 1. Get all COMPLETED appointments in the date range
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        completedAt: { gte: start, lte: end },
+        status: 'COMPLETED',
+        doctorId: { not: null }
+      },
+      include: {
+        User: true
+      }
+    });
+
+    // 2. Fetch associated invoices to calculate actual paid amounts
+    const visitIds = appointments.map(a => a.id);
+    const paidInvoices = await prisma.invoice.findMany({
+      where: {
+        visitId: { in: visitIds },
+        status: 'PAID'
+      },
+      include: {
+        lineItems: true
+      }
+    });
+
+    // 3. Aggregate by Doctor
+    const settlementMap: Record<string, {
+      doctorId: string;
+      doctorName: string;
+      totalConsultations: number;
+      totalCollected: number;
+      doctorShare: number; // 85%
+      hospitalShare: number; // 15%
+    }> = {};
+
+    for (const apt of appointments) {
+      if (!apt.doctorId || !apt.User) continue;
+
+      const docId = apt.doctorId;
+      if (!settlementMap[docId]) {
+        settlementMap[docId] = {
+          doctorId: docId,
+          doctorName: apt.User.fullName,
+          totalConsultations: 0,
+          totalCollected: 0,
+          doctorShare: 0,
+          hospitalShare: 0
+        };
+      }
+
+      // Find the paid invoice for this appointment
+      const invoice = paidInvoices.find(inv => inv.visitId === apt.id);
+      if (invoice) {
+        // Find the consultation line item
+        const consultItem = invoice.lineItems.find(li => li.department === 'CONSULTATION');
+        if (consultItem) {
+          settlementMap[docId].totalConsultations += 1;
+          settlementMap[docId].totalCollected += consultItem.total;
+          
+          // 85% to doctor, 15% to hospital
+          const docCut = consultItem.total * 0.85;
+          settlementMap[docId].doctorShare += docCut;
+          settlementMap[docId].hospitalShare += (consultItem.total - docCut);
+        }
+      }
+    }
+
+    // Convert map to array
+    return Object.values(settlementMap).sort((a, b) => b.totalCollected - a.totalCollected);
+  }
+
+  // --- Expenses API ---
+
+  async addExpense(data: { category: string; amount: number; description: string; date?: string }) {
+    return prisma.expense.create({
+      data: {
+        category: data.category,
+        amount: Number(data.amount),
+        description: data.description,
+        date: data.date ? new Date(data.date) : new Date(),
+        status: "COMPLETED"
+      }
+    });
+  }
+
+  async getExpenses() {
+    return prisma.expense.findMany({
+      orderBy: { date: 'desc' }
+    });
+  }
+
+  // --- Purchase Orders API ---
+
+  async createPurchaseOrder(data: { supplierId: string; items: { medicineId: string; quantity: number; unitPrice: number; }[] }) {
+    let totalAmount = 0;
+    const poItems = data.items.map(item => {
+      const totalPrice = item.quantity * item.unitPrice;
+      totalAmount += totalPrice;
+      return {
+        medicineId: item.medicineId,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        totalPrice
+      };
+    });
+
+    return prisma.purchaseOrder.create({
+      data: {
+        supplierId: data.supplierId,
+        totalAmount,
+        status: "PENDING",
+        items: {
+          create: poItems
+        }
+      },
+      include: {
+        items: true,
+        supplier: true
+      }
+    });
+  }
+
+  async getPurchaseOrders() {
+    return prisma.purchaseOrder.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        items: {
+          include: { medicine: true }
+        },
+        supplier: true
+      }
+    });
+  }
+
+  async updatePurchaseOrderStatus(id: string, status: string) {
+    const validStatuses = ['PENDING', 'DELIVERED', 'COMPLETED', 'CANCELLED'];
+    if (!validStatuses.includes(status)) {
+      throw new Error(`Invalid status. Must be one of: ${validStatuses.join(', ')}`);
+    }
+
+    return prisma.purchaseOrder.update({
+      where: { id },
+      data: { status },
+      include: { items: true, supplier: true }
+    });
+  }
 }
 
 export const financeService = new FinanceService();

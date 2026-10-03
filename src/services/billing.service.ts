@@ -205,6 +205,53 @@ export class BillingService {
       recentTransactions: recentTransactions.slice(0, 10)
     };
   }
+
+  /**
+   * Processes a refund for a specific payment, supporting partial or full refunds.
+   */
+  async processRefund(paymentId: string, amount: number, reason: string) {
+    const payment = await prisma.payment.findUnique({
+      where: { id: paymentId },
+      include: { invoice: true }
+    });
+
+    if (!payment) throw new Error("Payment not found");
+    if (payment.status !== "COMPLETED") throw new Error("Can only refund completed payments");
+
+    // Calculate existing refunds
+    const existingRefunds = await prisma.refund.aggregate({
+      where: { paymentId, status: "COMPLETED" },
+      _sum: { amount: true }
+    });
+    const refundedAmount = existingRefunds._sum.amount || 0;
+
+    if (amount > (payment.amount - refundedAmount)) {
+      throw new Error(`Refund amount exceeds available payment balance. Available: ${payment.amount - refundedAmount}`);
+    }
+
+    const refund = await prisma.refund.create({
+      data: {
+        paymentId,
+        amount,
+        reason,
+        status: "COMPLETED"
+      }
+    });
+
+    // If fully refunded, mark the parent records
+    if (amount === (payment.amount - refundedAmount)) {
+      await prisma.payment.update({
+        where: { id: paymentId },
+        data: { status: "REFUNDED" }
+      });
+      await prisma.invoice.update({
+        where: { id: payment.invoiceId },
+        data: { status: "REFUNDED" }
+      });
+    }
+
+    return refund;
+  }
 }
 
 export const billingService = new BillingService();

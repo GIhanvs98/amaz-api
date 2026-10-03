@@ -370,22 +370,7 @@ export const generateToken = async (req: Request, res: Response) => {
         totalAmount += fee;
       }
 
-      if (hasLab) {
-        labTestsDetails.forEach(test => {
-          const finalPrice = customLabPrices && customLabPrices[test.id] !== undefined 
-            ? Number(customLabPrices[test.id]) 
-            : test.price;
-          lineItems.push({
-            department: "LAB",
-            referenceId: test.id,
-            description: `Lab Test: ${test.name}`,
-            quantity: 1,
-            unitPrice: finalPrice,
-            total: finalPrice
-          });
-          totalAmount += finalPrice;
-        });
-      }
+
 
       if (hasService) {
         extraServicesDetails.forEach(svc => {
@@ -427,7 +412,8 @@ export const generateToken = async (req: Request, res: Response) => {
         visitId: labToken?.id || generatedTokens[0]?.id || "",
         testIds,
         doctorId: doctorId || null,
-        priority: "ROUTINE"
+        priority: "ROUTINE",
+        customPrices: customLabPrices
       });
     }
 

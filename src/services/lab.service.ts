@@ -54,6 +54,7 @@ export class LabService {
     testIds: string[];
     doctorId?: string;
     priority?: string;
+    customPrices?: Record<string, number>;
   }) {
     return withRetry(async () => {
       // Verify tests exist to get prices
@@ -73,10 +74,16 @@ export class LabService {
           priority: data.priority || "ROUTINE",
           status: "PENDING",
           items: {
-            create: tests.map(test => ({
-              labTestId: test.id,
-              price: test.price
-            }))
+            create: tests.map(test => {
+              const finalPrice = data.customPrices && data.customPrices[test.id] !== undefined 
+                ? Number(data.customPrices[test.id]) 
+                : test.price;
+              
+              return {
+                labTestId: test.id,
+                price: finalPrice
+              };
+            })
           }
         },
         include: {
@@ -88,6 +95,10 @@ export class LabService {
       if (data.visitId || data.patientId) {
         // Create separate charges for each test
         for (const test of tests) {
+          const finalPrice = data.customPrices && data.customPrices[test.id] !== undefined 
+            ? Number(data.customPrices[test.id]) 
+            : test.price;
+
           await billingService.addCharge({
             visitId: data.visitId,
             patientId: data.patientId,
@@ -95,7 +106,7 @@ export class LabService {
             referenceId: request.id,
             description: `Lab Test: ${test.name}`,
             quantity: 1,
-            unitPrice: test.price
+            unitPrice: finalPrice
           });
         }
       }
