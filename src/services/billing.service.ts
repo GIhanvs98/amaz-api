@@ -111,6 +111,11 @@ export class BillingService {
     if (!invoice) throw new Error("Invoice not found");
     if (invoice.status === "PAID") throw new Error("Invoice is already paid");
     
+    // Ensure strict financial integrity
+    if (amount < invoice.totalAmount) {
+      throw new Error(`Insufficient payment amount. Expected at least ${invoice.totalAmount}, but received ${amount}`);
+    }
+    
     // In a real system, you'd validate partial payments. Here we assume full payment.
     await prisma.payment.create({
       data: {
@@ -127,13 +132,6 @@ export class BillingService {
       data: { status: "PAID" },
       include: { lineItems: true, payments: true }
     });
-
-    if (updatedInvoice.visitId) {
-      await prisma.appointment.updateMany({
-        where: { id: updatedInvoice.visitId, status: { not: "COMPLETED" } },
-        data: { status: "COMPLETED", completedAt: new Date() }
-      });
-    }
 
     return updatedInvoice;
   }

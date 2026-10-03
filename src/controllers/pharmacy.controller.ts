@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { pharmacyService } from "../services/pharmacy.service.js";
 import { billingService } from '../services/billing.service.js';
 import { websocketService } from '../services/websocket.service.js';
+import { prisma } from '../lib/prisma.js';
 
 export class PharmacyController {
   async getMedicines(req: Request, res: Response) {
@@ -127,34 +128,39 @@ export class PharmacyController {
 
   async sell(req: Request, res: Response) {
     try {
-      const { items, paymentMethod } = req.body;
+      const { items, paymentMethod, prescriptionId, visitId, patientId } = req.body;
       
       const invoice = await billingService.addCharge({
-        department: 'OTC',
-        description: 'Over The Counter Sales',
+        visitId,
+        patientId,
+        department: 'PHARMACY',
+        description: prescriptionId ? 'Pharmacy Prescription Sales' : 'Over The Counter Sales',
         quantity: 1,
         unitPrice: 0 // Invoice creation hook
       });
 
       let totalCost = 0;
-      const chargeItems: { referenceId?: string; description: string; quantity: number; unitPrice: number; }[] = [];
+      const chargeItems: { referenceId?: string; description: string; quantity: number; unitPrice: number; medicineId?: string }[] = [];
 
       for (const item of items) {
         // We still need to call dispenseMedicine to deduct inventory correctly
         const result = await pharmacyService.dispenseMedicine(item.id, Number(item.qty));
         
         let itemCost = 0;
+        let totalDispensed = 0;
         result.batchesUsed.forEach((b: any) => {
           itemCost += b.quantityDispensed * b.unitPrice;
+          totalDispensed += b.quantityDispensed;
         });
 
         if (itemCost > 0) {
           totalCost += itemCost;
           chargeItems.push({
             referenceId: item.id,
-            description: item.name || 'OTC Medication',
+            description: item.name || 'Pharmacy Medication',
             quantity: 1,
-            unitPrice: itemCost
+            unitPrice: itemCost,
+            medicineId: item.id
           });
         }
       }
@@ -169,6 +175,35 @@ export class PharmacyController {
             description: item.description,
             quantity: item.quantity,
             unitPrice: item.unitPrice
+          });
+        }
+      }
+
+      // If tied to a prescription, update the prescription quantities and status
+      if (prescriptionId) {
+        const rx = await prisma.prescription.findUnique({
+          where: { id: prescriptionId },
+          include: { items: true }
+        });
+        if (rx) {
+          for (const rxItem of rx.items) {
+            const chargeItem = chargeItems.find(c => c.medicineId === rxItem.medicineId);
+            if (chargeItem) {
+               // We dispensed it. (The total quantity was passed in item.qty and deducted from batches)
+               // The exact dispensed amount is tracked, we can just use the requested qty as the dispenseQty for now,
+               // or lookup the original requested item in req.body.items.
+               const requestedItem = items.find((i: any) => i.id === rxItem.medicineId);
+               if (requestedItem) {
+                 await prisma.prescriptionItem.update({
+                   where: { id: rxItem.id },
+                   data: { dispenseQty: Number(requestedItem.qty) }
+                 });
+               }
+            }
+          }
+          await prisma.prescription.update({
+            where: { id: prescriptionId },
+            data: { status: "DISPENSED" }
           });
         }
       }

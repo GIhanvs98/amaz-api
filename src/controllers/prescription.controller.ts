@@ -43,6 +43,8 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
     // Format like getPendingPrescriptions does
     const formatted = {
       id: prescription.id,
+      patientId: prescription.patientId,
+      visitId: prescription.visitId,
       patientName: prescription.Patient.fullName,
       patientPhone: prescription.Patient.phone,
       doctorName: prescription.doctorName,
@@ -182,13 +184,12 @@ export const markPrescriptionDispensed = async (req: Request, res: Response): Pr
         // Update dispensed quantities and deduct stock
         if (dispensedItems && Array.isArray(dispensedItems)) {
           for (const di of dispensedItems) {
-            const rxItem = await tx.prescriptionItem.update({
+            let rxItem = await tx.prescriptionItem.findUnique({
               where: { id: di.itemId },
-              data: { dispenseQty: di.dispenseQty },
               include: { medicine: true }
             });
 
-            if (rxItem.medicineId && di.dispenseQty > 0) {
+            if (rxItem?.medicineId && di.dispenseQty > 0) {
               let remainingToDeduct = di.dispenseQty;
               const batches = await tx.stockBatch.findMany({
                 where: { medicineId: rxItem.medicineId, currentQuantity: { gt: 0 } },
@@ -207,6 +208,18 @@ export const markPrescriptionDispensed = async (req: Request, res: Response): Pr
                 totalPharmacyCost += (deductAmount * batch.unitPrice);
                 remainingToDeduct -= deductAmount;
               }
+
+              const actualDispensed = di.dispenseQty - remainingToDeduct;
+              
+              await tx.prescriptionItem.update({
+                where: { id: di.itemId },
+                data: { dispenseQty: actualDispensed }
+              });
+            } else if (rxItem) {
+              await tx.prescriptionItem.update({
+                where: { id: di.itemId },
+                data: { dispenseQty: di.dispenseQty }
+              });
             }
           }
         }
