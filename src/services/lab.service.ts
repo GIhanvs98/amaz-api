@@ -269,31 +269,75 @@ export class LabService {
   /**
    * Get lab tech dashboard metrics
    */
-  async getMetrics() {
+    async getMetrics() {
     return withRetry(async () => {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+
+      // Pending (currently waiting)
       const pendingCount = await prisma.labRequest.count({
-        where: { status: { in: ["PENDING", "SAVED"] } }
+        where: { status: "PENDING" }
+      });
+      const savedCount = await prisma.labRequest.count({
+        where: { status: "SAVED" }
       });
 
-      const publishedCount = await prisma.labRequest.count({
-        where: { 
-          status: "COMPLETED",
-          requestedAt: { gte: today } 
-        }
+      // Published today vs yesterday
+      const publishedToday = await prisma.labRequest.count({
+        where: { status: "COMPLETED", requestedAt: { gte: today } }
+      });
+      const publishedYesterday = await prisma.labRequest.count({
+        where: { status: "COMPLETED", requestedAt: { gte: yesterday, lt: today } }
       });
 
-      const criticalCount = await prisma.labResult.count({
-        where: {
-          isOutOfRange: true,
-          request: {
-            requestedAt: { gte: today }
-          }
-        }
+      const requestsToday = await prisma.labRequest.count({
+        where: { requestedAt: { gte: today } }
+      });
+      const requestsYesterday = await prisma.labRequest.count({
+        where: { requestedAt: { gte: yesterday, lt: today } }
       });
 
+      const criticalToday = await prisma.labResult.count({
+        where: { isOutOfRange: true, request: { requestedAt: { gte: today } } }
+      });
+      const criticalYesterday = await prisma.labResult.count({
+        where: { isOutOfRange: true, request: { requestedAt: { gte: yesterday, lt: today } } }
+      });
+
+      // Status Distribution
+      const statusCounts = await prisma.labRequest.groupBy({
+        by: ['status'],
+        _count: { id: true },
+        where: { requestedAt: { gte: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000) } } // Last 30 days
+      });
+      
+      const statusDistribution = statusCounts.map(s => ({
+        name: s.status,
+        value: s._count.id
+      }));
+
+      // Weekly tests (Last 7 days)
+      const weeklyTests = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const nextD = new Date(d);
+        nextD.setDate(d.getDate() + 1);
+        
+        const count = await prisma.labRequest.count({
+          where: { requestedAt: { gte: d, lt: nextD } }
+        });
+        
+        weeklyTests.push({
+          date: d.toLocaleDateString('en-US', { weekday: 'short' }),
+          count
+        });
+      }
+
+      // Urgent Pending
       const urgentPending = await prisma.labRequest.findMany({
         where: { status: { in: ["PENDING", "SAVED"] }, priority: "URGENT" },
         include: { 
@@ -301,23 +345,56 @@ export class LabService {
           Patient: true,
           Visit: { include: { User: true } }
         },
-        orderBy: { requestedAt: 'asc' }
+        orderBy: { requestedAt: 'asc' },
+        take: 10
+      });
+
+      // Recent Published
+      const recentPublished = await prisma.labRequest.findMany({
+        where: { status: "COMPLETED" },
+        include: { 
+          items: { include: { LabTest: true } },
+          Patient: true,
+          Visit: { include: { User: true } }
+        },
+        orderBy: { requestedAt: 'desc' },
+        take: 5
       });
 
       return {
-        pendingRequests: pendingCount,
-        inProgressTests: Math.floor(pendingCount * 0.3),
-        publishedToday: publishedCount,
-        criticalResults: criticalCount,
-        urgentRequests: urgentPending.map(req => ({
-          id: req.id,
-          patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
-          doctor: req.Visit?.User?.fullName || "Unknown Doctor",
-          tests: req.items.map(i => i.LabTest?.name),
-          priority: req.priority,
-          status: req.status,
-          requestedAt: req.requestedAt
-        }))
+        summary: {
+          requestsToday,
+          requestsYesterday,
+          pendingRequests: pendingCount,
+          inProgressTests: savedCount,
+          publishedToday,
+          publishedYesterday,
+          criticalToday,
+          criticalYesterday
+        },
+        charts: {
+          weeklyTests,
+          statusDistribution
+        },
+        tables: {
+          urgentRequests: urgentPending.map(req => ({
+            id: req.id,
+            patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
+            doctor: req.Visit?.User?.fullName || "Unknown Doctor",
+            tests: req.items.map(i => i.LabTest?.name),
+            priority: req.priority,
+            status: req.status,
+            requestedAt: req.requestedAt
+          })),
+          recentPublished: recentPublished.map(req => ({
+            id: req.id,
+            patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
+            doctor: req.Visit?.User?.fullName || "Unknown Doctor",
+            tests: req.items.map(i => i.LabTest?.name),
+            reportUrl: req.reportUrl,
+            requestedAt: req.requestedAt
+          }))
+        }
       };
     });
   }

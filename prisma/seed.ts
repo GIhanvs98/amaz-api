@@ -21,8 +21,14 @@ async function main() {
   await prisma.doctorAttendance.deleteMany({});
   await prisma.doctorScheduleSession.deleteMany({});
   await prisma.extraService.deleteMany({});
+  await prisma.stockBatch.deleteMany({});
+  await prisma.medicine.deleteMany({});
   await prisma.user.deleteMany({});
   await prisma.patient.deleteMany({});
+  await prisma.user.deleteMany({});
+  await prisma.patient.deleteMany({});
+  await prisma.labTestBiomarker.deleteMany({});
+  await prisma.labTest.deleteMany({});
   
   // --- 1. DEPARTMENTS ---
   console.log('Seeding departments...');
@@ -173,19 +179,20 @@ async function main() {
 
   const medicines = [];
   for (let i = 1; i <= 5; i++) {
-    medicines.push(
-      await prisma.medicine.create({
-        data: {
-          name: `Medicine ${i}`,
-          genericName: `Generic ${i}`,
-          category: 'Antibiotics',
-          form: 'Tablet',
-          unit: 'Box',
-          barcode: `100000000${i}`, // 10 digit barcode
-          reorderLevel: 50,
-        },
-      })
-    );
+    const med = await prisma.medicine.upsert({
+      where: { barcode: `100000000${i}` },
+      update: {},
+      create: {
+        name: `Medicine ${i}`,
+        genericName: `Generic ${i}`,
+        category: 'Antibiotics',
+        form: 'Tablet',
+        unit: 'Box',
+        barcode: `100000000${i}`,
+        reorderLevel: 50,
+      }
+    });
+    medicines.push(med);
   }
 
   for (let i = 1; i <= 5; i++) {
@@ -217,18 +224,48 @@ async function main() {
   }
 
   const labTests = [];
-  for (let i = 1; i <= 5; i++) {
-    labTests.push(
-      await prisma.labTest.create({
-        data: {
-          name: `Blood Test ${i}`,
-          code: `LAB00${i}`,
-          price: 500.0 * i,
-          category: 'Blood',
-          sampleType: 'Blood',
-        },
-      })
-    );
+  const testDefinitions = [
+    { name: "Full Blood Count (FBC)", code: "LAB-FBC", price: 1500, category: "Hematology", sample: "Blood",
+      biomarkers: [
+        { name: "Hemoglobin", unit: "g/dL", referenceRange: "13.0 - 17.0" },
+        { name: "White Blood Cells", unit: "x10^9/L", referenceRange: "4.0 - 10.0" },
+        { name: "Platelets", unit: "x10^9/L", referenceRange: "150 - 400" }
+      ]
+    },
+    { name: "Lipid Profile", code: "LAB-LIP", price: 2500, category: "Biochemistry", sample: "Blood",
+      biomarkers: [
+        { name: "Total Cholesterol", unit: "mg/dL", referenceRange: "< 200" },
+        { name: "HDL", unit: "mg/dL", referenceRange: "> 40" },
+        { name: "LDL", unit: "mg/dL", referenceRange: "< 100" }
+      ]
+    },
+    { name: "Fasting Blood Sugar (FBS)", code: "LAB-FBS", price: 500, category: "Biochemistry", sample: "Blood",
+      biomarkers: [
+        { name: "Glucose", unit: "mg/dL", referenceRange: "70 - 99" }
+      ]
+    }
+  ];
+
+  for (const tDef of testDefinitions) {
+    const test = await prisma.labTest.create({
+      data: {
+        name: tDef.name,
+        code: tDef.code,
+        price: tDef.price,
+        category: tDef.category,
+        sampleType: tDef.sample,
+        biomarkers: {
+          create: tDef.biomarkers.map((b, i) => ({
+            name: b.name,
+            unit: b.unit,
+            referenceRange: b.referenceRange,
+            category: "NONE",
+            orderIndex: i
+          }))
+        }
+      }
+    });
+    labTests.push(test);
   }
 
   // --- 7. DOCTOR SCHEDULES, ATTENDANCE & NURSE ASSIGNMENTS ---
@@ -279,6 +316,76 @@ async function main() {
         expectedEndTime: "12:00"
       },
     });
+  }
+
+  // --- 8. COMPREHENSIVE LAB SEEDING (REQUESTS, RESULTS) ---
+  console.log('Seeding Lab Requests and Results...');
+  const statuses = ["PENDING", "SAVED", "COMPLETED", "COMPLETED", "COMPLETED"]; 
+  const priorities = ["ROUTINE", "ROUTINE", "ROUTINE", "URGENT"];
+
+  for (let i = 0; i < 50; i++) {
+    const randomPatient = patients[Math.floor(Math.random() * patients.length)];
+    const randomDoctor = doctorUsers[Math.floor(Math.random() * doctorUsers.length)];
+    const randomTest = labTests[Math.floor(Math.random() * labTests.length)];
+    const status = statuses[Math.floor(Math.random() * statuses.length)];
+    const priority = priorities[Math.floor(Math.random() * priorities.length)];
+    
+    // Distribute requestedAt over the last 30 days
+    const daysAgo = Math.floor(Math.random() * 30);
+    const requestedAt = new Date();
+    requestedAt.setDate(requestedAt.getDate() - daysAgo);
+
+    const labReq = await prisma.labRequest.create({
+      data: {
+        patientId: randomPatient.id,
+        doctorId: randomDoctor.id,
+        status: status,
+        priority: priority,
+        requestedAt: requestedAt,
+        items: {
+          create: {
+            labTestId: randomTest.id,
+            price: randomTest.price
+          }
+        }
+      },
+      include: {
+        items: { include: { LabTest: { include: { biomarkers: true } } } }
+      }
+    });
+
+    if (status === "COMPLETED" || status === "SAVED") {
+      const isCritical = Math.random() < 0.15; // 15% chance of critical
+      
+      for (const item of labReq.items) {
+        for (const marker of item.LabTest.biomarkers) {
+          // Generate a random numeric result
+          let val = 0;
+          if (marker.name === "Hemoglobin") val = 10 + Math.random() * 8;
+          else if (marker.name === "White Blood Cells") val = 3 + Math.random() * 10;
+          else if (marker.name === "Platelets") val = 100 + Math.random() * 300;
+          else if (marker.name === "Total Cholesterol") val = 150 + Math.random() * 100;
+          else if (marker.name === "HDL") val = 30 + Math.random() * 40;
+          else if (marker.name === "LDL") val = 80 + Math.random() * 80;
+          else if (marker.name === "Glucose") val = 60 + Math.random() * 80;
+
+          if (isCritical) {
+            val = val * 1.5; // push out of range
+          }
+
+          await prisma.labResult.create({
+            data: {
+              requestId: labReq.id,
+              biomarker: marker.name,
+              value: val.toFixed(1),
+              referenceRange: marker.referenceRange,
+              flag: isCritical ? "H" : "N",
+              isOutOfRange: isCritical
+            }
+          });
+        }
+      }
+    }
   }
 
   console.log('Seed completed successfully!');
