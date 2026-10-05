@@ -17,6 +17,7 @@ model Medicine {
   form              String?
   unit              String
   reorderLevel      Int                 @default(50)
+  isActive          Boolean             @default(true)
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   barcode           String?             @unique
@@ -254,6 +255,7 @@ model Patient {
   emergencyContact String?
   bloodGroup       String?
   notes            String?
+  isActive         Boolean          @default(true)
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
@@ -334,6 +336,7 @@ model User {
   consultationFee Float?   @default(2500)
   feeType        String    @default("POST") // UPFRONT or POST
   departmentId   String?
+  isActive       Boolean   @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   Appointment    Appointment[]

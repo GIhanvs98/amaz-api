@@ -13,7 +13,7 @@ export class BookingService {
       tomorrow.setDate(tomorrow.getDate() + 1);
 
       const doctors = await prisma.user.findMany({
-        where: { Role: { name: "DOCTOR" } },
+        where: { Role: { name: "DOCTOR" }, isActive: true },
         select: {
           id: true,
           fullName: true,

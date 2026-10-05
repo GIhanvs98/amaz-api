@@ -8,7 +8,7 @@ export const getAdminMetrics = async (req: Request, res: Response) => {
     
     // Count active doctors (anyone with specialty)
     const activeDoctors = await prisma.user.count({
-      where: { specialty: { not: null } }
+      where: { specialty: { not: null }, isActive: true }
     });
 
     const activePatients = await prisma.patient.count();
@@ -52,6 +52,7 @@ export const getAdminMetrics = async (req: Request, res: Response) => {
 export const getStaff = async (req: Request, res: Response) => {
   try {
     const staff = await prisma.user.findMany({
+      where: { isActive: true },
       include: { Role: true, Department: true },
       orderBy: { createdAt: 'desc' }
     });
@@ -61,7 +62,7 @@ export const getStaff = async (req: Request, res: Response) => {
       name: s.fullName,
       email: s.email,
       role: s.Role.name,
-      status: "ACTIVE", // Mocked as active since there's no status field
+      status: s.isActive ? "ACTIVE" : "INACTIVE",
       roomNumber: s.roomNumber,
       specialty: s.specialty,
       title: s.title,
@@ -166,7 +167,7 @@ export const updateStaff = async (req: Request, res: Response) => {
 export const deleteStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    await prisma.user.delete({ where: { id: id as string } });
+    await prisma.user.update({ where: { id: id as string }, data: { isActive: false } });
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });

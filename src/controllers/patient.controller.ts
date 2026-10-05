@@ -17,11 +17,10 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
     });
 
     if (patient) {
-      // Optionally update details if they changed
-      if (patient.fullName !== fullName || patient.ageFallback !== age) {
+      if (patient.fullName !== fullName || patient.ageFallback !== age || !patient.isActive) {
         patient = await prisma.patient.update({
           where: { id: patient.id },
-          data: { fullName, ageFallback: age ? parseInt(age.toString()) : null },
+          data: { fullName, ageFallback: age ? parseInt(age.toString()) : null, isActive: true },
         });
       }
     } else {
@@ -49,8 +48,8 @@ export const searchPatient = async (req: Request, res: Response): Promise<void> 
        return;
     }
 
-    const patient = await prisma.patient.findUnique({
-      where: { phone: phone as string },
+    const patient = await prisma.patient.findFirst({
+      where: { phone: phone as string, isActive: true },
     });
 
     if (!patient) {
@@ -67,6 +66,7 @@ export const searchPatient = async (req: Request, res: Response): Promise<void> 
 export const getAllPatients = async (req: Request, res: Response): Promise<void> => {
   try {
     const patients = await prisma.patient.findMany({
+      where: { isActive: true },
       orderBy: { createdAt: 'desc' }
     });
     res.status(200).json(patients);
@@ -160,7 +160,7 @@ export const deletePatient = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    await prisma.patient.delete({ where: { id: id as string } });
+    await prisma.patient.update({ where: { id: id as string }, data: { isActive: false } });
     res.status(200).json({ success: true });
   } catch (error: any) {
     console.error("Error deleting patient:", error);

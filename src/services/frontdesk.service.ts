@@ -13,7 +13,7 @@ export class FrontdeskService {
 
     // Find all doctors
     const doctors = await prisma.user.findMany({
-      where: { Role: { name: 'Doctor' } },
+      where: { Role: { name: 'Doctor' }, isActive: true },
       select: { id: true, fullName: true, specialty: true, title: true, roomNumber: true }
     });
 

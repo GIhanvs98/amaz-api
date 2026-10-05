@@ -106,7 +106,8 @@ export const getActiveDoctors = async (req: Request, res: Response) => {
     const doctors = await prisma.user.findMany({
       where: {
         Role: { name: 'DOCTOR' },
-        departmentId: { not: null } // Only doctors actively assigned to a department
+        departmentId: { not: null }, // Only doctors actively assigned to a department
+        isActive: true
       },
       select: {
         id: true,

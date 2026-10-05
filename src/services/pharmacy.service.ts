@@ -2,7 +2,9 @@ import { prisma, withRetry } from "../lib/prisma.js";
 
 export class PharmacyService {
   async getAllMedicines(barcode?: string) {
-    const whereClause = barcode ? { barcode } : {};
+    const whereClause: any = { isActive: true };
+    if (barcode) whereClause.barcode = barcode;
+    
     return withRetry(() => prisma.medicine.findMany({
       where: whereClause,
       include: {
@@ -113,6 +115,7 @@ export class PharmacyService {
   async getLowStockAlerts() {
     return withRetry(async () => {
       const medicines = await prisma.medicine.findMany({
+        where: { isActive: true },
         include: {
           stockBatches: {
             where: { currentQuantity: { gt: 0 }, expiryDate: { gt: new Date() } },
@@ -218,9 +221,8 @@ export class PharmacyService {
     if (batches.length > 0) {
       throw new Error("Cannot delete medicine with active stock. Deplete or adjust stock first.");
     }
-    // Hard delete (cascade stock batches via relations)
-    await prisma.stockBatch.deleteMany({ where: { medicineId: id } });
-    return prisma.medicine.delete({ where: { id } });
+    // Soft delete
+    return prisma.medicine.update({ where: { id }, data: { isActive: false } });
   }
 }
 
