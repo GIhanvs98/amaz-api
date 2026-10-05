@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
+import { clearCache } from "../middlewares/cache.middleware.js";
 
 const prisma = new PrismaClient();
 
@@ -41,7 +42,7 @@ export class DepartmentController {
       const doctors = await prisma.user.findMany({
         where: {
           Role: {
-            name: 'DOCTOR' // Assuming role name is DOCTOR
+            name: 'Doctor' // Role name in DB is 'Doctor'
           }
         },
         select: {
@@ -90,6 +91,7 @@ export class DepartmentController {
         }
       });
       
+      await clearCache('*departments*');
       res.status(201).json(department);
     } catch (error: any) {
       console.error("Create Department Error:", error);
@@ -126,6 +128,7 @@ export class DepartmentController {
         }
       });
 
+      await clearCache('*departments*');
       res.json(department);
     } catch (error: any) {
       console.error("Update Department Error:", error);
@@ -154,6 +157,7 @@ export class DepartmentController {
       }
 
       await prisma.department.delete({ where: { id: id as string } });
+      await clearCache('*departments*');
       res.json({ success: true });
     } catch (error: any) {
       console.error("Delete Department Error:", error);
@@ -178,6 +182,7 @@ export class DepartmentController {
         }
       });
 
+      await clearCache('*departments*');
       res.json(user);
     } catch (error: any) {
       console.error("Update Doctor Assignment Error:", error);
