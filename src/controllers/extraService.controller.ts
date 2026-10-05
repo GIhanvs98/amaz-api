@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
+import { clearCache } from "../middlewares/cache.middleware.js";
 
 const prisma = new PrismaClient();
 
@@ -36,6 +37,7 @@ export const extraServiceController = {
           roomNumber
         }
       });
+      await clearCache('*extra-services*');
       res.status(201).json(service);
     } catch (e: any) {
       if (e.code === 'P2002') {
@@ -65,6 +67,7 @@ export const extraServiceController = {
           roomNumber
         }
       });
+      await clearCache('*extra-services*');
       res.json(service);
     } catch (e: any) {
       if (e.code === 'P2002') {
@@ -82,6 +85,7 @@ export const extraServiceController = {
         where: { id },
         data: { isActive: false }
       });
+      await clearCache('*extra-services*');
       res.json({ message: "Service deleted successfully" });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
