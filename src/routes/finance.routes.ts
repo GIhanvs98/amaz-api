@@ -5,7 +5,7 @@ import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ADMIN', 'FINANCE', 'MANAGER']));
+router.use(verifyToken, requireRole(['SUPERADMIN', 'ADMIN', 'FINANCE', 'MANAGER']));
 
 router.get('/dashboard', cacheMiddleware(300), financeController.getDashboardData.bind(financeController));
 router.get('/settlements', financeController.getSettlements.bind(financeController));

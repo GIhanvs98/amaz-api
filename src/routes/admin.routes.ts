@@ -6,7 +6,7 @@ import departmentRoutes from "./department.routes.js";
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ADMIN']));
+router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN']));
 
 router.get("/metrics", cacheMiddleware(300), getAdminMetrics);
 
