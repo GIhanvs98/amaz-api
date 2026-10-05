@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { billingService } from "../services/billing.service.js";
+import { clearCache } from "../middlewares/cache.middleware.js";
 
 export class BillingController {
   async charge(req: Request, res: Response) {
@@ -10,15 +11,29 @@ export class BillingController {
         return res.status(400).json({ error: 'Missing required fields' });
       }
 
+      const qty = Number(quantity);
+      const price = Number(unitPrice);
+
+      if (isNaN(qty) || qty <= 0) {
+        return res.status(400).json({ error: 'Quantity must be greater than 0' });
+      }
+
+      if (isNaN(price) || price < 0) {
+        return res.status(400).json({ error: 'Unit price cannot be negative' });
+      }
+
       const invoice = await billingService.addCharge({
         visitId,
         patientId,
         department,
         referenceId,
         description,
-        quantity: Number(quantity),
-        unitPrice: Number(unitPrice)
+        quantity: qty,
+        unitPrice: price
       });
+
+      await clearCache("/api/finance/dashboard");
+      await clearCache("/api/admin/metrics");
 
       res.status(201).json(invoice);
     } catch (error: any) {
@@ -33,7 +48,9 @@ export class BillingController {
       
       if (!invoiceId && !visitId) {
         // If no specific ID is provided, return all invoices
-        const invoices = await billingService.getAllInvoices();
+        const page = Number(req.query.page) || 1;
+        const limit = Number(req.query.limit) || 50;
+        const invoices = await billingService.getAllInvoices(page, limit);
         return res.json(invoices);
       }
 
@@ -63,6 +80,10 @@ export class BillingController {
       }
 
       const updatedInvoice = await billingService.payInvoice(invoiceId as string, Number(amount), method as string);
+      
+      await clearCache("/api/finance/dashboard");
+      await clearCache("/api/admin/metrics");
+      
       res.json(updatedInvoice);
     } catch (error: any) {
       console.error('Pay Invoice Error:', error);

@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import bcrypt from "bcryptjs";
+import { clearCache } from "../middlewares/cache.middleware.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 
 export const getAdminMetrics = async (req: Request, res: Response) => {
   try {
@@ -12,12 +14,22 @@ export const getAdminMetrics = async (req: Request, res: Response) => {
     });
 
     const activePatients = await prisma.patient.count();
+    const { startOfDay } = getTimezoneBoundaries();
 
-    const payments = await prisma.payment.aggregate({
-      where: { status: "COMPLETED" },
-      _sum: { amount: true }
-    });
-    const revenue = payments._sum.amount || 0;
+    const [payments, refunds] = await Promise.all([
+      prisma.payment.aggregate({
+        where: { status: { in: ["COMPLETED", "REFUNDED"] } },
+        _sum: { amount: true }
+      }),
+      prisma.refund.aggregate({
+        where: { status: "COMPLETED" },
+        _sum: { amount: true }
+      })
+    ]);
+
+    const grossRevenue = payments._sum.amount || 0;
+    const totalRefunds = refunds._sum.amount || 0;
+    const revenue = grossRevenue - totalRefunds;
 
     const revenueGrowth = 12.5;
     const systemAlerts = [
@@ -111,6 +123,13 @@ export const createStaff = async (req: Request, res: Response) => {
       include: { Role: true, Department: true }
     });
 
+    await clearCache("/api/admin/staff");
+    if (roleName === 'DOCTOR') {
+      await clearCache("/api/admin/doctors");
+      await clearCache("/api/reception/doctors");
+      await clearCache("/api/booking/doctors");
+    }
+
     res.json({ success: true, data: newStaff });
   } catch (error: any) {
     if (error.code === 'P2002') {
@@ -155,6 +174,11 @@ export const updateStaff = async (req: Request, res: Response) => {
       include: { Role: true, Department: true }
     });
 
+    await clearCache("/api/admin/staff");
+    await clearCache("/api/admin/doctors");
+    await clearCache("/api/reception/doctors");
+    await clearCache("/api/booking/doctors");
+
     res.json({ success: true, data: updatedStaff });
   } catch (error: any) {
     if (error.code === 'P2002') {
@@ -168,6 +192,12 @@ export const deleteStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     await prisma.user.update({ where: { id: id as string }, data: { isActive: false } });
+
+    await clearCache("/api/admin/staff");
+    await clearCache("/api/admin/doctors");
+    await clearCache("/api/reception/doctors");
+    await clearCache("/api/booking/doctors");
+
     res.json({ success: true });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });

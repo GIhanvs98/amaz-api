@@ -1,19 +1,36 @@
 import { prisma, withRetry } from "../lib/prisma.js";
 
 export class PharmacyService {
-  async getAllMedicines(barcode?: string) {
+  async getAllMedicines(barcode?: string, page: number = 1, limit: number = 50) {
     const whereClause: any = { isActive: true };
     if (barcode) whereClause.barcode = barcode;
     
-    return withRetry(() => prisma.medicine.findMany({
-      where: whereClause,
-      include: {
-        stockBatches: {
-          where: { currentQuantity: { gt: 0 } },
-          orderBy: { expiryDate: 'asc' },
+    const skip = (page - 1) * limit;
+    
+    const [data, total] = await Promise.all([
+      withRetry(() => prisma.medicine.findMany({
+        where: whereClause,
+        include: {
+          stockBatches: {
+            where: { currentQuantity: { gt: 0 } },
+            orderBy: { expiryDate: 'asc' },
+          },
         },
-      },
-    }));
+        skip,
+        take: limit
+      })),
+      withRetry(() => prisma.medicine.count({ where: whereClause }))
+    ]);
+    
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
   }
 
   async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; itemType?: string; form?: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number }) {
@@ -169,7 +186,15 @@ export class PharmacyService {
         }
       });
 
-      const allMedicines = await this.getAllMedicines();
+      const allMedicines = await prisma.medicine.findMany({
+        where: { isActive: true },
+        select: {
+          reorderLevel: true,
+          stockBatches: {
+            select: { currentQuantity: true }
+          }
+        }
+      });
       let lowStockItems = 0;
       allMedicines.forEach((med: any) => {
         const stock = med.stockBatches.reduce((sum: number, b: any) => sum + b.currentQuantity, 0);

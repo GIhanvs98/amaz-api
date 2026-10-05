@@ -37,8 +37,10 @@ class FinanceController {
 
   async getExpenses(req: Request, res: Response) {
     try {
-      const data = await financeService.getExpenses();
-      res.json({ success: true, data });
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 50;
+      const data = await financeService.getExpenses(page, limit);
+      res.json({ success: true, ...data });
     } catch (error: any) {
       console.error("Error fetching expenses:", error);
       res.status(500).json({ success: false, error: error.message });
@@ -79,8 +81,10 @@ class FinanceController {
 
   async getPurchaseOrders(req: Request, res: Response) {
     try {
-      const data = await financeService.getPurchaseOrders();
-      res.json({ success: true, data });
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 50;
+      const data = await financeService.getPurchaseOrders(page, limit);
+      res.json({ success: true, ...data });
     } catch (error: any) {
       console.error("Error fetching POs:", error);
       res.status(500).json({ success: false, error: error.message });

@@ -1,15 +1,13 @@
 import { prisma } from "../lib/prisma.js";
 import { Prisma } from '@prisma/client';
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 
 export class FinanceService {
   /**
    * Generates the comprehensive dashboard payload required by the frontend
    */
   async getDashboardData() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const { startOfDay, firstDayOfMonth } = getTimezoneBoundaries();
 
     // 1. O(1) Aggregations
     const [
@@ -18,14 +16,15 @@ export class FinanceService {
       outstandingInvoices,
       monthlyPurchaseOrders,
       monthlyExpenses,
-      monthlyRefunds
+      todayRefundsObj,
+      monthlyRefundsObj
     ] = await Promise.all([
       prisma.payment.aggregate({
-        where: { createdAt: { gte: today }, status: 'COMPLETED' },
+        where: { createdAt: { gte: startOfDay }, status: { in: ['COMPLETED', 'REFUNDED'] } },
         _sum: { amount: true }
       }),
       prisma.payment.aggregate({
-        where: { createdAt: { gte: firstDayOfMonth }, status: 'COMPLETED' },
+        where: { createdAt: { gte: firstDayOfMonth }, status: { in: ['COMPLETED', 'REFUNDED'] } },
         _sum: { amount: true }
       }),
       prisma.invoice.aggregate({
@@ -41,20 +40,30 @@ export class FinanceService {
         _sum: { amount: true }
       }),
       prisma.refund.aggregate({
+        where: { createdAt: { gte: startOfDay }, status: 'COMPLETED' },
+        _sum: { amount: true }
+      }),
+      prisma.refund.aggregate({
         where: { createdAt: { gte: firstDayOfMonth }, status: 'COMPLETED' },
         _sum: { amount: true }
       })
     ]);
 
-    const todayRevenue = todayRevenueObj._sum.amount || 0;
-    const monthlyRevenue = monthlyRevenueObj._sum.amount || 0;
+    const todayGrossRevenue = todayRevenueObj._sum.amount || 0;
+    const monthlyGrossRevenue = monthlyRevenueObj._sum.amount || 0;
+    
+    const todayRefunds = todayRefundsObj._sum.amount || 0;
+    const monthlyRefunds = monthlyRefundsObj._sum.amount || 0;
+
+    const todayRevenue = todayGrossRevenue - todayRefunds;
+    const monthlyRevenue = monthlyGrossRevenue - monthlyRefunds;
+    
     const outstandingReceivables = outstandingInvoices._sum.totalAmount || 0;
     
-    // Total expenses = POs + Misc Expenses + Refunds
+    // Total expenses = POs + Misc Expenses (Refunds are contra-revenue, not expenses)
     const totalExpenses = 
       (monthlyPurchaseOrders._sum.totalAmount || 0) + 
-      (monthlyExpenses._sum.amount || 0) + 
-      (monthlyRefunds._sum.amount || 0);
+      (monthlyExpenses._sum.amount || 0);
 
     // 2. Fetch recent unified transactions
     const transactions = await this.getUnifiedRecentTransactions();
@@ -247,10 +256,25 @@ export class FinanceService {
     });
   }
 
-  async getExpenses() {
-    return prisma.expense.findMany({
-      orderBy: { date: 'desc' }
-    });
+  async getExpenses(page: number = 1, limit: number = 50) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      prisma.expense.findMany({
+        orderBy: { date: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.expense.count()
+    ]);
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
   }
 
   async updateExpense(id: string, data: { category?: string; amount?: number; description?: string; date?: string }) {
@@ -302,16 +326,31 @@ export class FinanceService {
     });
   }
 
-  async getPurchaseOrders() {
-    return prisma.purchaseOrder.findMany({
-      orderBy: { createdAt: 'desc' },
-      include: {
-        items: {
-          include: { medicine: true }
+  async getPurchaseOrders(page: number = 1, limit: number = 50) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      prisma.purchaseOrder.findMany({
+        orderBy: { createdAt: 'desc' },
+        include: {
+          items: {
+            include: { medicine: true }
+          },
+          supplier: true
         },
-        supplier: true
+        skip,
+        take: limit
+      }),
+      prisma.purchaseOrder.count()
+    ]);
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
       }
-    });
+    };
   }
 
   async updatePurchaseOrderStatus(id: string, status: string) {

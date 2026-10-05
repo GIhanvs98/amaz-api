@@ -65,11 +65,29 @@ export const searchPatient = async (req: Request, res: Response): Promise<void> 
 
 export const getAllPatients = async (req: Request, res: Response): Promise<void> => {
   try {
-    const patients = await prisma.patient.findMany({
-      where: { isActive: true },
-      orderBy: { createdAt: 'desc' }
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 50;
+    const skip = (page - 1) * limit;
+
+    const [patients, total] = await Promise.all([
+      prisma.patient.findMany({
+        where: { isActive: true },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.patient.count({ where: { isActive: true } })
+    ]);
+    
+    res.status(200).json({
+      data: patients,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
     });
-    res.status(200).json(patients);
   } catch (error) {
     console.error("Error fetching all patients:", error);
     res.status(500).json({ error: "Internal server error" });

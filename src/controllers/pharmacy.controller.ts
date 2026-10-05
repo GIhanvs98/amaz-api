@@ -7,8 +7,12 @@ import { prisma } from '../lib/prisma.js';
 export class PharmacyController {
   async getMedicines(req: Request, res: Response) {
     try {
-      const { barcode } = req.query;
-      const medicines = await pharmacyService.getAllMedicines(barcode as string);
+      const { barcode, page, limit } = req.query;
+      const medicines = await pharmacyService.getAllMedicines(
+        barcode as string,
+        Number(page) || 1,
+        Number(limit) || 50
+      );
       res.json(medicines);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -92,7 +96,17 @@ export class PharmacyController {
   async dispense(req: Request, res: Response) {
     try {
       const { medicineId, quantity, visitId, patientId, description } = req.body;
-      const result = await pharmacyService.dispenseMedicine(medicineId, Number(quantity));
+      
+      if (!medicineId || quantity === undefined) {
+        return res.status(400).json({ error: "Missing medicineId or quantity" });
+      }
+      
+      const qty = Number(quantity);
+      if (isNaN(qty) || qty <= 0) {
+        return res.status(400).json({ error: "Quantity must be a positive number" });
+      }
+
+      const result = await pharmacyService.dispenseMedicine(medicineId, qty);
       
       // Calculate total price and add charge if visitId or patientId is provided
       if (visitId || patientId) {

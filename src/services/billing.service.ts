@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 
 const prisma = new PrismaClient();
 
@@ -17,7 +18,8 @@ export class BillingService {
     unitPrice: number;
   }, tx?: any) {
     const db = tx || prisma;
-    const total = data.quantity * data.unitPrice;
+    const unitPrice = Math.round(data.unitPrice * 100) / 100;
+    const total = Math.round(data.quantity * unitPrice * 100) / 100;
 
     // 1. Try to find an open DRAFT invoice for this visit (or patient if walk-in)
     let invoice = null;
@@ -55,7 +57,7 @@ export class BillingService {
         referenceId: data.referenceId,
         description: data.description,
         quantity: data.quantity,
-        unitPrice: data.unitPrice,
+        unitPrice: unitPrice,
         total: total
       }
     });
@@ -94,8 +96,9 @@ export class BillingService {
     if (!data.charges || data.charges.length === 0) return null;
 
     const db = tx || prisma;
-    const totalToIncrement = data.charges.reduce((acc, curr) => acc + (curr.quantity * curr.unitPrice), 0);
-
+    let totalToIncrement = 0;
+    const formattedCharges: any[] = [];
+    
     // 1. Find or create a DRAFT invoice
     let invoice = null;
     if (data.invoiceId) {
@@ -118,17 +121,24 @@ export class BillingService {
       });
     }
 
-    // 2. Bulk insert all line items in a single query
-    await db.invoiceLineItem.createMany({
-      data: data.charges.map(charge => ({
+    data.charges.forEach(charge => {
+      const unitPrice = Math.round(charge.unitPrice * 100) / 100;
+      const total = Math.round(charge.quantity * unitPrice * 100) / 100;
+      totalToIncrement += total;
+      formattedCharges.push({
         invoiceId: invoice!.id,
         department: charge.department,
         referenceId: charge.referenceId,
         description: charge.description,
         quantity: charge.quantity,
-        unitPrice: charge.unitPrice,
-        total: charge.quantity * charge.unitPrice
-      }))
+        unitPrice: unitPrice,
+        total: total
+      });
+    });
+
+    // 2. Bulk insert all line items in a single query
+    await db.invoiceLineItem.createMany({
+      data: formattedCharges
     });
 
     // 3. Update invoice totals exactly once
@@ -165,11 +175,26 @@ export class BillingService {
   /**
    * Fetch all invoices
    */
-  async getAllInvoices() {
-    return prisma.invoice.findMany({
-      include: { lineItems: true, payments: true },
-      orderBy: { createdAt: 'desc' }
-    });
+  async getAllInvoices(page: number = 1, limit: number = 50) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      prisma.invoice.findMany({
+        include: { lineItems: true, payments: true },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.invoice.count()
+    ]);
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
   }
 
   /**
@@ -214,20 +239,19 @@ export class BillingService {
   }
 
   async getCashierMetrics() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const { startOfDay } = getTimezoneBoundaries();
 
-    const [pendingInvoices, completedToday, todayRevenueObj, recentPayments, pendingDrafts] = await Promise.all([
+    const [pendingInvoices, completedToday, todayGrossRevenueObj, recentPayments, pendingDrafts, todayRefundsObj] = await Promise.all([
       prisma.invoice.aggregate({
         where: { status: 'DRAFT' },
         _count: { _all: true }
       }),
       prisma.payment.aggregate({
-        where: { createdAt: { gte: today }, status: 'COMPLETED' },
+        where: { createdAt: { gte: startOfDay }, status: { in: ['COMPLETED', 'REFUNDED'] } },
         _count: { _all: true }
       }),
       prisma.payment.aggregate({
-        where: { createdAt: { gte: today }, status: 'COMPLETED' },
+        where: { createdAt: { gte: startOfDay }, status: { in: ['COMPLETED', 'REFUNDED'] } },
         _sum: { amount: true }
       }),
       prisma.payment.findMany({
@@ -239,10 +263,16 @@ export class BillingService {
         where: { status: 'DRAFT' },
         take: 5,
         orderBy: { createdAt: 'desc' }
+      }),
+      prisma.refund.aggregate({
+        where: { createdAt: { gte: startOfDay }, status: 'COMPLETED' },
+        _sum: { amount: true }
       })
     ]);
 
-    const totalRevenue = todayRevenueObj._sum.amount || 0;
+    const grossRevenue = todayGrossRevenueObj._sum.amount || 0;
+    const refunds = todayRefundsObj._sum.amount || 0;
+    const totalRevenue = grossRevenue - refunds;
     const cashInDrawer = totalRevenue * 0.4; // Estimate 40% is cash for UI purposes
 
     const recentTransactions: any[] = [];

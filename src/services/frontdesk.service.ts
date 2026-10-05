@@ -97,11 +97,15 @@ export class FrontdeskService {
           });
 
           // Handle automated refunds for prepaid appointments and send SMS
+          const aptIds = pendingApts.map(apt => apt.id);
+          const invoices = await prisma.invoice.findMany({
+            where: { visitId: { in: aptIds }, status: 'PAID' },
+            include: { payments: true }
+          });
+          const invoiceMap = new Map(invoices.map(inv => [inv.visitId, inv]));
+
           for (const apt of pendingApts) {
-            const invoice = await prisma.invoice.findFirst({
-              where: { visitId: apt.id, status: 'PAID' },
-              include: { payments: true }
-            });
+            const invoice = invoiceMap.get(apt.id);
             
             if (invoice) {
               for (const p of invoice.payments) {
@@ -504,11 +508,15 @@ export class FrontdeskService {
     });
 
     // Handle automated refunds for prepaid appointments
+    const aptIds = pendingApts.map(apt => apt.id);
+    const invoices = await prisma.invoice.findMany({
+      where: { visitId: { in: aptIds }, status: 'PAID' },
+      include: { payments: true }
+    });
+    const invoiceMap = new Map(invoices.map(inv => [inv.visitId, inv]));
+
     for (const apt of pendingApts) {
-      const invoice = await prisma.invoice.findFirst({
-        where: { visitId: apt.id, status: 'PAID' },
-        include: { payments: true }
-      });
+      const invoice = invoiceMap.get(apt.id);
       
       if (invoice) {
         for (const p of invoice.payments) {

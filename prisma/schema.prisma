@@ -33,7 +33,7 @@ model Department {
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  Users       User[]   // Doctors assigned to this department
+  Users       User[] // Doctors assigned to this department
 }
 
 model Supplier {
@@ -59,6 +59,9 @@ model StockBatch {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   medicine        Medicine @relation(fields: [medicineId], references: [id])
+
+  @@index([expiryDate])
+  @@index([medicineId, currentQuantity])
 }
 
 model PurchaseOrder {
@@ -96,6 +99,9 @@ model Invoice {
   updatedAt   DateTime          @updatedAt
   lineItems   InvoiceLineItem[]
   payments    Payment[]
+
+  @@index([status])
+  @@index([createdAt])
 }
 
 model InvoiceLineItem {
@@ -112,15 +118,15 @@ model InvoiceLineItem {
 }
 
 model Payment {
-  id             String   @id @default(uuid())
+  id             String       @id @default(uuid())
   invoiceId      String
   amount         Float
   method         String
-  status         String   @default("COMPLETED")
+  status         String       @default("COMPLETED")
   transactionRef String?
-  createdAt      DateTime @default(now())
-  appointmentId  String?  @unique
-  invoice        Invoice  @relation(fields: [invoiceId], references: [id])
+  createdAt      DateTime     @default(now())
+  appointmentId  String?      @unique
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id])
   Appointment    Appointment? @relation(fields: [appointmentId], references: [id])
 }
 
@@ -134,57 +140,60 @@ model Refund {
 }
 
 model LabTest {
-  id          String   @id @default(uuid())
-  name        String
-  code        String   @unique
-  price       Float
-  category    String?
-  sampleType  String?
-  roomNumber  String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(uuid())
+  name       String
+  code       String   @unique
+  price      Float
+  category   String?
+  sampleType String?
+  roomNumber String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  items       LabRequestItem[]
-  biomarkers  LabTestBiomarker[]
+  items      LabRequestItem[]
+  biomarkers LabTestBiomarker[]
 }
 
 model LabTestBiomarker {
-  id             String   @id @default(uuid())
+  id             String  @id @default(uuid())
   labTestId      String
-  name           String   
-  category       String?  
-  unit           String?  
-  referenceRange String?  
-  orderIndex     Int      @default(0)
-  
-  LabTest        LabTest  @relation(fields: [labTestId], references: [id], onDelete: Cascade)
+  name           String
+  category       String?
+  unit           String?
+  referenceRange String?
+  orderIndex     Int     @default(0)
+
+  LabTest LabTest @relation(fields: [labTestId], references: [id], onDelete: Cascade)
 }
 
 model LabRequest {
   id          String   @id @default(uuid())
   patientId   String
   doctorId    String?
-  status      String         @default("PENDING")
-  requestedAt DateTime       @default(now())
-  priority    String         @default("ROUTINE")
+  status      String   @default("PENDING")
+  requestedAt DateTime @default(now())
+  priority    String   @default("ROUTINE")
   reportUrl   String?
   visitId     String?
 
-  Patient     Patient  @relation(fields: [patientId], references: [id])
-  Visit       Appointment? @relation(fields: [visitId], references: [id])
-  items       LabRequestItem[]
-  results     LabResult[]
+  Patient Patient          @relation(fields: [patientId], references: [id])
+  Visit   Appointment?     @relation(fields: [visitId], references: [id])
+  items   LabRequestItem[]
+  results LabResult[]
+
+  @@index([patientId])
+  @@index([status])
 }
 
 model LabRequestItem {
-  id            String     @id @default(uuid())
-  labRequestId  String
-  labTestId     String
-  price         Float
+  id           String @id @default(uuid())
+  labRequestId String
+  labTestId    String
+  price        Float
 
-  LabRequest    LabRequest @relation(fields: [labRequestId], references: [id])
-  LabTest       LabTest    @relation(fields: [labTestId], references: [id])
+  LabRequest LabRequest @relation(fields: [labRequestId], references: [id])
+  LabTest    LabTest    @relation(fields: [labTestId], references: [id])
 }
 
 model LabResult {
@@ -192,7 +201,7 @@ model LabResult {
   requestId      String
   biomarker      String
   value          String
-  flag           String?    // H, L, N
+  flag           String? // H, L, N
   referenceRange String?
   isOutOfRange   Boolean    @default(false)
   notes          String?
@@ -225,6 +234,9 @@ model Prescription {
   updatedAt     DateTime           @updatedAt
   items         PrescriptionItem[]
   Patient       Patient            @relation(fields: [patientId], references: [id])
+
+  @@index([patientId])
+  @@index([status])
 }
 
 model PrescriptionItem {
@@ -243,25 +255,28 @@ model PrescriptionItem {
 }
 
 model Patient {
-  id               String   @id @default(uuid())
-  patientId        String?  @unique @default(cuid()) // Unique MRN, using cuid as temporary default before migration
+  id               String    @id @default(uuid())
+  patientId        String?   @unique @default(cuid()) // Unique MRN, using cuid as temporary default before migration
   fullName         String
-  phone            String   @unique
+  phone            String    @unique
   dateOfBirth      DateTime?
-  ageFallback      Int?     // For quick registration without DOB
+  ageFallback      Int? // For quick registration without DOB
   gender           String?
   nic              String?
   address          String?
   emergencyContact String?
   bloodGroup       String?
   notes            String?
-  isActive         Boolean          @default(true)
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  LabRequests      LabRequest[]
-  Prescription     Prescription[]
-  Appointment      Appointment[]
+  LabRequests  LabRequest[]
+  Prescription Prescription[]
+  Appointment  Appointment[]
+
+  @@index([phone])
+  @@index([fullName])
 }
 
 model Permission {
@@ -293,79 +308,80 @@ model RolePermission {
   Permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
   Role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
-
   @@unique([roleId, permissionId])
 }
 
 model Appointment {
-  id                String   @id @default(uuid())
-  tokenNumber       String
-  patientId         String
-  doctorId          String?
-  sessionId         String?
-  department        String   @default("CONSULTATION")
-  appointmentDate   DateTime @default(now())
-  status            String   @default("BOOKED") // BOOKED, CHECKED_IN, IN_PROGRESS, COMPLETED, CANCELLED, NO_SHOW
-  bookingType       String   @default("WALK_IN") // WALK_IN, PHONE
-  bookingReference  String?  @unique
-  bookedAt          DateTime @default(now())
-  checkedInAt       DateTime?
-  calledAt          DateTime?
-  completedAt       DateTime?
-  cancelledAt       DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  Payment           Payment?
-  User              User?    @relation(fields: [doctorId], references: [id])
-  Patient           Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  Session           DoctorScheduleSession? @relation(fields: [sessionId], references: [id])
-  LabRequests       LabRequest[]
+  id               String                 @id @default(uuid())
+  tokenNumber      String
+  patientId        String
+  doctorId         String?
+  sessionId        String?
+  department       String                 @default("CONSULTATION")
+  appointmentDate  DateTime               @default(now())
+  status           String                 @default("BOOKED") // BOOKED, CHECKED_IN, IN_PROGRESS, COMPLETED, CANCELLED, NO_SHOW
+  bookingType      String                 @default("WALK_IN") // WALK_IN, PHONE
+  bookingReference String?                @unique
+  bookedAt         DateTime               @default(now())
+  checkedInAt      DateTime?
+  calledAt         DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  Payment          Payment?
+  User             User?                  @relation(fields: [doctorId], references: [id])
+  Patient          Patient                @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  Session          DoctorScheduleSession? @relation(fields: [sessionId], references: [id])
+  LabRequests      LabRequest[]
 
   @@unique([sessionId, appointmentDate, tokenNumber])
+  @@index([appointmentDate, doctorId])
+  @@index([status])
 }
 
 model User {
-  id             String   @id @default(uuid())
-  fullName       String
-  email          String   @unique
-  password       String
-  roleId         String
-  specialty      String?
-  title          String?
-  roomNumber     String?
-  consultationFee Float?   @default(2500)
-  feeType        String    @default("POST") // UPFRONT or POST
-  departmentId   String?
-  isActive       Boolean   @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  Appointment    Appointment[]
-  DoctorSchedule DoctorSchedule[]
+  id               String             @id @default(uuid())
+  fullName         String
+  email            String             @unique
+  password         String
+  roleId           String
+  specialty        String?
+  title            String?
+  roomNumber       String?
+  consultationFee  Float?             @default(2500)
+  feeType          String             @default("POST") // UPFRONT or POST
+  departmentId     String?
+  isActive         Boolean            @default(true)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  Appointment      Appointment[]
+  DoctorSchedule   DoctorSchedule[]
   DoctorAttendance DoctorAttendance[]
-  ActivityLog    ActivityLog[]
-  Role           Role     @relation(fields: [roleId], references: [id])
-  Department     Department? @relation(fields: [departmentId], references: [id])
+  ActivityLog      ActivityLog[]
+  Role             Role               @relation(fields: [roleId], references: [id])
+  Department       Department?        @relation(fields: [departmentId], references: [id])
 }
 
 model DoctorSchedule {
-  id           String                  @id @default(uuid())
-  doctorId     String
-  doctor       User                    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
-  validFrom    DateTime                @default(now())
-  validUntil   DateTime?
-  sessions     DoctorScheduleSession[]
-  exceptions   DoctorScheduleException[]
-  leaves       DoctorLeave[]
+  id         String                    @id @default(uuid())
+  doctorId   String
+  doctor     User                      @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  validFrom  DateTime                  @default(now())
+  validUntil DateTime?
+  sessions   DoctorScheduleSession[]
+  exceptions DoctorScheduleException[]
+  leaves     DoctorLeave[]
 }
 
 model DoctorScheduleSession {
   id               String         @id @default(uuid())
   scheduleId       String
   schedule         DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  dayOfWeek        Int            // 0=Sun, 1=Mon, etc.
-  sessionName      String         // e.g., "Morning", "Evening"
-  startTime        String         // "08:00"
-  endTime          String         // "12:00"
+  dayOfWeek        Int // 0=Sun, 1=Mon, etc.
+  sessionName      String // e.g., "Morning", "Evening"
+  startTime        String // "08:00"
+  endTime          String // "12:00"
   tokenCapacity    Int            @default(40)
   walkInPercentage Int            @default(100) // % allowed for walk-ins vs appointments
   isActive         Boolean        @default(true)
@@ -376,7 +392,7 @@ model DoctorScheduleException {
   id               String         @id @default(uuid())
   scheduleId       String
   schedule         DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  exceptionDate    DateTime       // Specific date of change
+  exceptionDate    DateTime // Specific date of change
   isUnavailable    Boolean        @default(false)
   newStartTime     String?
   newEndTime       String?
@@ -385,57 +401,59 @@ model DoctorScheduleException {
 }
 
 model DoctorLeave {
-  id           String         @id @default(uuid())
-  scheduleId   String
-  schedule     DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  startDate    DateTime
-  endDate      DateTime
-  reason       String?
-  status       String         @default("APPROVED")
+  id         String         @id @default(uuid())
+  scheduleId String
+  schedule   DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  startDate  DateTime
+  endDate    DateTime
+  reason     String?
+  status     String         @default("APPROVED")
 }
 
 model SmsTemplate {
-  id          String   @id @default(uuid())
-  name        String   @unique
-  content     String
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(uuid())
+  name      String   @unique
+  content   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model NotificationJob {
-  id          String   @id @default(uuid())
-  patientId   String
-  phoneNumber String
-  message     String
-  status      String   @default("PENDING") // PENDING, SENT, FAILED
-  errorReason String?
+  id           String    @id @default(uuid())
+  patientId    String
+  phoneNumber  String
+  message      String
+  status       String    @default("PENDING") // PENDING, SENT, FAILED
+  errorReason  String?
   scheduledFor DateTime?
-  sentAt      DateTime?
-  createdAt   DateTime @default(now())
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
 }
 
 model DoctorAttendance {
-  id          String   @id @default(uuid())
-  doctorId    String
-  date        DateTime @default(now())
-  status      String   @default("SCHEDULED") // SCHEDULED, ARRIVED, IN_CONSULTATION, ON_BREAK, LEFT
-  roomNumber  String?
+  id                String    @id @default(uuid())
+  doctorId          String
+  date              DateTime  @default(now())
+  status            String    @default("SCHEDULED") // SCHEDULED, ARRIVED, IN_CONSULTATION, ON_BREAK, LEFT
+  roomNumber        String?
   expectedStartTime String?
   expectedEndTime   String?
-  arrivedAt   DateTime?
-  leftAt      DateTime?
-  assignedNurseId String?
-  doctor      User     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  arrivedAt         DateTime?
+  leftAt            DateTime?
+  assignedNurseId   String?
+  doctor            User      @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@index([date])
 }
 
 model ActivityLog {
   id          String   @id @default(uuid())
-  entityType  String   // e.g., "DoctorAttendance", "Appointment"
+  entityType  String // e.g., "DoctorAttendance", "Appointment"
   entityId    String
-  action      String   // e.g., "MARKED_ARRIVED", "TOKEN_CALLED", "CREATED"
-  description String   // e.g., "Token #03 marked No Show by Front Desk: Nimal"
-  userId      String   // The user who performed the action
+  action      String // e.g., "MARKED_ARRIVED", "TOKEN_CALLED", "CREATED"
+  description String // e.g., "Token #03 marked No Show by Front Desk: Nimal"
+  userId      String // The user who performed the action
   user        User     @relation(fields: [userId], references: [id])
   createdAt   DateTime @default(now())
 }
@@ -451,4 +469,3 @@ model ExtraService {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
-
