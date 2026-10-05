@@ -262,7 +262,7 @@ export class FrontdeskService {
     const apt = await prisma.appointment.update({
       where: { id: appointmentId },
       data: { status },
-      include: { Patient: true }
+      include: { Patient: true, Doctor: true }
     });
 
     // Log Activity
