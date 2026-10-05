@@ -1,8 +1,11 @@
+import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from 'express';
 import { pharmacyController } from "../controllers/pharmacy.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
+
+router.use(verifyToken, requireRole(['ADMIN', 'PHARMACIST', 'DOCTOR']));
 
 router.get('/metrics', cacheMiddleware(300), pharmacyController.getMetrics);
 router.get('/medicines', cacheMiddleware(3600), pharmacyController.getMedicines);

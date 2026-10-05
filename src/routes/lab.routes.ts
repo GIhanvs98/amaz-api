@@ -1,8 +1,11 @@
+import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from 'express';
 import { labController } from "../controllers/lab.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
+
+router.use(verifyToken, requireRole(['ADMIN', 'LAB_TECH', 'DOCTOR']));
 
 // GET /api/lab/upload-url
 router.get('/upload-url', labController.getUploadUrl.bind(labController));

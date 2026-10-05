@@ -1,8 +1,11 @@
+import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from 'express';
 import { billingController } from "../controllers/billing.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
+
+router.use(verifyToken, requireRole(['ADMIN', 'CASHIER', 'RECEPTIONIST']));
 
 // GET /api/billing/cashier-metrics
 router.get('/cashier-metrics', cacheMiddleware(300), billingController.getCashierMetrics.bind(billingController));

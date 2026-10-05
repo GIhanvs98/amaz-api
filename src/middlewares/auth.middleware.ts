@@ -76,3 +76,31 @@ export const requirePermission = (action: string, resource: string) => {
     }
   };
 };
+
+export const requireRole = (allowedRoles: string[]) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      const role = await prisma.role.findUnique({
+        where: { id: req.user.roleId },
+        select: { name: true }
+      });
+
+      if (!role || (!allowedRoles.includes(role.name.toUpperCase()) && !allowedRoles.includes('ALL'))) {
+        res.status(403).json({ message: `Forbidden: Requires one of [${allowedRoles.join(', ')}]` });
+        return;
+      }
+      
+      (req as any).roleName = role.name.toUpperCase();
+      next();
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: "Internal server error during role check" });
+    }
+  };
+};
+

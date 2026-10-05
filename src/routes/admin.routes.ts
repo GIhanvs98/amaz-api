@@ -1,9 +1,12 @@
+import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
 import { getAdminMetrics, getStaff, createStaff, updateStaff, deleteStaff, getRoles, createRole, updateRolePermissions } from "../controllers/admin.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import departmentRoutes from "./department.routes.js";
 
 const router = Router();
+
+router.use(verifyToken, requireRole(['ADMIN']));
 
 router.get("/metrics", cacheMiddleware(300), getAdminMetrics);
 

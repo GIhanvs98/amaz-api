@@ -78,6 +78,11 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
   try {
     const { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items } = req.body;
 
+    if ((req as any).roleName === 'DOCTOR' && doctorId !== (req as any).user?.id) {
+       res.status(403).json({ error: "Forbidden: You can only create prescriptions for yourself" });
+       return;
+    }
+
     const newPrescription = await withRetry(async () => {
       return await (prisma as any).$transaction(async (tx: any) => {
         const rx = await tx.prescription.create({
@@ -313,6 +318,11 @@ export const deletePrescription = async (req: Request, res: Response): Promise<v
       res.status(404).json({ error: "Prescription not found" });
       return;
     }
+
+    if ((req as any).roleName === 'DOCTOR' && rx.doctorId !== (req as any).user?.id) {
+       res.status(403).json({ error: "Forbidden: You can only delete your own prescriptions" });
+       return;
+    }
     
     if (rx.status === "DISPENSED") {
       res.status(400).json({ error: "Cannot delete a prescription that has already been dispensed." });
@@ -348,6 +358,11 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
     if (!rx) {
       res.status(404).json({ error: "Prescription not found" });
       return;
+    }
+
+    if ((req as any).roleName === 'DOCTOR' && rx.doctorId !== (req as any).user?.id) {
+       res.status(403).json({ error: "Forbidden: You can only edit your own prescriptions" });
+       return;
     }
     
     if (rx.status === "DISPENSED") {

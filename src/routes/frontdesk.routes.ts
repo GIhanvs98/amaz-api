@@ -1,12 +1,13 @@
 import { Router } from 'express';
-import { verifyToken, requirePermission } from '../middlewares/auth.middleware.js';
+import { verifyToken, requireRole, requirePermission } from '../middlewares/auth.middleware.js';
 import * as frontdeskController from '../controllers/frontdesk.controller.js';
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
+router.use(verifyToken, requireRole(['ADMIN', 'RECEPTIONIST']));
+
 // Apply auth middleware to all routes
-router.use(verifyToken);
 // Assuming receptionist, admin, superadmin have access
 // router.use(requirePermission('manage', 'frontdesk')); // Temporarily disabled until RBAC UI is seeded
 

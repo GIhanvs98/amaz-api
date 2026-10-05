@@ -1,8 +1,11 @@
+import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
 import { departmentController } from "../controllers/department.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
+
+router.use(verifyToken, requireRole(['ALL']));
 
 // Department CRUD
 router.get("/doctors", cacheMiddleware(60), departmentController.getAvailableDoctors.bind(departmentController));

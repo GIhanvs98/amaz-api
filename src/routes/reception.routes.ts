@@ -1,9 +1,12 @@
+import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
 import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod, getActiveDoctors, checkoutAppointment } from "../controllers/reception.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import { updatePatient } from "../controllers/patient.controller.js";
 
 const router = Router();
+
+router.use(verifyToken, requireRole(['ADMIN', 'RECEPTIONIST']));
 
 // GET /api/reception/patients
 router.get("/patients", cacheMiddleware(60), getPatients);
