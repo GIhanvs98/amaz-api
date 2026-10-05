@@ -230,6 +230,7 @@ export const createRole = async (req: Request, res: Response) => {
         description
       }
     });
+    await clearCache('*roles*');
     res.json({ success: true, data: role });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -264,6 +265,7 @@ export const updateRolePermissions = async (req: Request, res: Response) => {
       });
     }
 
+    await clearCache('*roles*');
     res.json({ success: true, message: "Permissions updated" });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
