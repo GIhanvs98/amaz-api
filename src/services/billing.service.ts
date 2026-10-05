@@ -176,33 +176,41 @@ export class BillingService {
    * Pay an invoice
    */
   async payInvoice(invoiceId: string, amount: number, method: string, tokenId?: string) {
-    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
-    if (!invoice) throw new Error("Invoice not found");
-    if (invoice.status === "PAID") throw new Error("Invoice is already paid");
-    
-    // Ensure strict financial integrity
-    if (amount < invoice.totalAmount) {
-      throw new Error(`Insufficient payment amount. Expected at least ${invoice.totalAmount}, but received ${amount}`);
-    }
-    
-    // In a real system, you'd validate partial payments. Here we assume full payment.
-    await prisma.payment.create({
-      data: {
-        invoiceId,
-        amount,
-        method,
-        status: "COMPLETED",
-        ...(tokenId ? { tokenId } : {})
+    return prisma.$transaction(async (tx) => {
+      const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
+      if (!invoice) throw new Error("Invoice not found");
+      if (invoice.status === "PAID") throw new Error("Invoice is already paid");
+      
+      // Ensure strict financial integrity
+      if (amount < invoice.totalAmount) {
+        throw new Error(`Insufficient payment amount. Expected at least ${invoice.totalAmount}, but received ${amount}`);
       }
-    });
+      
+      // Atomic state transition using updateMany to prevent read-modify-write double payment race condition
+      const updateResult = await tx.invoice.updateMany({
+        where: { id: invoiceId, status: "DRAFT" },
+        data: { status: "PAID" }
+      });
 
-    const updatedInvoice = await prisma.invoice.update({
-      where: { id: invoiceId },
-      data: { status: "PAID" },
-      include: { lineItems: true, payments: true }
-    });
+      if (updateResult.count === 0) {
+        throw new Error("Invoice is already paid or being processed concurrently.");
+      }
 
-    return updatedInvoice;
+      await tx.payment.create({
+        data: {
+          invoiceId,
+          amount,
+          method,
+          status: "COMPLETED",
+          ...(tokenId ? { tokenId } : {})
+        }
+      });
+
+      return tx.invoice.findUnique({
+        where: { id: invoiceId },
+        include: { lineItems: true, payments: true }
+      });
+    });
   }
 
   async getCashierMetrics() {

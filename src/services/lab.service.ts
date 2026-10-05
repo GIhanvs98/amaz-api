@@ -194,29 +194,43 @@ export class LabService {
     testProfile: string
   ) {
     return withRetry(async () => {
-      // 1. Mark request as completed and store report URL
-      const labReq = await prisma.labRequest.update({
-        where: { id: requestId },
-        data: { status: 'COMPLETED', reportUrl },
-        include: { Patient: true }
+      const labReqResult = await prisma.$transaction(async (tx) => {
+        // 1. Atomic status update preventing lost updates from concurrent techs
+        const updateResult = await tx.labRequest.updateMany({
+          where: { id: requestId, status: 'PENDING' },
+          data: { status: 'COMPLETED', reportUrl }
+        });
+
+        if (updateResult.count === 0) {
+          throw new Error("Lab request has already been completed or is not pending. Cannot overwrite.");
+        }
+
+        const labReq = await tx.labRequest.findUnique({
+          where: { id: requestId },
+          include: { Patient: true }
+        });
+
+        if (!labReq) throw new Error("Lab request not found after update");
+
+        // 2. Insert new results
+        await tx.labResult.deleteMany({ where: { requestId } });
+        await tx.labResult.createMany({
+          data: results.map(r => ({
+            requestId,
+            biomarker: r.biomarker,
+            value: r.value,
+            flag: r.flag || 'N',
+            referenceRange: r.referenceRange || '',
+            isOutOfRange: r.isOutOfRange,
+            notes: r.notes
+          }))
+        });
+
+        return labReq;
       });
 
-      // 2. Delete old results if re-publishing, then insert new
-      await prisma.labResult.deleteMany({ where: { requestId } });
-      await prisma.labResult.createMany({
-        data: results.map(r => ({
-          requestId,
-          biomarker: r.biomarker,
-          value: r.value,
-          flag: r.flag || 'N',
-          referenceRange: r.referenceRange || '',
-          isOutOfRange: r.isOutOfRange,
-          notes: r.notes
-        }))
-      });
-
-      // 3. Fire SMS — non-blocking (fire and forget)
-      const patient = labReq.Patient;
+      // 3. Fire SMS — non-blocking (fire and forget), outside transaction
+      const patient = labReqResult.Patient;
       if (patient?.phone) {
         NotificationService.sendTemplatedSMS(
           patient.id,
