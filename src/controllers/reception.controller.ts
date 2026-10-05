@@ -390,14 +390,38 @@ export const generateToken = async (req: Request, res: Response) => {
         });
       }
 
+      if (hasLab) {
+        labTestsDetails.forEach(test => {
+          const finalPrice = customLabPrices && customLabPrices[test.id] !== undefined 
+            ? Number(customLabPrices[test.id]) 
+            : test.price;
+          lineItems.push({
+            department: "LAB",
+            referenceId: test.id,
+            description: `Lab Test: ${test.name}`,
+            quantity: 1,
+            unitPrice: finalPrice,
+            total: finalPrice
+          });
+          totalAmount += finalPrice;
+        });
+      }
+
       const invoice = await prisma.invoice.create({
         data: {
           visitId: generatedTokens[0]?.id || "", // Associate invoice with the first primary token
           patientId: patient.id,
-          status: "DRAFT",
+          status: "PAID",
           subtotal: totalAmount,
           totalAmount: totalAmount,
-          lineItems: { create: lineItems }
+          lineItems: { create: lineItems },
+          payments: {
+            create: [{
+              amount: totalAmount,
+              method: req.body.paymentMethod || "CASH",
+              status: "COMPLETED"
+            }]
+          }
         },
         include: { lineItems: true }
       });
@@ -642,7 +666,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
           payments: {
             create: [{
               amount: fee,
-              method: "CASH",
+              method: req.body.paymentMethod || "CASH",
               status: "COMPLETED",
               appointmentId: appointment.id
             }]
@@ -661,6 +685,10 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         },
         include: { lineItems: true }
       });
+    }
+
+    if (websocketService.getIo()) {
+      websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });
     }
 
     res.json({

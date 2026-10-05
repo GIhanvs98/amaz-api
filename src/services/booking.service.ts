@@ -355,11 +355,11 @@ export class BookingService {
     return withRetry(async () => {
       const existingToken = await prisma.appointment.findUnique({ where: { id: tokenId } });
       if (!existingToken) throw new Error("Token not found");
-      if (existingToken.status === "ARRIVED") throw new Error("Patient already marked as arrived. Invoice already exists.");
+      if (existingToken.status === "WAITING") throw new Error("Patient already marked as arrived. Invoice already exists.");
 
       const token = await prisma.appointment.update({
         where: { id: tokenId },
-        data: { status: "ARRIVED" },
+        data: { status: "WAITING" },
         include: { Patient: true, User: true }
       });
 
@@ -408,6 +408,10 @@ export class BookingService {
             totalAmount: 0
           }
         });
+      }
+
+      if (websocketService.getIo()) {
+        websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId });
       }
 
       return { token, invoice };
