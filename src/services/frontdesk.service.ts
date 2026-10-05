@@ -194,6 +194,15 @@ export class FrontdeskService {
         sessions: { where: { isActive: true } },
         exceptions: {
           where: { exceptionDate: { gte: startDate, lt: nextMonth } }
+        },
+        leaves: {
+          where: {
+            OR: [
+              { startDate: { gte: startDate, lt: nextMonth } },
+              { endDate: { gte: startDate, lt: nextMonth } },
+              { startDate: { lt: startDate }, endDate: { gte: nextMonth } }
+            ]
+          }
         }
       }
     });
@@ -201,9 +210,10 @@ export class FrontdeskService {
     const appointments = await prisma.appointment.findMany({
       where: {
         doctorId,
-        appointmentDate: { gte: startDate, lt: nextMonth }
+        appointmentDate: { gte: startDate, lt: nextMonth },
+        status: { notIn: ['CANCELLED', 'NO_SHOW'] }
       },
-      select: { appointmentDate: true }
+      select: { appointmentDate: true, sessionId: true, status: true }
     });
 
     // Instead of doing day-by-day mapping in the backend, we return the raw sessions/exceptions/appointments
@@ -235,9 +245,10 @@ export class FrontdeskService {
     // Create a matrix of size `tokenCapacity`
     const tokens = [];
     for (let i = 1; i <= session.tokenCapacity; i++) {
-      const apt = appointments.find((a: any) => a.tokenNumber === i);
+      const tokenStr = i.toString().padStart(2, "0");
+      const apt = appointments.find((a: any) => a.tokenNumber === tokenStr);
       tokens.push({
-        tokenNumber: i,
+        tokenNumber: tokenStr,
         status: apt ? apt.status : 'AVAILABLE',
         appointment: apt || null
       });
@@ -333,7 +344,7 @@ export class FrontdeskService {
         if (nextAvailable > session.tokenCapacity) {
           throw new Error("No slots available for this date");
         }
-        nextTokenNumberStr = nextAvailable.toString().padStart(3, "0");
+        nextTokenNumberStr = nextAvailable.toString().padStart(2, "0");
 
         apt = await prisma.appointment.create({
           data: {
