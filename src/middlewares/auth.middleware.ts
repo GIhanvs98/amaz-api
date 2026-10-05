@@ -85,10 +85,21 @@ export const requireRole = (allowedRoles: string[]) => {
         return;
       }
 
-      const role = await prisma.role.findUnique({
-        where: { id: req.user.roleId },
-        select: { name: true }
-      });
+      let role = null;
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          role = await prisma.role.findUnique({
+            where: { id: req.user.roleId },
+            select: { name: true }
+          });
+          break;
+        } catch (e: any) {
+          retries--;
+          if (retries === 0) throw e;
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
 
       if (!role || (!allowedRoles.includes(role.name.toUpperCase()) && !allowedRoles.includes('ALL'))) {
         res.status(403).json({ message: `Forbidden: Requires one of [${allowedRoles.join(', ')}]` });

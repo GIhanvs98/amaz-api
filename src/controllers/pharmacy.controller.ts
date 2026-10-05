@@ -7,9 +7,9 @@ import { prisma } from '../lib/prisma.js';
 export class PharmacyController {
   async getMedicines(req: Request, res: Response) {
     try {
-      const { barcode, page, limit } = req.query;
+      const { search, page, limit } = req.query;
       const medicines = await pharmacyService.getAllMedicines(
-        barcode as string,
+        search as string,
         Number(page) || 1,
         Number(limit) || 50
       );
@@ -30,7 +30,7 @@ export class PharmacyController {
 
   async addMedicine(req: Request, res: Response) {
     try {
-      const { name, barcode, genericName, category, itemType, form, unit, reorderLevel, baseStock, basePrice } = req.body;
+      const { name, barcode, genericName, category, itemType, form, unit, reorderLevel, baseStock, basePrice, expiryDate } = req.body;
       
       if (!name || !category || !unit) {
         return res.status(400).json({ error: "Missing required fields: name, category, or unit." });
@@ -55,12 +55,15 @@ export class PharmacyController {
         unit,
         reorderLevel: reorderLevel ? Number(reorderLevel) : undefined,
         baseStock: baseStock ? Number(baseStock) : undefined,
-        basePrice: basePrice ? Number(basePrice) : undefined
+        basePrice: basePrice ? Number(basePrice) : undefined,
+        expiryDate: expiryDate ? new Date(expiryDate) : undefined
       });
       res.status(201).json(medicine);
     } catch (error: any) {
       if (error.code === 'P2002') {
         res.status(400).json({ error: "Barcode must be unique" });
+      } else if (error.code === 'ALREADY_EXISTS') {
+        res.status(409).json({ error: error.message, code: 'ALREADY_EXISTS', itemId: error.itemId });
       } else {
         res.status(500).json({ error: error.message });
       }
@@ -71,7 +74,7 @@ export class PharmacyController {
     try {
       const { expiryDate, initialQuantity, unitPrice, medicineId, batchNumber, ...rest } = req.body;
       
-      if (!medicineId || !batchNumber || !expiryDate || initialQuantity === undefined || unitPrice === undefined) {
+      if (!medicineId || !batchNumber || initialQuantity === undefined || unitPrice === undefined) {
         return res.status(400).json({ error: "Missing required stock batch fields." });
       }
       
@@ -85,7 +88,7 @@ export class PharmacyController {
         batchNumber,
         initialQuantity: Number(initialQuantity),
         unitPrice: Number(unitPrice),
-        expiryDate: new Date(expiryDate),
+        expiryDate: expiryDate ? new Date(expiryDate) : undefined,
       });
       res.status(201).json(batch);
     } catch (error: any) {
@@ -158,6 +161,8 @@ export class PharmacyController {
     } catch (error: any) {
       if (error.code === 'P2002') {
         return res.status(400).json({ error: "Barcode must be unique" });
+      } else if (error.code === 'ALREADY_EXISTS') {
+        return res.status(409).json({ error: error.message, code: 'ALREADY_EXISTS', itemId: error.itemId });
       }
       res.status(500).json({ error: error.message });
     }

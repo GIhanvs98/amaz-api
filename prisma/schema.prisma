@@ -52,7 +52,7 @@ model StockBatch {
   id              String   @id @default(uuid())
   medicineId      String
   batchNumber     String
-  expiryDate      DateTime
+  expiryDate      DateTime?
   initialQuantity Int
   currentQuantity Int
   unitPrice       Float

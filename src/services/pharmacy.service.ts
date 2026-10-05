@@ -1,9 +1,15 @@
 import { prisma, withRetry } from "../lib/prisma.js";
 
 export class PharmacyService {
-  async getAllMedicines(barcode?: string, page: number = 1, limit: number = 50) {
+  async getAllMedicines(searchTerm?: string, page: number = 1, limit: number = 50) {
     const whereClause: any = { isActive: true };
-    if (barcode) whereClause.barcode = barcode;
+    if (searchTerm) {
+      whereClause.OR = [
+        { name: { contains: searchTerm, mode: 'insensitive' } },
+        { barcode: { contains: searchTerm, mode: 'insensitive' } },
+        { category: { contains: searchTerm, mode: 'insensitive' } },
+      ];
+    }
     
     const skip = (page - 1) * limit;
     
@@ -33,7 +39,17 @@ export class PharmacyService {
     };
   }
 
-  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; itemType?: string; form?: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number }) {
+  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; itemType?: string; form?: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number; expiryDate?: Date }) {
+    const existingName = await prisma.medicine.findFirst({
+      where: { name: { equals: data.name, mode: 'insensitive' } }
+    });
+    if (existingName) {
+      const err = new Error(`An item with the name "${data.name}" already exists in the inventory.`);
+      (err as any).code = 'ALREADY_EXISTS';
+      (err as any).itemId = existingName.id;
+      throw err;
+    }
+    
     return withRetry(() => prisma.$transaction(async (tx) => {
       const medicine = await tx.medicine.create({
         data: {
@@ -53,7 +69,7 @@ export class PharmacyService {
           data: {
             medicineId: medicine.id,
             batchNumber: `INIT-${Date.now()}`,
-            expiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1)), // 1 year from now
+            expiryDate: data.expiryDate || null,
             initialQuantity: data.baseStock,
             currentQuantity: data.baseStock,
             unitPrice: data.basePrice || 0,
@@ -66,10 +82,11 @@ export class PharmacyService {
   }
 
   // --- INVENTORY MANAGEMENT ---
-  async addStockBatch(data: { medicineId: string; batchNumber: string; expiryDate: Date; initialQuantity: number; unitPrice: number }) {
+  async addStockBatch(data: { medicineId: string; batchNumber: string; expiryDate?: Date; initialQuantity: number; unitPrice: number }) {
     return withRetry(() => prisma.stockBatch.create({
       data: {
         ...data,
+        expiryDate: data.expiryDate || null,
         currentQuantity: data.initialQuantity,
       },
     }));
@@ -83,7 +100,10 @@ export class PharmacyService {
         where: {
           medicineId,
           currentQuantity: { gt: 0 },
-          expiryDate: { gt: new Date() }, // Don't dispense expired meds
+          OR: [
+            { expiryDate: null },
+            { expiryDate: { gt: new Date() } }
+          ]
         },
         orderBy: {
           expiryDate: 'asc', // Oldest expiry first
@@ -135,7 +155,13 @@ export class PharmacyService {
         where: { isActive: true },
         include: {
           stockBatches: {
-            where: { currentQuantity: { gt: 0 }, expiryDate: { gt: new Date() } },
+            where: { 
+              currentQuantity: { gt: 0 },
+              OR: [
+                { expiryDate: null },
+                { expiryDate: { gt: new Date() } }
+              ]
+            },
           },
         },
       });
@@ -232,6 +258,18 @@ export class PharmacyService {
   }
 
   async updateMedicine(id: string, data: { name?: string; genericName?: string; category?: string; form?: string; unit?: string; reorderLevel?: number; barcode?: string }) {
+    if (data.name) {
+      const existingName = await prisma.medicine.findFirst({
+        where: { name: { equals: data.name, mode: 'insensitive' }, id: { not: id } }
+      });
+      if (existingName) {
+        const err = new Error(`An item with the name "${data.name}" already exists in the inventory.`);
+        (err as any).code = 'ALREADY_EXISTS';
+        (err as any).itemId = existingName.id;
+        throw err;
+      }
+    }
+    
     return withRetry(() => prisma.medicine.update({
       where: { id },
       data
