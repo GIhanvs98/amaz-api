@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { labService } from '../services/lab.service.js';
 import { S3Service } from '../services/s3.service.js';
+import { clearCache } from '../middlewares/cache.middleware.js';
 
 export class LabController {
   async getUploadUrl(req: Request, res: Response) {
@@ -33,6 +34,7 @@ export class LabController {
   async addTestToCatalog(req: Request, res: Response) {
     try {
       const test = await labService.addTestToCatalog(req.body);
+      await clearCache('*lab/catalog*');
       res.status(201).json(test);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -42,6 +44,7 @@ export class LabController {
   async updateTestInCatalog(req: Request, res: Response) {
     try {
       const test = await labService.updateTestInCatalog(req.params.testId as string, req.body);
+      await clearCache('*lab/catalog*');
       res.json(test);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -51,6 +54,7 @@ export class LabController {
   async deleteTestFromCatalog(req: Request, res: Response) {
     try {
       await labService.deleteTestFromCatalog(req.params.testId as string);
+      await clearCache('*lab/catalog*');
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: error.message });

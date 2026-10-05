@@ -101,7 +101,12 @@ export const requireRole = (allowedRoles: string[]) => {
         }
       }
 
-      if (!role || (!allowedRoles.includes(role.name.toUpperCase()) && !allowedRoles.includes('ALL'))) {
+      if (!role) {
+        res.status(403).json({ message: "Forbidden: Role not found" });
+        return;
+      }
+      const userRole = role.name.toUpperCase();
+      if (userRole !== 'SUPERADMIN' && !allowedRoles.includes(userRole) && !allowedRoles.includes('ALL')) {
         res.status(403).json({ message: `Forbidden: Requires one of [${allowedRoles.join(', ')}]` });
         return;
       }
