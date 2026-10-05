@@ -5,7 +5,7 @@ import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['SUPERADMIN', 'ADMIN', 'LAB_TECH', 'DOCTOR']));
+router.use(verifyToken, requireRole(['SUPERADMIN', 'ADMIN', 'LABTECH', 'DOCTOR']));
 
 // GET /api/lab/upload-url
 router.get('/upload-url', labController.getUploadUrl.bind(labController));
