@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
+import { clearCache } from "../middlewares/cache.middleware.js";
 
 const prisma = new PrismaClient();
 
@@ -57,6 +58,9 @@ export const updateProfile = async (req: Request, res: Response) => {
 
     const profile = await userService.updateProfile(userId, req.body);
     res.json(profile);
+    await clearCache('*staff*');
+    await clearCache('*doctors*');
+    await clearCache('*users*');
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }

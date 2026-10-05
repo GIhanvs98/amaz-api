@@ -34,6 +34,7 @@ import receptionRoutes from "./routes/reception.routes.js";
 import frontdeskRoutes from "./routes/frontdesk.routes.js";
 import extraServiceRoutes from "./routes/extraService.routes.js";
 import barcodeRoutes from "./routes/barcode.routes.js";
+import settingRoutes from "./routes/setting.routes.js";
 
 import { prisma } from "./lib/prisma.js";
 
@@ -68,6 +69,7 @@ app.use("/api/admin/dashboard", dashboardRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/booking", bookingRoutes);
 app.use("/api/reception", receptionRoutes);
+app.use("/api/settings", settingRoutes);
 app.use("/api/frontdesk", frontdeskRoutes);
 app.use("/api/extra-services", extraServiceRoutes);
 
