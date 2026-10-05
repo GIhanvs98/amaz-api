@@ -17,7 +17,7 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
       include: { Role: true },
     });
 
-    if (!doctor || doctor.Role?.name !== "DOCTOR") {
+    if (!doctor || doctor.Role?.name !== "Doctor") {
       res.status(400).json({ error: "Invalid doctor selected" });
       return;
     }

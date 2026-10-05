@@ -294,18 +294,15 @@ export class FrontdeskService {
     });
     if (!session) throw new Error('Session not found');
 
-    const walkInBookedCount = await prisma.appointment.count({
+    const totalBookedCount = await prisma.appointment.count({
       where: {
         sessionId,
         appointmentDate: startOfDay,
-        bookingType: "WALK_IN",
         status: { notIn: ["CANCELLED", "NO_SHOW"] }
       }
     });
 
-    const walkInCapacity = Math.floor(session.tokenCapacity * (session.walkInPercentage / 100));
-
-    if (walkInBookedCount >= walkInCapacity) {
+    if (totalBookedCount >= session.tokenCapacity) {
       throw new Error("Walk-in slots are fully booked for this session");
     }
 

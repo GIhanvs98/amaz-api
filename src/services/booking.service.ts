@@ -13,7 +13,7 @@ export class BookingService {
       tomorrow.setDate(tomorrow.getDate() + 1);
 
       const doctors = await prisma.user.findMany({
-        where: { Role: { name: "DOCTOR" }, isActive: true },
+        where: { Role: { name: "Doctor" }, isActive: true },
         select: {
           id: true,
           fullName: true,
@@ -253,19 +253,16 @@ export class BookingService {
         if (selectedTokenNumber > session.tokenCapacity) throw new Error("Invalid token number");
       }
 
-      const phoneBookedCount = await tx.appointment.count({
+      const totalBookedCount = await tx.appointment.count({
         where: {
           sessionId: session.id,
           appointmentDate: startOfDay,
-          bookingType: "PHONE",
           status: { notIn: ["CANCELLED", "NO_SHOW"] }
         }
       });
 
-      const phoneCapacity = Math.ceil(session.tokenCapacity * ((100 - session.walkInPercentage) / 100));
-
-      if (phoneBookedCount >= phoneCapacity) {
-        throw new Error("No phone slots available for this date");
+      if (totalBookedCount >= session.tokenCapacity) {
+        throw new Error("No slots available for this date");
       }
 
       const patient = await tx.patient.upsert({
@@ -287,6 +284,9 @@ export class BookingService {
         let nextAvailable = 1;
         while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
           nextAvailable++;
+        }
+        if (nextAvailable > session.tokenCapacity) {
+          throw new Error("No slots available for this date");
         }
         nextTokenNumberStr = nextAvailable.toString().padStart(3, "0");
       }

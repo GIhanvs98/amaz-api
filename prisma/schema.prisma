@@ -383,7 +383,7 @@ model DoctorScheduleSession {
   startTime        String // "08:00"
   endTime          String // "12:00"
   tokenCapacity    Int            @default(40)
-  walkInPercentage Int            @default(100) // % allowed for walk-ins vs appointments
+  walkInPercentage Int            @default(70) // % allowed for walk-ins vs appointments
   isActive         Boolean        @default(true)
   Appointment      Appointment[]
 }
