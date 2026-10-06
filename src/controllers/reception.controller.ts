@@ -689,7 +689,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       where: { 
         patientId: appointment.patientId,
         appointmentDate: { gte: startOfDay, lte: endOfDay },
-        status: { in: ["BOOKED"] } // Only check out ones that haven't been checked out yet
+        status: { in: ["BOOKED", "WAITING_FOR_LAB_TEST"] } // Include Lab tests which default to this status
       }
     });
 
