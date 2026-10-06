@@ -71,6 +71,7 @@ export class LabService {
     doctorId?: string;
     priority?: string;
     customPrices?: Record<string, number>;
+    skipBilling?: boolean;
   }) {
     return withRetry(async () => {
       // Verify tests exist to get prices
@@ -108,7 +109,7 @@ export class LabService {
       });
 
       // 2. Add all charges atomically using bulk billing
-      if (data.visitId || data.patientId) {
+      if (!data.skipBilling && (data.visitId || data.patientId)) {
         await billingService.addChargesBulk({
           visitId: data.visitId,
           patientId: data.patientId,
