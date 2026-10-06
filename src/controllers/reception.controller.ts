@@ -166,7 +166,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
 
 export const generateToken = async (req: Request, res: Response) => {
   try {
-    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds, customLabPrices, serviceIds, customServicePrices, doctorTokenNumber, labTokenNumber, serviceTokenNumber } = req.body;
+    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds, customLabPrices, serviceIds, customServicePrices, doctorTokenNumber, labTokenNumber, serviceTokenNumber, date, bookingType } = req.body;
 
     // Find or create patient
     let patient;
@@ -217,9 +217,10 @@ export const generateToken = async (req: Request, res: Response) => {
 
     // Helper to robustly generate a single token
     const generateSpecificToken = async (dept: string, docId: string | null, requestedTokenNumber?: number) => {
-      const startOfDay = new Date();
+      const targetDate = date ? new Date(date) : new Date();
+      const startOfDay = new Date(targetDate);
       startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date();
+      const endOfDay = new Date(targetDate);
       endOfDay.setHours(23, 59, 59, 999);
 
       let token = null;
@@ -247,8 +248,8 @@ export const generateToken = async (req: Request, res: Response) => {
             doctorId: docId || null,
             department: dept,
             status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-            bookingType: "WALK_IN",
-            appointmentDate: new Date(),
+            bookingType: bookingType || "WALK_IN",
+            appointmentDate: targetDate,
             bookingReference: refNo
           }
         });
@@ -305,8 +306,8 @@ export const generateToken = async (req: Request, res: Response) => {
               doctorId: docId || null,
               department: dept,
               status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-              bookingType: "WALK_IN",
-              appointmentDate: new Date(),
+              bookingType: bookingType || "WALK_IN",
+              appointmentDate: targetDate,
               bookingReference: refNo
             }
           });
@@ -411,17 +412,19 @@ export const generateToken = async (req: Request, res: Response) => {
         data: {
           visitId: generatedTokens[0]?.id || "", // Associate invoice with the first primary token
           patientId: patient.id,
-          status: "PAID",
+          status: bookingType === "PHONE" ? "DRAFT" : "PAID",
           subtotal: totalAmount,
           totalAmount: totalAmount,
           lineItems: { create: lineItems },
-          payments: {
-            create: [{
-              amount: totalAmount,
-              method: req.body.paymentMethod || "CASH",
-              status: "COMPLETED"
-            }]
-          }
+          ...(bookingType !== "PHONE" && {
+            payments: {
+              create: [{
+                amount: totalAmount,
+                method: req.body.paymentMethod || "CASH",
+                status: "COMPLETED"
+              }]
+            }
+          })
         },
         include: { lineItems: true }
       });
@@ -655,8 +658,33 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       data: { status: "WAITING" }
     });
 
-    let invoice = null;
-    if (isUpfront && fee > 0) {
+    let invoice = await prisma.invoice.findFirst({
+      where: {
+        visitId: appointmentId,
+        status: "DRAFT"
+      },
+      include: { lineItems: true }
+    });
+
+    if (invoice) {
+      // Pay the existing DRAFT invoice
+      invoice = await prisma.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          status: "PAID",
+          payments: {
+            create: [{
+              amount: invoice.totalAmount,
+              method: req.body.paymentMethod || "CASH",
+              status: "COMPLETED",
+              appointmentId: appointment.id
+            }]
+          }
+        },
+        include: { lineItems: true }
+      });
+    } else if (isUpfront && fee > 0) {
+      // Create a new invoice if no draft exists
       invoice = await prisma.invoice.create({
         data: {
           patientId: appointment.patientId,
