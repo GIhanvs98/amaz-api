@@ -1,8 +1,12 @@
-import { PrismaClient } from '@prisma/client';
+const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 async function main() {
   const appointments = await prisma.appointment.findMany({
+    where: { 
+      // Replace this with what we see in the screenshot if we can guess it, 
+      // but let's just fetch today's appointments
+    },
     include: { Patient: true }
   });
   

@@ -464,7 +464,8 @@ export const generateToken = async (req: Request, res: Response) => {
         testIds,
         doctorId: doctorId || null,
         priority: "ROUTINE",
-        customPrices: customLabPrices
+        customPrices: customLabPrices,
+        skipBilling: true
       });
     }
 
