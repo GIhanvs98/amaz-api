@@ -6,7 +6,13 @@ import { updatePatient } from "../controllers/patient.controller.js";
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ADMIN', 'RECEPTIONIST']));
+router.use(verifyToken);
+
+// Doctor needs access to patient details and updates during consultation
+router.get("/patients/:id", requireRole(['ADMIN', 'RECEPTIONIST', 'DOCTOR']), getPatientById);
+router.patch("/patients/:id", requireRole(['ADMIN', 'RECEPTIONIST', 'DOCTOR']), updatePatient);
+
+router.use(requireRole(['ADMIN', 'RECEPTIONIST']));
 
 // GET /api/reception/patients
 router.get("/patients", cacheMiddleware(60), getPatients);
@@ -16,12 +22,6 @@ router.get("/doctors", cacheMiddleware(300), getActiveDoctors);
 
 // GET /api/reception/metrics
 router.get("/metrics", cacheMiddleware(300), getMetrics);
-
-// GET /api/reception/patients/:id
-router.get("/patients/:id", getPatientById);
-
-// PATCH /api/reception/patients/:id
-router.patch("/patients/:id", updatePatient);
 
 // POST /api/reception/token
 router.post("/token", generateToken);
