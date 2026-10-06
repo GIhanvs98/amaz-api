@@ -321,7 +321,7 @@ model Appointment {
   appointmentDate  DateTime               @default(now())
   status           String                 @default("BOOKED") // BOOKED, CHECKED_IN, IN_PROGRESS, COMPLETED, CANCELLED, NO_SHOW
   bookingType      String                 @default("WALK_IN") // WALK_IN, PHONE
-  bookingReference String?                @unique
+  bookingReference String?
   bookedAt         DateTime               @default(now())
   checkedInAt      DateTime?
   calledAt         DateTime?
