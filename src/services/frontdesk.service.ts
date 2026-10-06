@@ -160,6 +160,15 @@ export class FrontdeskService {
       });
     }
 
+
+    if (status === 'ARRIVED') {
+      try {
+        await NotificationService.triggerDoctorArrived(doctorId, new Date());
+      } catch (err) {
+        console.error("Failed to send doctor arrived SMS notifications:", err);
+      }
+    }
+
     // Log Activity
     await prisma.activityLog.create({
       data: {

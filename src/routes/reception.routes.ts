@@ -1,6 +1,6 @@
 import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
-import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod, getActiveDoctors, checkoutAppointment } from "../controllers/reception.controller.js";
+import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod, getActiveDoctors, checkoutAppointment, getPOSHistory, closeShiftAndGetSummary } from "../controllers/reception.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import { updatePatient } from "../controllers/patient.controller.js";
 
@@ -28,6 +28,12 @@ router.post("/token", generateToken);
 
 // POST /api/reception/checkout-appointment
 router.post("/checkout-appointment", checkoutAppointment);
+
+// GET /api/reception/history
+router.get("/history", getPOSHistory);
+
+// POST /api/reception/shift-summary
+router.post("/shift-summary", closeShiftAndGetSummary);
 
 // POST /api/reception/doctors/:id/arrive
 router.post("/doctors/:id/arrive", markDoctorArrived);

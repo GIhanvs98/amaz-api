@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { verifyToken, requireRole, requirePermission } from '../middlewares/auth.middleware.js';
 import * as frontdeskController from '../controllers/frontdesk.controller.js';
+import * as roomController from '../controllers/room.controller.js';
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
@@ -14,6 +15,9 @@ router.use(verifyToken, requireRole(['ADMIN', 'RECEPTIONIST', 'NURSE']));
 // Doctor Status & Attendance
 router.get('/doctors/status', cacheMiddleware(30), frontdeskController.getDoctorsStatus);
 router.put('/doctors/:id/attendance', frontdeskController.updateDoctorAttendance);
+
+// Room Management
+router.get('/rooms/matrix', roomController.getRoomMatrix);
 
 // Tokens & Appointments
 router.get('/sessions/:sessionId/tokens', cacheMiddleware(10), frontdeskController.getSessionTokens);

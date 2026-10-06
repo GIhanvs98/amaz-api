@@ -250,6 +250,28 @@ export const generateToken = async (req: Request, res: Response) => {
 
       let token = null;
 
+      let sessionId = null;
+      if (dept === "CONSULTATION" && docId) {
+        const dayOfWeek = targetDate.getDay();
+        const session = await prisma.doctorScheduleSession.findFirst({
+          where: {
+            dayOfWeek: dayOfWeek,
+            isActive: true,
+            schedule: {
+              doctorId: docId,
+              validFrom: { lte: endOfDay },
+              OR: [
+                { validUntil: null },
+                { validUntil: { gte: startOfDay } }
+              ]
+            }
+          }
+        });
+        if (session) {
+          sessionId = session.id;
+        }
+      }
+
       if (requestedTokenNumber) {
         const tokenDisplay = requestedTokenNumber.toString().padStart(2, "0");
         const exists = await prisma.appointment.findFirst({
@@ -257,7 +279,8 @@ export const generateToken = async (req: Request, res: Response) => {
             appointmentDate: { gte: startOfDay, lte: endOfDay },
             department: dept,
             doctorId: docId || null,
-            tokenNumber: tokenDisplay
+            tokenNumber: tokenDisplay,
+            status: { notIn: ["CANCELLED", "NO_SHOW"] }
           }
         });
 
@@ -270,6 +293,7 @@ export const generateToken = async (req: Request, res: Response) => {
             tokenNumber: tokenDisplay,
             patientId: patient!.id,
             doctorId: docId || null,
+            sessionId: sessionId,
             department: dept,
             status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
             bookingType: bookingType || "WALK_IN",
@@ -285,7 +309,8 @@ export const generateToken = async (req: Request, res: Response) => {
         where: {
           appointmentDate: { gte: startOfDay, lte: endOfDay },
           department: dept,
-          doctorId: docId || null
+          doctorId: docId || null,
+          status: { notIn: ["CANCELLED", "NO_SHOW"] }
         },
         orderBy: { createdAt: 'desc' }
       });
@@ -327,6 +352,7 @@ export const generateToken = async (req: Request, res: Response) => {
               tokenNumber: tokenDisplay,
               patientId: patient!.id,
               doctorId: docId || null,
+              sessionId: sessionId,
               department: dept,
               status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
               bookingType: bookingType || "WALK_IN",
@@ -560,6 +586,13 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
       });
     }
     
+    // Trigger SMS to waiting patients
+    try {
+      await NotificationService.triggerDoctorArrived(id as string, today);
+    } catch (e) {
+      console.error("Failed to send doctor arrived SMS notifications:", e);
+    }
+    
     res.json({ success: true, data: attendance });
   } catch (error: any) {
     console.error("Error marking doctor arrived:", error);
@@ -679,19 +712,17 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
 
     let allApptIds = [appointmentId];
     
-    // Group all active appointments for this patient today
-    const startOfDay = new Date(appointment.appointmentDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(appointment.appointmentDate);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const allApptsForPatient = await prisma.appointment.findMany({
-      where: { 
-        patientId: appointment.patientId,
-        appointmentDate: { gte: startOfDay, lte: endOfDay },
-        status: { in: ["BOOKED", "WAITING_FOR_LAB_TEST"] } // Include Lab tests which default to this status
-      }
-    });
+    let allApptsForPatient = [];
+    if (appointment.bookingReference) {
+      allApptsForPatient = await prisma.appointment.findMany({
+        where: { 
+          bookingReference: appointment.bookingReference,
+          status: { in: ["BOOKED", "WAITING_FOR_LAB_TEST"] } // Include Lab tests which default to this status
+        }
+      });
+    } else {
+      allApptsForPatient = [appointment];
+    }
 
     if (allApptsForPatient.length > 0) {
       allApptIds = allApptsForPatient.map(a => a.id);
@@ -805,6 +836,104 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("Error checking out appointment:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getPOSHistory = async (req: Request, res: Response) => {
+  try {
+    const search = req.query.search as string || "";
+    
+    let patientIds: string[] = [];
+    if (search) {
+      const patients = await prisma.patient.findMany({
+        where: {
+          OR: [
+            { phone: { contains: search } },
+            { fullName: { contains: search, mode: "insensitive" } }
+          ]
+        },
+        select: { id: true }
+      });
+      patientIds = patients.map(p => p.id);
+    }
+    
+    const invoices = await prisma.invoice.findMany({
+      where: search ? {
+        OR: [
+          { id: { contains: search, mode: "insensitive" } },
+          ...(patientIds.length > 0 ? [{ patientId: { in: patientIds } }] : [])
+        ]
+      } : undefined,
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: {
+        lineItems: true
+      }
+    });
+
+    const allPatientIds = Array.from(new Set(invoices.map(i => i.patientId).filter(id => id !== null))) as string[];
+    const patientsMap = new Map();
+    if (allPatientIds.length > 0) {
+      const pats = await prisma.patient.findMany({
+        where: { id: { in: allPatientIds } }
+      });
+      pats.forEach(p => patientsMap.set(p.id, p));
+    }
+
+    const data = invoices.map(inv => ({
+      ...inv,
+      Patient: inv.patientId ? patientsMap.get(inv.patientId) || null : null
+    }));
+
+    res.json({ success: true, data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
+  try {
+    const { declaredCash } = req.body;
+    
+    // In a real app we'd track shift IDs. For now, just sum today's invoices for this user
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    // If you have a way to track the current user (e.g., req.user.id), you could filter by it.
+    // For now, we'll just sum all of today's invoices.
+    
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        createdAt: { gte: startOfDay, lte: endOfDay },
+        status: "PAID"
+      },
+      include: {
+        payments: true
+      }
+    });
+
+    let systemCashTotal = 0;
+    let systemCardTotal = 0;
+
+    invoices.forEach(inv => {
+      inv.payments.forEach(payment => {
+        if (payment.method === "CASH") systemCashTotal += payment.amount;
+        if (payment.method === "CARD") systemCardTotal += payment.amount;
+      });
+    });
+
+    const summary = {
+      totalInvoices: invoices.length,
+      systemCashTotal,
+      systemCardTotal,
+      declaredCash: Number(declaredCash)
+    };
+
+    res.json({ success: true, data: summary });
+  } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
 };

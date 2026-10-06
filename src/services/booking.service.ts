@@ -245,7 +245,7 @@ export class BookingService {
         const existingToken = await tx.appointment.findFirst({
           where: {
             sessionId: session.id,
-            appointmentDate: startOfDay,
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
             tokenNumber: selectedTokenNumber.toString().padStart(3, "0")
           }
         });
@@ -256,7 +256,7 @@ export class BookingService {
       const totalBookedCount = await tx.appointment.count({
         where: {
           sessionId: session.id,
-          appointmentDate: startOfDay,
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
           status: { notIn: ["CANCELLED", "NO_SHOW"] }
         }
       });
@@ -275,9 +275,8 @@ export class BookingService {
       if (selectedTokenNumber) {
         nextTokenNumberStr = selectedTokenNumber.toString().padStart(3, "0");
       } else {
-        // Find next lowest available token
         const existingTokens = await tx.appointment.findMany({
-          where: { sessionId: session.id, appointmentDate: startOfDay },
+          where: { sessionId: session.id, appointmentDate: { gte: startOfDay, lte: endOfDay } },
           select: { tokenNumber: true }
         });
         const bookedNums = new Set(existingTokens.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
