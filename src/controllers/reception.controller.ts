@@ -215,7 +215,30 @@ export const generateToken = async (req: Request, res: Response) => {
     const isNonOPD = doctorDetails && doctorDetails.specialty && doctorDetails.specialty !== "General" && doctorDetails.specialty.toUpperCase() !== "OPD";
     const needsInvoice = isNonOPD || hasLab || hasService;
 
-    const sharedRefNo = Math.floor(10000000 + Math.random() * 90000000).toString();
+    let sharedRefNo = Math.floor(10000000 + Math.random() * 90000000).toString();
+
+    // If it's a PHONE booking, check if this patient already has a BOOKED phone appointment today
+    if (bookingType === "PHONE" && patient?.id) {
+      const targetDate = date ? new Date(date) : new Date();
+      const startOfDay = new Date(targetDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(targetDate);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const existingPhoneBooking = await prisma.appointment.findFirst({
+        where: {
+          patientId: patient.id,
+          bookingType: "PHONE",
+          status: "BOOKED",
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          bookingReference: { not: null }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+      if (existingPhoneBooking && existingPhoneBooking.bookingReference) {
+        sharedRefNo = existingPhoneBooking.bookingReference;
+      }
+    }
 
     // Helper to robustly generate a single token
     const generateSpecificToken = async (dept: string, docId: string | null, requestedTokenNumber?: number) => {
@@ -653,59 +676,82 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: `Cannot checkout appointment in status: ${appointment.status}` });
     }
 
-    let updatedAppointment = appointment;
-    if (appointment.bookingReference) {
-      // Find all appointments with this booking reference
-      const allAppts = await prisma.appointment.findMany({
-        where: { bookingReference: appointment.bookingReference }
-      });
-      
-      // Update each appointment's status correctly
-      for (const appt of allAppts) {
-        const newStatus = appt.department === "LAB" ? "WAITING_FOR_LAB_TEST" : "WAITING";
-        const updated = await prisma.appointment.update({
-          where: { id: appt.id },
-          data: { status: newStatus }
-        });
-        if (appt.id === appointmentId) {
-          updatedAppointment = updated as any;
-        }
+    let allApptIds = [appointmentId];
+    
+    // Group all active appointments for this patient today
+    const startOfDay = new Date(appointment.appointmentDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(appointment.appointmentDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const allApptsForPatient = await prisma.appointment.findMany({
+      where: { 
+        patientId: appointment.patientId,
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: { in: ["BOOKED"] } // Only check out ones that haven't been checked out yet
       }
-    } else {
-      updatedAppointment = await prisma.appointment.update({
-        where: { id: appointmentId },
-        data: { status: appointment.department === "LAB" ? "WAITING_FOR_LAB_TEST" : "WAITING" }
-      }) as any;
+    });
+
+    if (allApptsForPatient.length > 0) {
+      allApptIds = allApptsForPatient.map(a => a.id);
+      if (!allApptIds.includes(appointmentId)) {
+        allApptIds.push(appointmentId);
+      }
     }
 
-    let invoice = await prisma.invoice.findFirst({
+    let updatedAppointment = appointment;
+
+    // Update each appointment's status correctly
+    for (const apptId of allApptIds) {
+      const appt = allApptsForPatient.find(a => a.id === apptId) || appointment;
+      const newStatus = appt.department === "LAB" ? "WAITING_FOR_LAB_TEST" : "WAITING";
+      const updated = await prisma.appointment.update({
+        where: { id: apptId },
+        data: { status: newStatus }
+      });
+      if (apptId === appointmentId) {
+        updatedAppointment = updated as any;
+      }
+    }
+
+    let invoices = await prisma.invoice.findMany({
       where: {
-        visitId: appointmentId,
+        visitId: { in: allApptIds },
         status: "DRAFT"
       },
       include: { lineItems: true }
     });
 
-    if (invoice) {
-      // Pay the existing DRAFT invoice
-      invoice = await prisma.invoice.update({
-        where: { id: invoice.id },
-        data: {
-          status: "PAID",
-          payments: {
-            create: [{
-              amount: invoice.totalAmount,
-              method: req.body.paymentMethod || "CASH",
-              status: "COMPLETED",
-              appointmentId: appointment.id
-            }]
-          }
-        },
-        include: { lineItems: true }
-      });
+    let mergedInvoice: any = null;
+
+    if (invoices.length > 0) {
+      // Pay all existing DRAFT invoices
+      for (const inv of invoices) {
+        const updatedInv = await prisma.invoice.update({
+          where: { id: inv.id },
+          data: {
+            status: "PAID",
+            payments: {
+              create: [{
+                amount: inv.totalAmount,
+                method: req.body.paymentMethod || "CASH",
+                status: "COMPLETED",
+                appointmentId: appointment.id
+              }]
+            }
+          },
+          include: { lineItems: true }
+        });
+        if (!mergedInvoice) {
+          mergedInvoice = { ...updatedInv, lineItems: [...updatedInv.lineItems] };
+        } else {
+          mergedInvoice.totalAmount += updatedInv.totalAmount;
+          mergedInvoice.lineItems.push(...updatedInv.lineItems);
+        }
+      }
     } else if (isUpfront && fee > 0) {
       // Create a new invoice if no draft exists
-      invoice = await prisma.invoice.create({
+      mergedInvoice = await prisma.invoice.create({
         data: {
           patientId: appointment.patientId,
           subtotal: fee,
@@ -740,7 +786,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
     }
 
     const allTokens = await prisma.appointment.findMany({
-      where: { bookingReference: appointment.bookingReference },
+      where: { id: { in: allApptIds } },
       include: { Patient: true, User: true }
     });
 
@@ -749,7 +795,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       data: {
         appointment: updatedAppointment,
         tokens: allTokens.length > 0 ? allTokens : [appointment],
-        invoice,
+        invoice: mergedInvoice,
         tokenNumber: appointment.tokenNumber,
         department: appointment.department,
         doctorName: appointment.User?.fullName,

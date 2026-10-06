@@ -64,19 +64,39 @@ export const barcodeController = {
         include: { Patient: true, User: true }
       });
       if (appointment) {
-        let allAppointments = [appointment];
-        if (appointment.bookingReference) {
-          allAppointments = await prisma.appointment.findMany({
-            where: { bookingReference: appointment.bookingReference },
-            include: { Patient: true, User: true }
-          });
-        }
+        const startOfDay = new Date(appointment.appointmentDate);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(appointment.appointmentDate);
+        endOfDay.setHours(23, 59, 59, 999);
 
-        const invoice = await prisma.invoice.findFirst({
-          where: { visitId: appointment.id, status: "DRAFT" },
+        const allAppointments = await prisma.appointment.findMany({
+          where: { 
+            patientId: appointment.patientId,
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            status: { notIn: ["CANCELLED", "COMPLETED"] } // Only fetch active ones
+          },
+          include: { Patient: true, User: true }
+        });
+
+        const invoices = await prisma.invoice.findMany({
+          where: { 
+            visitId: { in: allAppointments.map(a => a.id) },
+            status: "DRAFT" 
+          },
           include: { lineItems: true }
         });
-        return res.json({ type: "APPOINTMENT", data: { appointment, allAppointments, invoice } });
+
+        let mergedInvoice = null;
+        if (invoices.length > 0) {
+          mergedInvoice = {
+            id: invoices[0]?.id,
+            totalAmount: invoices.reduce((sum, inv) => sum + inv.totalAmount, 0),
+            status: "DRAFT",
+            lineItems: invoices.flatMap(inv => inv.lineItems)
+          };
+        }
+
+        return res.json({ type: "APPOINTMENT", data: { appointment, allAppointments, invoice: mergedInvoice } });
       }
 
       // 5. Check Non-Med Inventory (also inside Medicine technically as itemType="CONSUMABLE")
