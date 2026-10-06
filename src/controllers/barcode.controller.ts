@@ -28,7 +28,11 @@ export const barcodeController = {
         }
         
         if (prescription) {
-          return res.json({ type: "PRESCRIPTION", data: prescription });
+          const doctor = await prisma.user.findUnique({
+            where: { id: prescription.doctorId },
+            select: { id: true, feeType: true, consultationFee: true, fullName: true }
+          });
+          return res.json({ type: "PRESCRIPTION", data: { ...prescription, doctor } });
         }
       }
 
@@ -54,7 +58,28 @@ export const barcodeController = {
         return res.json({ type: "EXTRA_SERVICE", data: extraService });
       }
 
-      // 4. Check Non-Med Inventory (also inside Medicine technically as itemType="CONSUMABLE")
+      // 4. Check Appointment (for token barcodes)
+      const appointment = await prisma.appointment.findUnique({
+        where: { id: code },
+        include: { Patient: true, User: true }
+      });
+      if (appointment) {
+        let allAppointments = [appointment];
+        if (appointment.bookingReference) {
+          allAppointments = await prisma.appointment.findMany({
+            where: { bookingReference: appointment.bookingReference },
+            include: { Patient: true, User: true }
+          });
+        }
+
+        const invoice = await prisma.invoice.findFirst({
+          where: { visitId: appointment.id, status: "DRAFT" },
+          include: { lineItems: true }
+        });
+        return res.json({ type: "APPOINTMENT", data: { appointment, allAppointments, invoice } });
+      }
+
+      // 5. Check Non-Med Inventory (also inside Medicine technically as itemType="CONSUMABLE")
       // Already handled by the Medicine check above.
 
       return res.status(404).json({ error: "Barcode not recognized in any hospital subsystem." });

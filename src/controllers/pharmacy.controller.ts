@@ -183,7 +183,7 @@ export class PharmacyController {
 
   async sell(req: Request, res: Response) {
     try {
-      const { items, paymentMethod, prescriptionId, visitId, patientId } = req.body;
+      const { items, paymentMethod, prescriptionId, visitId, patientId, postPayConsultation } = req.body;
 
       if (!items || items.length === 0) {
         return res.status(400).json({ error: 'No items provided' });
@@ -192,7 +192,7 @@ export class PharmacyController {
       // Execute the entire sale atomically in a single transaction
       const result = await prisma.$transaction(async (tx) => {
         // 1. Validate and dispense all items, collecting charges
-        const charges: { referenceId?: string; description: string; quantity: number; unitPrice: number; medicineId: string }[] = [];
+        const charges: { department: string; referenceId?: string; description: string; quantity: number; unitPrice: number; medicineId?: string }[] = [];
 
         for (const item of items) {
           const qty = Number(item.qty);
@@ -228,11 +228,22 @@ export class PharmacyController {
           }
 
           charges.push({
+            department: 'PHARMACY',
             referenceId: item.id,
             description: item.name || 'Pharmacy Medication',
             quantity: 1,
             unitPrice: itemCost,
             medicineId: item.id,
+          });
+        }
+        
+        if (postPayConsultation) {
+          charges.push({
+            department: 'CONSULTATION',
+            referenceId: postPayConsultation.id,
+            description: `Specialist Consultation (Post Pay) - Dr. ${postPayConsultation.doctorName}`,
+            quantity: 1,
+            unitPrice: Number(postPayConsultation.price),
           });
         }
 
@@ -243,7 +254,7 @@ export class PharmacyController {
           visitId,
           patientId,
           charges: charges.map(c => ({
-            department: 'PHARMACY',
+            department: c.department,
             referenceId: c.referenceId,
             description: c.description,
             quantity: c.quantity,

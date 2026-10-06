@@ -215,6 +215,8 @@ export const generateToken = async (req: Request, res: Response) => {
     const isNonOPD = doctorDetails && doctorDetails.specialty && doctorDetails.specialty !== "General" && doctorDetails.specialty.toUpperCase() !== "OPD";
     const needsInvoice = isNonOPD || hasLab || hasService;
 
+    const sharedRefNo = Math.floor(10000000 + Math.random() * 90000000).toString();
+
     // Helper to robustly generate a single token
     const generateSpecificToken = async (dept: string, docId: string | null, requestedTokenNumber?: number) => {
       const targetDate = date ? new Date(date) : new Date();
@@ -240,7 +242,6 @@ export const generateToken = async (req: Request, res: Response) => {
           throw new Error(`Token ${requestedTokenNumber} for ${dept} is already booked.`);
         }
 
-        const refNo = Math.floor(10000000 + Math.random() * 90000000).toString();
         token = await prisma.appointment.create({
           data: {
             tokenNumber: tokenDisplay,
@@ -250,7 +251,7 @@ export const generateToken = async (req: Request, res: Response) => {
             status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
             bookingType: bookingType || "WALK_IN",
             appointmentDate: targetDate,
-            bookingReference: refNo
+            bookingReference: sharedRefNo
           }
         });
         return token;
@@ -298,7 +299,6 @@ export const generateToken = async (req: Request, res: Response) => {
         }
 
         try {
-          const refNo = Math.floor(10000000 + Math.random() * 90000000).toString();
           token = await prisma.appointment.create({
             data: {
               tokenNumber: tokenDisplay,
@@ -308,7 +308,7 @@ export const generateToken = async (req: Request, res: Response) => {
               status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
               bookingType: bookingType || "WALK_IN",
               appointmentDate: targetDate,
-              bookingReference: refNo
+              bookingReference: sharedRefNo
             }
           });
         } catch (e: any) {
@@ -653,10 +653,30 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: `Cannot checkout appointment in status: ${appointment.status}` });
     }
 
-    const updatedAppointment = await prisma.appointment.update({
-      where: { id: appointmentId },
-      data: { status: "WAITING" }
-    });
+    let updatedAppointment = appointment;
+    if (appointment.bookingReference) {
+      // Find all appointments with this booking reference
+      const allAppts = await prisma.appointment.findMany({
+        where: { bookingReference: appointment.bookingReference }
+      });
+      
+      // Update each appointment's status correctly
+      for (const appt of allAppts) {
+        const newStatus = appt.department === "LAB" ? "WAITING_FOR_LAB_TEST" : "WAITING";
+        const updated = await prisma.appointment.update({
+          where: { id: appt.id },
+          data: { status: newStatus }
+        });
+        if (appt.id === appointmentId) {
+          updatedAppointment = updated as any;
+        }
+      }
+    } else {
+      updatedAppointment = await prisma.appointment.update({
+        where: { id: appointmentId },
+        data: { status: appointment.department === "LAB" ? "WAITING_FOR_LAB_TEST" : "WAITING" }
+      }) as any;
+    }
 
     let invoice = await prisma.invoice.findFirst({
       where: {
@@ -719,10 +739,16 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });
     }
 
+    const allTokens = await prisma.appointment.findMany({
+      where: { bookingReference: appointment.bookingReference },
+      include: { Patient: true, User: true }
+    });
+
     res.json({
       success: true,
       data: {
         appointment: updatedAppointment,
+        tokens: allTokens.length > 0 ? allTokens : [appointment],
         invoice,
         tokenNumber: appointment.tokenNumber,
         department: appointment.department,
