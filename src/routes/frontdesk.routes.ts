@@ -5,7 +5,7 @@ import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ADMIN', 'RECEPTIONIST']));
+router.use(verifyToken, requireRole(['ADMIN', 'RECEPTIONIST', 'NURSE']));
 
 // Apply auth middleware to all routes
 // Assuming receptionist, admin, superadmin have access
