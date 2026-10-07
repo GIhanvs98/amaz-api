@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
+import { websocketService } from "../services/websocket.service.js";
 
 const prisma = new PrismaClient();
 
@@ -117,17 +118,11 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    // Find the most recent appointment for this patient and doctor today
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
     const appointment = await prisma.appointment.findFirst({
       where: {
         patientId: patientId,
         doctorId: doctorId,
-        appointmentDate: {
-          gte: today
-        }
+        status: { in: ['BOOKED', 'WAITING', 'WAITING_FOR_LAB_TEST', 'IN_PROGRESS'] }
       },
       orderBy: {
         createdAt: 'desc'
@@ -135,7 +130,7 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
     });
 
     if (!appointment) {
-      res.status(404).json({ error: "No active token found for this patient and doctor today." });
+      res.status(404).json({ error: "No active token found for this patient and doctor." });
       return;
     }
 
@@ -143,6 +138,8 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
       where: { id: appointment.id },
       data: { status }
     });
+
+    websocketService.broadcast("TOKEN_STATUS_UPDATED", updatedApp);
 
     res.status(200).json(updatedApp);
   } catch (error) {

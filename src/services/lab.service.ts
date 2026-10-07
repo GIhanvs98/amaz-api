@@ -1,6 +1,7 @@
 import { billingService } from './billing.service.js';
 import { prisma as sharedPrisma, withRetry } from '../lib/prisma.js';
 import { NotificationService } from './notification.service.js';
+import { websocketService } from './websocket.service.js';
 
 // Use shared singleton to avoid multiple connection pools
 const prisma = sharedPrisma;
@@ -128,6 +129,7 @@ export class LabService {
         });
       }
 
+      websocketService.broadcast("lab_request_created", request);
       return request;
     });
   }

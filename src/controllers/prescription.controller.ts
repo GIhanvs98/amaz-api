@@ -130,7 +130,7 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
         }
 
         return rx;
-      });
+      }, { maxWait: 20000, timeout: 20000 });
     });
 
     // Broadcast via WebSockets
@@ -244,7 +244,7 @@ export const markPrescriptionDispensed = async (req: Request, res: Response): Pr
         }
 
         return rx;
-      });
+      }, { maxWait: 20000, timeout: 20000 });
     });
 
     res.json(updated);

@@ -304,7 +304,7 @@ export class PharmacyController {
         });
 
         return { invoice: finalInvoice, totalCost };
-      });
+      }, { maxWait: 20000, timeout: 20000 });
 
       // Announce payment success via WebSockets (outside the tx — non-critical)
       websocketService.broadcast('pos_payment_success', {
