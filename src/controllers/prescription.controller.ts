@@ -164,7 +164,33 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
       },
       orderBy: { createdAt: 'desc' as const }
     }));
-    res.json(prescriptions);
+
+    const enrichedPrescriptions = await Promise.all(prescriptions.map(async (rx: any) => {
+      let consultationPaid = false;
+      if (rx.visitId) {
+        const paidInvoice = await (prisma as any).invoice.findFirst({
+          where: {
+            visitId: rx.visitId,
+            status: 'PAID',
+            lineItems: { some: { department: 'CONSULTATION' } }
+          }
+        });
+        if (paidInvoice) consultationPaid = true;
+      }
+
+      const doctor = await (prisma as any).user.findUnique({
+        where: { id: rx.doctorId },
+        select: { id: true, feeType: true, consultationFee: true, fullName: true }
+      });
+
+      return {
+        ...rx,
+        consultationPaid,
+        doctor
+      };
+    }));
+
+    res.json(enrichedPrescriptions);
   } catch (error) {
     console.error("Error fetching prescriptions:", error);
     res.status(500).json({ error: "Failed to fetch prescriptions" });

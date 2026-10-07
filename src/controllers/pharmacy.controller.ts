@@ -194,6 +194,19 @@ export class PharmacyController {
         // 1. Validate and dispense all items, collecting charges
         const charges: { department: string; referenceId?: string; description: string; quantity: number; unitPrice: number; medicineId?: string }[] = [];
 
+        if (postPayConsultation && visitId) {
+          const alreadyPaid = await tx.invoice.findFirst({
+            where: {
+              visitId,
+              status: 'PAID',
+              lineItems: { some: { department: 'CONSULTATION' } }
+            }
+          });
+          if (alreadyPaid) {
+            throw new Error(`Consultation fee for this visit has already been paid.`);
+          }
+        }
+
         for (const item of items) {
           const qty = Number(item.qty);
 

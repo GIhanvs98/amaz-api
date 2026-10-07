@@ -32,7 +32,20 @@ export const barcodeController = {
             where: { id: prescription.doctorId },
             select: { id: true, feeType: true, consultationFee: true, fullName: true }
           });
-          return res.json({ type: "PRESCRIPTION", data: { ...prescription, doctor } });
+
+          let consultationPaid = false;
+          if (prescription.visitId) {
+             const paidInvoice = await prisma.invoice.findFirst({
+                where: {
+                   visitId: prescription.visitId,
+                   status: 'PAID',
+                   lineItems: { some: { department: 'CONSULTATION' } }
+                }
+             });
+             if (paidInvoice) consultationPaid = true;
+          }
+
+          return res.json({ type: "PRESCRIPTION", data: { ...prescription, doctor, consultationPaid } });
         }
       }
 
@@ -101,7 +114,16 @@ export const barcodeController = {
           include: { items: { include: { medicine: { include: { stockBatches: true } } } } }
         });
 
-        return res.json({ type: "APPOINTMENT", data: { appointment, allAppointments, invoice: mergedInvoice, prescriptions } });
+        const paidInvoice = await prisma.invoice.findFirst({
+           where: {
+              visitId: appointment.id,
+              status: 'PAID',
+              lineItems: { some: { department: 'CONSULTATION' } }
+           }
+        });
+        const consultationPaid = !!paidInvoice;
+
+        return res.json({ type: "APPOINTMENT", data: { appointment, allAppointments, invoice: mergedInvoice, prescriptions, consultationPaid } });
       }
 
       // 5. Check Non-Med Inventory (also inside Medicine technically as itemType="CONSUMABLE")
