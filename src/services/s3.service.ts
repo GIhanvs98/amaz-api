@@ -3,7 +3,9 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export class S3Service {
   private static s3Client = new S3Client({
-    region: process.env.AWS_REGION || "us-east-1",
+    region: process.env.AWS_REGION || "auto",
+    endpoint: process.env.AWS_ENDPOINT,
+    forcePathStyle: true,
     credentials: {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID || "",
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
@@ -33,7 +35,10 @@ export class S3Service {
       // URL expires in 15 minutes (900 seconds)
       const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 900 });
       
-      const fileUrl = `https://${this.bucketName}.s3.${process.env.AWS_REGION || "us-east-1"}.amazonaws.com/${filename}`;
+      const endpoint = process.env.AWS_ENDPOINT 
+        ? process.env.AWS_ENDPOINT.replace(/\/$/, '') 
+        : `https://s3.${process.env.AWS_REGION || "us-east-1"}.amazonaws.com`;
+      const fileUrl = `${endpoint}/${this.bucketName}/${filename}`;
       
       return { uploadUrl, fileUrl };
     } catch (error) {
