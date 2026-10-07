@@ -96,7 +96,12 @@ export const barcodeController = {
           };
         }
 
-        return res.json({ type: "APPOINTMENT", data: { appointment, allAppointments, invoice: mergedInvoice } });
+        const prescriptions = await prisma.prescription.findMany({
+          where: { visitId: { in: allAppointments.map(a => a.id) } },
+          include: { items: { include: { medicine: { include: { stockBatches: true } } } } }
+        });
+
+        return res.json({ type: "APPOINTMENT", data: { appointment, allAppointments, invoice: mergedInvoice, prescriptions } });
       }
 
       // 5. Check Non-Med Inventory (also inside Medicine technically as itemType="CONSUMABLE")

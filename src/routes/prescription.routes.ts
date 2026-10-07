@@ -9,7 +9,7 @@ router.use(verifyToken, requireRole(['ADMIN', 'DOCTOR', 'PHARMACIST', 'RECEPTION
 
 router.post("/", createPrescription);
 router.get("/", cacheMiddleware(60), getPrescriptionHistory);
-router.get("/pending", cacheMiddleware(60), getPendingPrescriptions);
+router.get("/pending", getPendingPrescriptions);
 router.patch("/:id/status", updatePrescriptionStatus);
 router.post("/:id/dispense", markPrescriptionDispensed);
 router.put("/:id", updatePrescription);
