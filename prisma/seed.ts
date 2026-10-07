@@ -71,9 +71,7 @@ async function main() {
   const staffUsersData = [
     { email: 'admin@amaz.com', fullName: 'System Admin', role: 'Superadmin' },
     { email: 'reception@amaz.com', fullName: 'Alice Reception', role: 'Receptionist' },
-    { email: 'pharmacy@amaz.com', fullName: 'Bob Pharmacist', role: 'Pharmacist' },
     { email: 'labtech@amaz.com', fullName: 'Charlie Lab', role: 'LabTech' },
-    { email: 'cashier@amaz.com', fullName: 'Diana Cashier', role: 'Cashier' },
     { email: 'nurse@amaz.com', fullName: 'Nancy Nurse', role: 'Nurse' },
   ];
 
@@ -82,12 +80,12 @@ async function main() {
     return prisma.user.create({ data: { email: u.email, fullName: u.fullName, password, roleId: role!.id } });
   }));
 
-  // Create 15 Doctors
+  // Create 1 Doctor
   const doctorRole = roles.find(r => r.name === 'Doctor');
   const doctors = [];
   const doctorSpecialties = ['General', 'Cardiology', 'Dental', 'Neurology', 'Orthopedics', 'Pediatrics', 'Dermatology'];
   
-  for (let i = 1; i <= 15; i++) {
+  for (let i = 1; i <= 1; i++) {
     const spec = doctorSpecialties[i % doctorSpecialties.length];
     const dept = departments.find(d => d.name === (spec === 'General' ? 'OPD' : spec.toUpperCase()));
     const doc = await prisma.user.create({
@@ -109,9 +107,9 @@ async function main() {
   const nurseUser = await prisma.user.findFirst({ where: { email: 'nurse@amaz.com' } });
 
   // --- PATIENTS ---
-  console.log('Seeding 100 patients...');
+  console.log('Seeding 10 patients...');
   const patients = [];
-  for (let i = 1; i <= 100; i++) {
+  for (let i = 1; i <= 10; i++) {
     const phone = `07${Math.floor(10000000 + Math.random() * 90000000)}`;
     try {
       const p = await prisma.patient.create({
@@ -268,15 +266,15 @@ async function main() {
   }
 
   // --- APPOINTMENTS, PRESCRIPTIONS, LAB REQUESTS & INVOICES ---
-  console.log('Seeding 300+ Appointments with full lifecycles...');
+  console.log('Seeding 10 Appointments with full lifecycles...');
   
   // We want appointments spread over the past 7 days, today, and next 7 days
   const today = new Date();
   
-  for (let i = 0; i < 300; i++) {
-    const isPast = i < 150;
-    const isToday = i >= 150 && i < 200;
-    const isFuture = i >= 200;
+  for (let i = 0; i < 10; i++) {
+    const isPast = i < 3;
+    const isToday = i >= 3 && i < 7;
+    const isFuture = i >= 7;
     
     const doc = doctors[Math.floor(Math.random() * doctors.length)];
     const pat = patients[Math.floor(Math.random() * patients.length)];
