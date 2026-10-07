@@ -8,7 +8,8 @@ const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
 
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { fullName, email, password, roleName = "USER" } = req.body;
+    const { fullName, email, password } = req.body;
+    const roleName = "USER";
 
     if (!fullName || !email || !password) {
       res.status(400).json({ error: "Please provide all required fields" });

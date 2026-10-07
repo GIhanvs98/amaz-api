@@ -95,6 +95,9 @@ export class PharmacyService {
   // --- DISPENSING ENGINE (FIFO LOGIC) ---
   async dispenseMedicine(medicineId: string, quantityToDispense: number) {
     return withRetry(() => prisma.$transaction(async (tx) => {
+      // Lock all batches for this medicine to serialize concurrent dispensing
+      await tx.$executeRaw`SELECT id FROM "StockBatch" WHERE "medicineId" = ${medicineId} FOR UPDATE`;
+
       // 1. Get all available unexpired stock batches for this medicine, ordered by expiry date (FIFO)
       const availableBatches = await tx.stockBatch.findMany({
         where: {

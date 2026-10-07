@@ -746,72 +746,79 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       }
     }
 
-    let invoices = await prisma.invoice.findMany({
-      where: {
-        visitId: { in: allApptIds },
-        status: "DRAFT"
-      },
-      include: { lineItems: true }
-    });
-
     let mergedInvoice: any = null;
 
-    if (invoices.length > 0) {
-      // Pay all existing DRAFT invoices
-      for (const inv of invoices) {
-        const updatedInv = await prisma.invoice.update({
-          where: { id: inv.id },
+    await prisma.$transaction(async (tx) => {
+      if (allApptIds.length > 0) {
+        const placeholders = allApptIds.map((_, i) => `$${i + 1}`).join(',');
+        await tx.$executeRawUnsafe(`SELECT id FROM "Invoice" WHERE "visitId" IN (${placeholders}) AND status = 'DRAFT' FOR UPDATE`, ...allApptIds);
+      }
+
+      let invoices = await tx.invoice.findMany({
+        where: {
+          visitId: { in: allApptIds },
+          status: "DRAFT"
+        },
+        include: { lineItems: true }
+      });
+
+      if (invoices.length > 0) {
+        // Pay all existing DRAFT invoices
+        for (const inv of invoices) {
+          const updatedInv = await tx.invoice.update({
+            where: { id: inv.id },
+            data: {
+              status: "PAID",
+              payments: {
+                create: [{
+                  amount: inv.totalAmount,
+                  method: req.body.paymentMethod || "CASH",
+                  status: "COMPLETED",
+                  appointmentId: appointment.id
+                }]
+              }
+            },
+            include: { lineItems: true }
+          });
+          if (!mergedInvoice) {
+            mergedInvoice = { ...updatedInv, lineItems: [...updatedInv.lineItems] };
+          } else {
+            mergedInvoice.totalAmount += updatedInv.totalAmount;
+            mergedInvoice.lineItems.push(...updatedInv.lineItems);
+          }
+        }
+      } else if (isUpfront && fee > 0) {
+        // Create a new invoice if no draft exists
+        mergedInvoice = await tx.invoice.create({
           data: {
+            patientId: appointment.patientId,
+            subtotal: fee,
+            totalAmount: fee,
             status: "PAID",
             payments: {
               create: [{
-                amount: inv.totalAmount,
+                amount: fee,
                 method: req.body.paymentMethod || "CASH",
                 status: "COMPLETED",
                 appointmentId: appointment.id
               }]
+            },
+            lineItems: {
+              create: [
+                {
+                  description: `Consultation - Dr. ${appointment.User?.fullName || 'General'}`,
+                  quantity: 1,
+                  unitPrice: fee,
+                  total: fee,
+                  department: "CONSULTATION"
+                }
+              ]
             }
           },
           include: { lineItems: true }
         });
-        if (!mergedInvoice) {
-          mergedInvoice = { ...updatedInv, lineItems: [...updatedInv.lineItems] };
-        } else {
-          mergedInvoice.totalAmount += updatedInv.totalAmount;
-          mergedInvoice.lineItems.push(...updatedInv.lineItems);
-        }
       }
-    } else if (isUpfront && fee > 0) {
-      // Create a new invoice if no draft exists
-      mergedInvoice = await prisma.invoice.create({
-        data: {
-          patientId: appointment.patientId,
-          subtotal: fee,
-          totalAmount: fee,
-          status: "PAID",
-          payments: {
-            create: [{
-              amount: fee,
-              method: req.body.paymentMethod || "CASH",
-              status: "COMPLETED",
-              appointmentId: appointment.id
-            }]
-          },
-          lineItems: {
-            create: [
-              {
-                description: `Consultation - Dr. ${appointment.User?.fullName || 'General'}`,
-                quantity: 1,
-                unitPrice: fee,
-                total: fee,
-                department: "CONSULTATION"
-              }
-            ]
-          }
-        },
-        include: { lineItems: true }
-      });
-    }
+    });
 
     if (websocketService.getIo()) {
       websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });

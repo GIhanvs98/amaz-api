@@ -17,10 +17,10 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
     });
 
     if (patient) {
-      if (patient.fullName !== fullName || patient.ageFallback !== age || !patient.isActive) {
+      if (!patient.isActive) {
         patient = await prisma.patient.update({
           where: { id: patient.id },
-          data: { fullName, ageFallback: age ? parseInt(age.toString()) : null, isActive: true },
+          data: { isActive: true },
         });
       }
     } else {

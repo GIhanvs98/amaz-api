@@ -62,19 +62,23 @@ export class BillingService {
       }
     });
 
-    // 4. Update invoice totals
-    const updatedInvoice = await db.invoice.update({
-      where: { id: invoice.id },
+    // 4. Update invoice totals only if it is still DRAFT
+    const updatedInvoiceResult = await db.invoice.updateMany({
+      where: { id: invoice.id, status: "DRAFT" },
       data: {
         subtotal: { increment: total },
         totalAmount: { increment: total }
-      },
-      include: {
-        lineItems: true
       }
     });
 
-    return updatedInvoice;
+    if (updatedInvoiceResult.count === 0) {
+      throw new Error("Concurrency error: The invoice is no longer in DRAFT status and cannot be modified. It may have just been checked out.");
+    }
+
+    return db.invoice.findUnique({
+      where: { id: invoice.id },
+      include: { lineItems: true }
+    });
   }
 
   /**
@@ -141,17 +145,23 @@ export class BillingService {
       data: formattedCharges
     });
 
-    // 3. Update invoice totals exactly once
-    const updatedInvoice = await db.invoice.update({
-      where: { id: invoice.id },
+    // 3. Update invoice totals exactly once, ensuring it is still DRAFT
+    const updatedInvoiceResult = await db.invoice.updateMany({
+      where: { id: invoice.id, status: "DRAFT" },
       data: {
         subtotal: { increment: totalToIncrement },
         totalAmount: { increment: totalToIncrement }
-      },
-      include: { lineItems: true }
+      }
     });
 
-    return updatedInvoice;
+    if (updatedInvoiceResult.count === 0) {
+      throw new Error("Concurrency error: The invoice is no longer in DRAFT status and cannot be modified. It may have just been checked out.");
+    }
+
+    return db.invoice.findUnique({
+      where: { id: invoice.id },
+      include: { lineItems: true }
+    });
   }
 
   /**

@@ -27,33 +27,39 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const tokensToday = await prisma.appointment.count({
-      where: {
-        doctorId,
-        appointmentDate: {
-          gte: today,
+    // Wrap in a transaction with a row-level lock to prevent concurrent token generation race conditions
+    const appointment = await prisma.$transaction(async (tx) => {
+      // Lock the doctor's row for update to serialize concurrent token requests for the same doctor
+      await tx.$executeRaw`SELECT id FROM "User" WHERE id = ${doctorId} FOR UPDATE`;
+
+      const tokensToday = await tx.appointment.count({
+        where: {
+          doctorId,
+          appointmentDate: {
+            gte: today,
+          },
         },
-      },
-    });
+      });
 
-    // Generate token number: First 3 letters of doctor's name + sequence
-    const docPrefix = doctor.fullName.substring(0, 3).toUpperCase();
-    const sequence = (tokensToday + 1).toString().padStart(3, "0");
-    const tokenNumber = `${docPrefix}-${sequence}`;
+      // Generate token number: First 3 letters of doctor's name + sequence
+      const docPrefix = doctor.fullName.substring(0, 3).toUpperCase();
+      const sequence = (tokensToday + 1).toString().padStart(3, "0");
+      const tokenNumber = `${docPrefix}-${sequence}`;
 
-    const appointment = await prisma.appointment.create({
-      data: {
-        tokenNumber,
-        patientId,
-        doctorId,
-        status: "CHECKED_IN", // Mapping "waiting_for_counsiling_payment" or similar
-      },
-      include: {
-        Patient: true,
-        User: {
-          select: { fullName: true }
+      return tx.appointment.create({
+        data: {
+          tokenNumber,
+          patientId,
+          doctorId,
+          status: "CHECKED_IN", // Mapping "waiting_for_counsiling_payment" or similar
+        },
+        include: {
+          Patient: true,
+          User: {
+            select: { fullName: true }
+          }
         }
-      }
+      });
     });
 
     // Map to frontend expected format
