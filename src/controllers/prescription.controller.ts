@@ -165,7 +165,7 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
       orderBy: { createdAt: 'desc' as const }
     }));
 
-    const enrichedPrescriptions = await Promise.all(prescriptions.map(async (rx: any) => {
+    const enrichedPrescriptions = await Promise.all((prescriptions as any[]).map(async (rx: any) => {
       let consultationPaid = false;
       if (rx.visitId) {
         const paidInvoice = await (prisma as any).invoice.findFirst({
