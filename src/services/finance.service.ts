@@ -186,13 +186,18 @@ export class FinanceService {
 
     // 2. Fetch associated invoices to calculate actual paid amounts
     const visitIds = appointments.map(a => a.id);
-    const paidInvoices = await prisma.invoice.findMany({
+    const paidInvoices: any[] = await prisma.invoice.findMany({
       where: {
         visitId: { in: visitIds },
         status: 'PAID'
       },
       include: {
-        lineItems: true
+        lineItems: true,
+        payments: {
+          include: {
+            refunds: { where: { status: 'COMPLETED' } }
+          }
+        }
       }
     });
 
@@ -225,15 +230,27 @@ export class FinanceService {
       const invoice = paidInvoices.find(inv => inv.visitId === apt.id);
       if (invoice) {
         // Find the consultation line item
-        const consultItem = invoice.lineItems.find(li => li.department === 'CONSULTATION');
+        const consultItem = invoice.lineItems.find((li: any) => li.department === 'CONSULTATION');
         if (consultItem) {
+          // Find any refunds allocated against this invoice
+          const totalRefunds = invoice.payments.reduce((sum: any, p: any) => 
+            sum + p.refunds.reduce((rSum: any, r: any) => rSum + r.amount, 0), 0
+          );
+          
+          // Proportionally deduct refund from consultation item if needed, 
+          // but for simplicity, we assume consultation gets refunded first or calculate net total.
+          // Since we are only calculating settlement on the consultation part, 
+          // let's deduct the refund amount from the consultation fee.
+          // Ensure we don't deduct more than the consultation itself.
+          const netConsultationRevenue = Math.max(0, consultItem.total - totalRefunds);
+
           settlementMap[docId].totalConsultations += 1;
-          settlementMap[docId].totalCollected += consultItem.total;
+          settlementMap[docId].totalCollected += netConsultationRevenue;
           
           // 85% to doctor, 15% to hospital
-          const docCut = consultItem.total * 0.85;
+          const docCut = netConsultationRevenue * 0.85;
           settlementMap[docId].doctorShare += docCut;
-          settlementMap[docId].hospitalShare += (consultItem.total - docCut);
+          settlementMap[docId].hospitalShare += (netConsultationRevenue - docCut);
         }
       }
     }
@@ -362,7 +379,7 @@ export class FinanceService {
     return prisma.$transaction(async (tx) => {
       const po = await tx.purchaseOrder.findUnique({
         where: { id },
-        include: { items: true }
+        include: { items: { include: { medicine: true } } }
       });
 
       if (!po) throw new Error('Purchase Order not found');
@@ -391,7 +408,8 @@ export class FinanceService {
                 expiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1)),
                 initialQuantity: item.quantity,
                 currentQuantity: item.quantity,
-                unitPrice: item.unitPrice,
+                unitPrice: item.medicine.retailPrice > 0 ? item.medicine.retailPrice : item.unitPrice, // Retail Price for selling
+                costPrice: item.unitPrice // Wholesale Cost Price for accounting
               }
             })
           )

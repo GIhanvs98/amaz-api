@@ -197,43 +197,20 @@ export class PharmacyController {
 
         for (const item of items) {
           const qty = Number(item.qty);
-
-          // Get available FIFO batches for this medicine
-          const availableBatches = await tx.stockBatch.findMany({
-            where: {
-              medicineId: item.id,
-              currentQuantity: { gt: 0 },
-              expiryDate: { gt: new Date() },
-            },
-            orderBy: { expiryDate: 'asc' },
-          });
-
-          const totalAvailable = availableBatches.reduce((sum: number, b: any) => sum + b.currentQuantity, 0);
-          if (totalAvailable < qty) {
-            throw new Error(`Insufficient stock for "${item.name}". Requested: ${qty}, Available: ${totalAvailable}`);
-          }
-
-          let remaining = qty;
-          let itemCost = 0;
-
-          for (const batch of availableBatches) {
-            if (remaining <= 0) break;
-            const fromBatch = Math.min(batch.currentQuantity, remaining);
-            itemCost += fromBatch * batch.unitPrice;
-            remaining -= fromBatch;
-
-            await tx.stockBatch.update({
-              where: { id: batch.id },
-              data: { currentQuantity: batch.currentQuantity - fromBatch },
-            });
-          }
+          // Delegate to pharmacyService to ensure row-level locks and FIFO logic are applied securely
+          const dispenseResult = await pharmacyService.dispenseMedicine(
+            item.id,
+            qty,
+            { skipBilling: true }, // We do our own bulk billing here
+            tx
+          );
 
           charges.push({
             department: 'PHARMACY',
             referenceId: item.id,
             description: item.name || 'Pharmacy Medication',
             quantity: 1,
-            unitPrice: itemCost,
+            unitPrice: dispenseResult.totalCost,
             medicineId: item.id,
           });
         }

@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import { websocketService } from "../services/websocket.service.js";
 import { billingService } from "../services/billing.service.js";
+import { pharmacyService } from "../services/pharmacy.service.js";
 
 const prisma = new PrismaClient();
 
@@ -119,13 +120,7 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
         });
 
         if (visitId) {
-          // 1. Complete the appointment to remove from queue
-          await tx.appointment.updateMany({
-            where: { id: visitId, status: { not: "COMPLETED" } },
-            data: { status: "COMPLETED" }
-          });
-
-          // 2. Fetch doctor for billing
+          // Add billing charge for POST-fee doctors
           const doctor = await tx.user.findUnique({
             where: { id: doctorId },
             select: { consultationFee: true, feeType: true }
@@ -141,6 +136,8 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
               unitPrice: doctor?.consultationFee ?? 2500
             }, tx);
           }
+          // NOTE: Appointment status is NOT changed here. The doctor must explicitly
+          // click "Complete Consultation" to remove the patient from the queue.
         }
 
         return rx;
@@ -218,10 +215,23 @@ export const markPrescriptionDispensed = async (req: Request, res: Response): Pr
 
     const updated = await withRetry(async () => {
       return await (prisma as any).$transaction(async (tx: any) => {
-        // Update prescription status
-        const rx = await tx.prescription.update({
+        // Atomically guard against double-dispensing.
+        // updateMany returns count=0 if the prescription is not in PENDING/IN_PROGRESS state.
+        const guard = await tx.prescription.updateMany({
+          where: { id, status: { in: ["PENDING", "IN_PROGRESS"] } },
+          data: { status: "DISPENSED" }
+        });
+
+        if (guard.count === 0) {
+          const existing = await tx.prescription.findUnique({ where: { id } });
+          if (!existing) throw new Error("Prescription not found");
+          if (existing.status === "DISPENSED") throw new Error("Prescription has already been dispensed. Cannot dispense again.");
+          throw new Error(`Cannot dispense prescription in status: ${existing.status}`);
+        }
+
+        // Fetch the full prescription after status update
+        const rx = await tx.prescription.findUnique({
           where: { id },
-          data: { status: "DISPENSED" },
           include: { items: { include: { medicine: true } } }
         });
 
@@ -236,26 +246,16 @@ export const markPrescriptionDispensed = async (req: Request, res: Response): Pr
             });
 
             if (rxItem?.medicineId && di.dispenseQty > 0) {
-              let remainingToDeduct = di.dispenseQty;
-              const batches = await tx.stockBatch.findMany({
-                where: { medicineId: rxItem.medicineId, currentQuantity: { gt: 0 } },
-                orderBy: { expiryDate: 'asc' }
-              });
+              // Delegate to pharmacyService for secure, locked FIFO deduction
+              const dispenseResult = await pharmacyService.dispenseMedicine(
+                rxItem.medicineId,
+                di.dispenseQty,
+                { skipBilling: true },
+                tx
+              );
 
-              for (const batch of batches) {
-                if (remainingToDeduct <= 0) break;
-                const deductAmount = Math.min(batch.currentQuantity, remainingToDeduct);
-                
-                await tx.stockBatch.update({
-                  where: { id: batch.id },
-                  data: { currentQuantity: { decrement: deductAmount } }
-                });
-                
-                totalPharmacyCost += (deductAmount * batch.unitPrice);
-                remainingToDeduct -= deductAmount;
-              }
-
-              const actualDispensed = di.dispenseQty - remainingToDeduct;
+              totalPharmacyCost += dispenseResult.totalCost;
+              const actualDispensed = dispenseResult.batchesUsed.reduce((sum: number, b: any) => sum + b.quantityDispensed, 0);
               
               await tx.prescriptionItem.update({
                 where: { id: di.itemId },
@@ -303,9 +303,9 @@ export const updatePrescriptionStatus = async (req: Request, res: Response): Pro
     const { id } = req.params;
     const { status } = req.body as { status: string };
 
-    const allowed = ["PENDING", "IN_PROGRESS", "DISPENSED", "CANCELLED"];
+    const allowed = ["PENDING", "IN_PROGRESS", "CANCELLED"];
     if (!allowed.includes(status)) {
-      res.status(400).json({ error: `Invalid status. Must be one of: ${allowed.join(", ")}` });
+      res.status(400).json({ error: `Invalid status. Dispensing must go through the dispense endpoint. Must be one of: ${allowed.join(", ")}` });
       return;
     }
 
@@ -328,8 +328,17 @@ export const updatePrescriptionStatus = async (req: Request, res: Response): Pro
 
 export const getPrescriptionHistory = async (req: Request, res: Response): Promise<void> => {
   try {
+    const requestingUser = (req as any).user;
+    const requestingRole = (req as any).roleName;
     const { doctorId } = req.query;
-    const whereClause = doctorId ? { doctorId: String(doctorId) } : {};
+
+    let whereClause: any = {};
+    if (doctorId) {
+      whereClause.doctorId = String(doctorId);
+    } else if (requestingRole === 'DOCTOR') {
+      // Doctors can only see their own prescriptions unless filtering by doctorId (admin override not applicable)
+      whereClause.doctorId = requestingUser?.id;
+    }
     
     const prescriptions = await withRetry(() => (prisma as any).prescription.findMany({
       where: whereClause,

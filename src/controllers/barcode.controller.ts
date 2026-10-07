@@ -101,12 +101,34 @@ export const barcodeController = {
 
         let mergedInvoice = null;
         if (invoices.length > 0) {
-          mergedInvoice = {
-            id: invoices[0]?.id,
-            totalAmount: invoices.reduce((sum, inv) => sum + inv.totalAmount, 0),
-            status: "DRAFT",
-            lineItems: invoices.flatMap(inv => inv.lineItems)
-          };
+          const mainInvoice = invoices[0]!;
+          const otherInvoices = invoices.slice(1);
+
+          if (otherInvoices.length > 0) {
+            await prisma.$transaction(async (tx) => {
+              for (const inv of otherInvoices) {
+                await tx.invoiceLineItem.updateMany({
+                  where: { invoiceId: inv.id },
+                  data: { invoiceId: mainInvoice.id }
+                });
+                await tx.invoice.delete({ where: { id: inv.id } });
+              }
+              const newLineItems = await tx.invoiceLineItem.findMany({ where: { invoiceId: mainInvoice.id } });
+              const newTotal = newLineItems.reduce((s: number, li: any) => s + li.total, 0);
+              
+              await tx.invoice.update({
+                where: { id: mainInvoice.id },
+                data: { subtotal: newTotal, totalAmount: newTotal }
+              });
+            });
+
+            mergedInvoice = await prisma.invoice.findUnique({
+              where: { id: mainInvoice.id },
+              include: { lineItems: true }
+            });
+          } else {
+            mergedInvoice = mainInvoice;
+          }
         }
 
         const prescriptions = await prisma.prescription.findMany({

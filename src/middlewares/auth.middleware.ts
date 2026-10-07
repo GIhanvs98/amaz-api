@@ -39,6 +39,11 @@ export const requirePermission = (action: string, resource: string) => {
         return;
       }
 
+      if (!req.user.roleId) {
+        res.status(403).json({ message: "Forbidden: Role mapping missing" });
+        return;
+      }
+
       const rolePermission = await prisma.rolePermission.findFirst({
         where: {
           roleId: req.user.roleId,
@@ -86,6 +91,11 @@ export const requireRole = (allowedRoles: string[]) => {
         return;
       }
 
+      if (!req.user.roleId) {
+        res.status(403).json({ message: "Forbidden: Role mapping missing" });
+        return;
+      }
+
       let role = null;
       let retries = 3;
       while (retries > 0) {
@@ -94,6 +104,7 @@ export const requireRole = (allowedRoles: string[]) => {
             where: { id: req.user.roleId },
             select: { name: true }
           });
+
           break;
         } catch (e: any) {
           retries--;

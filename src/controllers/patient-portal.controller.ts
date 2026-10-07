@@ -6,23 +6,34 @@ import jwt from "jsonwebtoken";
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error("JWT_SECRET is not defined in environment variables");
 
-// Simple in-memory OTP store. In production, use Redis or DB.
-const otpStore = new Map<string, { otp: string, expiresAt: number }>();
-
 export const requestOTP = async (req: Request, res: Response) => {
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number is required" });
 
     // Check if patient exists
-    const patient = await prisma.patient.findUnique({ where: { phone } });
+    const patient = await prisma.patient.findFirst({ where: { phone } });
     if (!patient) return res.status(404).json({ error: "No records found for this phone number." });
+
+    // Rate Limiting check (prevent spamming)
+    const existingOTP = await prisma.patientOTP.findUnique({ where: { phone } });
+    if (existingOTP && existingOTP.expiresAt > new Date() && existingOTP.attempts < 3) {
+      // Allow re-sending if it's the same active window, but you might want to throttle this too.
+      // For simplicity, we just overwrite, but if they requested in the last 1 minute, block it.
+      if (existingOTP.updatedAt.getTime() > Date.now() - 60000) {
+        return res.status(429).json({ error: "Please wait 60 seconds before requesting another OTP." });
+      }
+    }
 
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 mins
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 mins
 
-    otpStore.set(phone, { otp, expiresAt });
+    await prisma.patientOTP.upsert({
+      where: { phone },
+      update: { code: otp, expiresAt, attempts: 0 },
+      create: { phone, code: otp, expiresAt }
+    });
 
     const message = `Your AMAZ Hospital patient portal OTP is ${otp}. It expires in 5 minutes.`;
     await SMSService.sendSMS(phone, message);
@@ -36,20 +47,32 @@ export const requestOTP = async (req: Request, res: Response) => {
 export const verifyOTP = async (req: Request, res: Response) => {
   try {
     const { phone, otp } = req.body;
-    const record = otpStore.get(phone);
-
+    
+    const record = await prisma.patientOTP.findUnique({ where: { phone } });
     if (!record) return res.status(400).json({ error: "No OTP requested or OTP expired." });
-    if (Date.now() > record.expiresAt) {
-      otpStore.delete(phone);
+
+    if (Date.now() > record.expiresAt.getTime()) {
+      await prisma.patientOTP.delete({ where: { phone } });
       return res.status(400).json({ error: "OTP expired." });
     }
-    if (record.otp !== otp) {
+
+    if (record.attempts >= 3) {
+      await prisma.patientOTP.delete({ where: { phone } });
+      return res.status(429).json({ error: "Too many failed attempts. OTP invalidated." });
+    }
+
+    if (record.code !== otp) {
+      await prisma.patientOTP.update({
+        where: { phone },
+        data: { attempts: { increment: 1 } }
+      });
       return res.status(400).json({ error: "Invalid OTP." });
     }
 
-    otpStore.delete(phone);
+    // Success
+    await prisma.patientOTP.delete({ where: { phone } });
 
-    const patient = await prisma.patient.findUnique({ where: { phone } });
+    const patient = await prisma.patient.findFirst({ where: { phone } });
     if (!patient) return res.status(404).json({ error: "Patient not found." });
 
     // Generate JWT for patient

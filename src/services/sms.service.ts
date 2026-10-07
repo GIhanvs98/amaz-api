@@ -3,7 +3,7 @@ import axios from 'axios';
 export class SMSService {
   private static API_URL = 'https://sms.send.lk/api/v3/sms/send';
   private static CONTACTS_API_URL = 'https://sms.send.lk/api/v3/contacts';
-  private static API_KEY = process.env.SENDLK_API_KEY || '4113|SL0Qt5MifVDwSyznCdHO911JtvyyTwLjU261zQi6';
+  private static API_KEY = process.env.SENDLK_API_KEY;
   private static SENDER_ID = process.env.SENDLK_SENDER_ID || 'Send.lk';
   private static GROUP_ID = process.env.SENDLK_GROUP_ID || 'HOSPITAL_PATIENTS';
 

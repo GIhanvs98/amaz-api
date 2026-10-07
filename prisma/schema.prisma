@@ -17,6 +17,7 @@ model Medicine {
   form              String?
   unit              String
   reorderLevel      Int                 @default(50)
+  retailPrice       Float               @default(0)
   isActive          Boolean             @default(true)
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
@@ -49,19 +50,21 @@ model Supplier {
 }
 
 model StockBatch {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   medicineId      String
   batchNumber     String
   expiryDate      DateTime?
   initialQuantity Int
   currentQuantity Int
   unitPrice       Float
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  medicine        Medicine @relation(fields: [medicineId], references: [id])
+  costPrice       Float     @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  medicine        Medicine  @relation(fields: [medicineId], references: [id])
 
   @@index([expiryDate])
   @@index([medicineId, currentQuantity])
+  @@unique([medicineId, batchNumber])
 }
 
 model PurchaseOrder {
@@ -124,10 +127,13 @@ model Payment {
   method         String
   status         String       @default("COMPLETED")
   transactionRef String?
+  shiftId        String?
   createdAt      DateTime     @default(now())
   appointmentId  String?      @unique
   invoice        Invoice      @relation(fields: [invoiceId], references: [id])
+  shift          CashRegisterShift? @relation(fields: [shiftId], references: [id])
   Appointment    Appointment? @relation(fields: [appointmentId], references: [id])
+  refunds        Refund[]
 }
 
 model Refund {
@@ -136,7 +142,10 @@ model Refund {
   amount    Float
   reason    String
   status    String   @default("COMPLETED")
+  shiftId   String?
   createdAt DateTime @default(now())
+  shift     CashRegisterShift? @relation(fields: [shiftId], references: [id])
+  payment   Payment  @relation(fields: [paymentId], references: [id])
 }
 
 model LabTest {
@@ -258,7 +267,7 @@ model Patient {
   id               String    @id @default(uuid())
   patientId        String?   @unique @default(cuid()) // Unique MRN, using cuid as temporary default before migration
   fullName         String
-  phone            String    @unique
+  phone            String
   dateOfBirth      DateTime?
   ageFallback      Int? // For quick registration without DOB
   gender           String?
@@ -361,6 +370,7 @@ model User {
   ActivityLog      ActivityLog[]
   Role             Role               @relation(fields: [roleId], references: [id])
   Department       Department?        @relation(fields: [departmentId], references: [id])
+  UserShift        CashRegisterShift[]
 }
 
 model DoctorSchedule {
@@ -475,4 +485,31 @@ model SystemSetting {
   value       String
   description String?
   updatedAt   DateTime @updatedAt
+}
+
+model PatientOTP {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  code      String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CashRegisterShift {
+  id             String    @id @default(uuid())
+  openedBy       String
+  openedAt       DateTime  @default(now())
+  closedAt       DateTime?
+  openingFloat   Float     @default(0)
+  expectedCash   Float     @default(0)
+  actualCash     Float?
+  variance       Float?
+  status         String    @default("OPEN") // OPEN, CLOSED
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [openedBy], references: [id])
+  payments       Payment[]
+  refunds        Refund[]
 }

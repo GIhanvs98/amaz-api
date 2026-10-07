@@ -2,6 +2,7 @@ import { prisma, withRetry } from "../lib/prisma.js";
 import { NotificationService } from "./notification.service.js";
 import { websocketService } from "./websocket.service.js";
 import { SMSService } from "./sms.service.js";
+import { generateMRN } from "../utils/mrn.util.js";
 
 export class BookingService {
   static async getDoctors() {
@@ -265,11 +266,22 @@ export class BookingService {
         throw new Error("No slots available for this date");
       }
 
-      const patient = await tx.patient.upsert({
-        where: { phone },
-        update: { fullName },
-        create: { phone, fullName }
+      let patient = await tx.patient.findFirst({
+        where: { phone, fullName }
       });
+
+      if (patient) {
+        if (patient.fullName !== fullName) {
+          patient = await tx.patient.update({
+            where: { id: patient.id },
+            data: { fullName }
+          });
+        }
+      } else {
+        patient = await tx.patient.create({
+          data: { phone, fullName, patientId: await generateMRN(tx) }
+        });
+      }
 
       let nextTokenNumberStr = "";
       if (selectedTokenNumber) {
@@ -352,15 +364,27 @@ export class BookingService {
 
   static async markArrived(tokenId: string) {
     return withRetry(async () => {
-      const existingToken = await prisma.appointment.findUnique({ where: { id: tokenId } });
-      if (!existingToken) throw new Error("Token not found");
-      if (existingToken.status === "WAITING") throw new Error("Patient already marked as arrived. Invoice already exists.");
+      // Use updateMany with a WHERE on status to atomically guard against double check-in.
+      // If two requests race, only one will get count > 0.
+      const result = await prisma.appointment.updateMany({
+        where: { id: tokenId, status: { notIn: ['WAITING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] } },
+        data: { status: "WAITING" }
+      });
 
-      const token = await prisma.appointment.update({
+      if (result.count === 0) {
+        // Either not found or already checked-in
+        const existing = await prisma.appointment.findUnique({ where: { id: tokenId } });
+        if (!existing) throw new Error("Token not found");
+        if (existing.status === 'WAITING') throw new Error("Patient already marked as arrived. Invoice already exists.");
+        throw new Error(`Token cannot be checked in from status: ${existing.status}`);
+      }
+
+      const token = await prisma.appointment.findUnique({
         where: { id: tokenId },
-        data: { status: "WAITING" },
         include: { Patient: true, User: true }
       });
+
+      if (!token) throw new Error("Token not found after update");
 
       // Fetch the doctor's actual consultation fee and fee type
       const doctor = token.doctorId

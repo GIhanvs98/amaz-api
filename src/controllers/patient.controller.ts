@@ -13,8 +13,8 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    let patient = await prisma.patient.findUnique({
-      where: { phone },
+    let patient = await prisma.patient.findFirst({
+      where: { phone, fullName },
     });
 
     if (patient) {
@@ -45,21 +45,34 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
 
 export const searchPatient = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { phone } = req.query;
-    if (!phone) {
-       res.status(400).json({ error: "Phone number query is required" });
+    const { phone, query } = req.query;
+    const searchTerm = query || phone;
+    
+    if (!searchTerm) {
+       res.status(400).json({ error: "Search term is required" });
        return;
     }
 
-    const patient = await prisma.patient.findFirst({
-      where: { phone: phone as string, isActive: true },
+    const patients = await prisma.patient.findMany({
+      where: { 
+        isActive: true,
+        OR: [
+          { phone: { contains: searchTerm as string, mode: 'insensitive' } },
+          { fullName: { contains: searchTerm as string, mode: 'insensitive' } },
+          { patientId: { contains: searchTerm as string, mode: 'insensitive' } },
+          { nic: { contains: searchTerm as string, mode: 'insensitive' } }
+        ]
+      },
+      take: 10
     });
 
-    if (!patient) {
-       res.status(404).json({ error: "Patient not found" });
-       return;
+    // If frontend expects a single object for legacy phone search, we can return the first match
+    if (phone && !query && patients.length > 0) {
+      res.status(200).json(patients[0]);
+      return;
     }
-    res.status(200).json(patient);
+    
+    res.status(200).json(patients);
   } catch(error) {
     console.error("Error searching patient:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -128,7 +141,7 @@ export const updatePatient = async (req: Request, res: Response): Promise<void> 
        return;
     }
 
-    const { age, gender, bloodGroup, fullName, phone } = req.body;
+    const { age, gender, bloodGroup, fullName, phone, emergencyContact, nic, dateOfBirth, address } = req.body;
 
     const patient = await prisma.patient.update({
       where: { id: id as string },
@@ -138,6 +151,10 @@ export const updatePatient = async (req: Request, res: Response): Promise<void> 
         ...(age !== undefined && { ageFallback: parseInt(age) }),
         ...(gender !== undefined && { gender }),
         ...(bloodGroup !== undefined && { bloodGroup }),
+        ...(emergencyContact !== undefined && { emergencyContact }),
+        ...(nic !== undefined && { nic }),
+        ...(dateOfBirth !== undefined && { dateOfBirth: new Date(dateOfBirth) }),
+        ...(address !== undefined && { address }),
       },
     });
 

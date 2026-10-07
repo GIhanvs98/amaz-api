@@ -53,11 +53,14 @@ export class LabService {
    */
   async resolvePatient(phone: string, name: string): Promise<string> {
     return withRetry(async () => {
-      const patient = await prisma.patient.upsert({
-        where: { phone },
-        update: {},
-        create: { phone, fullName: name }
+      let patient = await prisma.patient.findFirst({
+        where: { phone, fullName: name }
       });
+      if (!patient) {
+        patient = await prisma.patient.create({
+          data: { phone, fullName: name }
+        });
+      }
       return patient.id;
     });
   }
@@ -169,19 +172,50 @@ export class LabService {
       // 2. Delete old results if re-submitting
       await tx.labResult.deleteMany({ where: { requestId } });
 
-      // 3. Insert all results with flag and referenceRange
+      // 3. Fetch canonical biomarker definitions for server-side validation
+      const labReq = await tx.labRequest.findUnique({
+        where: { id: requestId },
+        include: { items: { include: { LabTest: { include: { biomarkers: true } } } } }
+      });
+
+      const biomarkerMap = new Map<string, any>();
+      labReq?.items.forEach(item => {
+        item.LabTest.biomarkers.forEach((bm: any) => {
+          biomarkerMap.set(bm.name.toLowerCase().trim(), bm);
+        });
+      });
+
+      // Helper to compute flag server-side from reference range
+      const computeFlag = (value: string, refRange: string): { flag: string; isOutOfRange: boolean } => {
+        const numVal = parseFloat(value);
+        if (isNaN(numVal) || !refRange) return { flag: 'N', isOutOfRange: false };
+        const rangeMatch = refRange.match(/^([\d.]+)\s*-\s*([\d.]+)$/);
+        if (!rangeMatch) return { flag: 'N', isOutOfRange: false };
+        const low = parseFloat(rangeMatch[1] as string);
+        const high = parseFloat(rangeMatch[2] as string);
+        if (numVal < low) return { flag: 'L', isOutOfRange: true };
+        if (numVal > high) return { flag: 'H', isOutOfRange: true };
+        return { flag: 'N', isOutOfRange: false };
+      };
+
+      // 4. Insert all results with server-validated flags
       const createdResults = await Promise.all(
-        results.map(res => tx.labResult.create({
-          data: {
-            requestId,
-            biomarker: res.biomarker,
-            value: res.value,
-            flag: res.flag || 'N',
-            referenceRange: res.referenceRange || '',
-            isOutOfRange: res.isOutOfRange,
-            notes: res.notes
-          }
-        }))
+        results.map(res => {
+          const bm = biomarkerMap.get(res.biomarker.toLowerCase().trim());
+          const canonicalRange = bm?.referenceRange || res.referenceRange || '';
+          const { flag, isOutOfRange } = computeFlag(res.value, canonicalRange);
+          return tx.labResult.create({
+            data: {
+              requestId,
+              biomarker: res.biomarker,
+              value: res.value,
+              flag, // Server-validated, not from client
+              referenceRange: canonicalRange,
+              isOutOfRange, // Server-validated, not from client
+              notes: res.notes
+            }
+          });
+        })
       );
 
       return { request, results: createdResults };
@@ -202,7 +236,7 @@ export class LabService {
       const labReqResult = await prisma.$transaction(async (tx) => {
         // 1. Atomic status update preventing lost updates from concurrent techs
         const updateResult = await tx.labRequest.updateMany({
-          where: { id: requestId, status: 'PENDING' },
+          where: { id: requestId, status: { in: ['PENDING', 'SAVED'] } },
           data: { status: 'COMPLETED', reportUrl }
         });
 

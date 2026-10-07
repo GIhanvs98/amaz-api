@@ -99,9 +99,10 @@ export class PharmacyService {
   async dispenseMedicine(
     medicineId: string, 
     quantityToDispense: number,
-    billingInfo?: { visitId?: string; patientId?: string; description?: string }
+    billingInfo?: { visitId?: string; patientId?: string; description?: string, skipBilling?: boolean },
+    existingTx?: any
   ) {
-    return withRetry(() => prisma.$transaction(async (tx) => {
+    const executeLogic = async (tx: any) => {
       // Lock all batches for this medicine to serialize concurrent dispensing
       await tx.$executeRaw`SELECT id FROM "StockBatch" WHERE "medicineId" = ${medicineId} FOR UPDATE`;
 
@@ -121,7 +122,7 @@ export class PharmacyService {
       });
 
       // 2. Check if we have enough total stock
-      const totalAvailable = availableBatches.reduce((sum, b) => sum + b.currentQuantity, 0);
+      const totalAvailable = availableBatches.reduce((sum: number, b: any) => sum + b.currentQuantity, 0);
       if (totalAvailable < quantityToDispense) {
         throw new Error(`Insufficient stock. Requested: ${quantityToDispense}, Available: ${totalAvailable}`);
       }
@@ -150,8 +151,8 @@ export class PharmacyService {
         remainingToDispense -= quantityFromThisBatch;
       }
 
-      if (billingInfo && (billingInfo.visitId || billingInfo.patientId)) {
-        const totalCost = batchesUsed.reduce((sum, b) => sum + (b.quantityDispensed * b.unitPrice), 0);
+      if (billingInfo && !billingInfo.skipBilling && (billingInfo.visitId || billingInfo.patientId)) {
+        const totalCost = batchesUsed.reduce((sum: number, b: any) => sum + (b.quantityDispensed * b.unitPrice), 0);
         if (totalCost > 0) {
           await billingService.addCharge({
             visitId: billingInfo.visitId,
@@ -169,8 +170,12 @@ export class PharmacyService {
         success: true,
         message: `Successfully dispensed ${quantityToDispense} units.`,
         batchesUsed,
+        totalCost: batchesUsed.reduce((sum, b) => sum + (b.quantityDispensed * b.unitPrice), 0)
       };
-    }));
+    };
+
+    if (existingTx) return executeLogic(existingTx);
+    return withRetry(() => prisma.$transaction(executeLogic));
   }
 
   // --- ALERTS ---
@@ -219,6 +224,52 @@ export class PharmacyService {
         orderBy: { expiryDate: 'asc' },
       });
     });
+  }
+
+  /**
+   * [P1 Fix] Get stock that has ALREADY expired (Ghost Inventory detection)
+   */
+  async getExpiredStock() {
+    return withRetry(() => prisma.stockBatch.findMany({
+      where: {
+        currentQuantity: { gt: 0 },
+        expiryDate: { lte: new Date() }
+      },
+      include: { medicine: true },
+      orderBy: { expiryDate: 'asc' }
+    }));
+  }
+
+  /**
+   * [P1 Fix] Write off expired / damaged stock, zeroing quantity and logging a loss
+   */
+  async writeOffBatch(batchId: string, reason: string, performedBy: string) {
+    return withRetry(() => prisma.$transaction(async (tx) => {
+      const batch = await tx.stockBatch.findUnique({ where: { id: batchId } });
+      if (!batch) throw new Error('Batch not found');
+      if (batch.currentQuantity === 0) throw new Error('Batch already at zero quantity');
+
+      const writtenOffQty = batch.currentQuantity;
+      const lossValue = writtenOffQty * batch.unitPrice;
+
+      await tx.stockBatch.update({
+        where: { id: batchId },
+        data: { currentQuantity: 0 }
+      });
+
+      // Log the write-off as an expense
+      await tx.expense.create({
+        data: {
+          category: 'INVENTORY_WRITEOFF',
+          description: `Stock Write-Off: Batch ${batch.batchNumber} - ${reason}`,
+          amount: lossValue,
+          date: new Date(),
+          performedBy
+        }
+      });
+
+      return { success: true, writtenOffQty, lossValue };
+    }));
   }
 
   async getMetrics() {

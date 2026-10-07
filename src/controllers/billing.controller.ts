@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import { billingService } from "../services/billing.service.js";
 import { clearCache } from "../middlewares/cache.middleware.js";
+import { prisma } from "../lib/prisma.js";
+
 
 export class BillingController {
   async charge(req: Request, res: Response) {
@@ -79,7 +81,16 @@ export class BillingController {
         return res.status(400).json({ error: 'Missing payment amount or method' });
       }
 
-      const updatedInvoice = await billingService.payInvoice(invoiceId as string, Number(amount), method as string);
+      const user = (req as any).user;
+      let shiftId: string | undefined = undefined;
+      if (user) {
+        const shift = await prisma.cashRegisterShift.findFirst({
+          where: { openedBy: user.id, status: "OPEN" }
+        });
+        shiftId = shift?.id;
+      }
+      
+      const updatedInvoice = await billingService.payInvoice(invoiceId as string, Number(amount), method as string, shiftId);
       
       await clearCache("/api/finance/dashboard");
       await clearCache("/api/admin/metrics");

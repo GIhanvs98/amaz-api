@@ -7,6 +7,40 @@ import { websocketService } from "../services/websocket.service.js";
 import { SMSService } from "../services/sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
 
+export const openShift = async (req: Request, res: Response) => {
+  try {
+    const { startingFloat } = req.body;
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    // Close any existing open shifts for this user
+    await prisma.cashRegisterShift.updateMany({
+      where: { openedBy: user.id, status: "OPEN" },
+      data: { status: "CLOSED", closedAt: new Date() }
+    });
+
+    const shift = await prisma.cashRegisterShift.create({
+      data: {
+        openedBy: user.id,
+        openingFloat: Number(startingFloat) || 0,
+        status: "OPEN"
+      }
+    });
+
+    res.json({ success: true, data: shift });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+async function getOpenShiftId(userId: string): Promise<string | undefined> {
+  const shift = await prisma.cashRegisterShift.findFirst({
+    where: { openedBy: userId, status: "OPEN" }
+  });
+  return shift?.id;
+}
+
 export const getPatients = async (req: Request, res: Response) => {
   try {
     const { q } = req.query;
@@ -136,6 +170,14 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
           where: { status: { not: "COMPLETED" } },
           orderBy: { createdAt: "desc" },
           take: 1
+        },
+        Prescription: {
+          include: { items: true },
+          orderBy: { createdAt: "desc" }
+        },
+        LabRequests: {
+          include: { items: { include: { LabTest: true } } },
+          orderBy: { requestedAt: "desc" }
         }
       }
     });
@@ -145,6 +187,21 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       return;
     }
     
+    // Extract actual history from DB
+    const medicalHistory = patient.Prescription.map(p => ({
+      id: p.id,
+      date: p.createdAt,
+      diagnosis: p.diagnosis || "Consultation",
+      medications: p.items.map(i => i.drugName)
+    }));
+
+    const labResults = patient.LabRequests.map(l => ({
+      id: l.id,
+      date: l.requestedAt,
+      status: l.status,
+      tests: l.items.map(i => i.LabTest.name)
+    }));
+    
     // Map to the frontend expected format
     res.json({
       id: patient.id,
@@ -153,10 +210,10 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       gender: patient.gender || "UNKNOWN",
       contact: patient.phone,
       bloodGroup: patient.bloodGroup || "O+",
-      allergies: [],
-      chronicConditions: [],
-      medicalHistory: [],
-      labResults: [],
+      allergies: [], // Still mocked as no allergy model exists yet
+      chronicConditions: [], // Still mocked as no chronic condition model exists yet
+      medicalHistory: medicalHistory,
+      labResults: labResults,
       activeVisitId: patient.Appointment[0]?.id || null
     });
   } catch (error: any) {
@@ -172,7 +229,7 @@ export const generateToken = async (req: Request, res: Response) => {
     // Find or create patient
     let patient;
     if (patientPhone) {
-      patient = await prisma.patient.findUnique({ where: { phone: patientPhone } });
+      patient = await prisma.patient.findFirst({ where: { phone: patientPhone } });
     }
     
     if (!patient) {
@@ -473,7 +530,7 @@ export const generateToken = async (req: Request, res: Response) => {
               create: [{
                 amount: totalAmount,
                 method: req.body.paymentMethod || "CASH",
-                status: "COMPLETED"
+                status: "COMPLETED", shiftId: await getOpenShiftId(((req as any).user)?.id)
               }]
             }
           })
@@ -776,7 +833,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
                 create: [{
                   amount: inv.totalAmount,
                   method: req.body.paymentMethod || "CASH",
-                  status: "COMPLETED",
+                  status: "COMPLETED", shiftId: await getOpenShiftId(((req as any).user)?.id),
                   appointmentId: appointment.id
                 }]
               }
@@ -802,7 +859,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
               create: [{
                 amount: fee,
                 method: req.body.paymentMethod || "CASH",
-                status: "COMPLETED",
+                status: "COMPLETED", shiftId: await getOpenShiftId(((req as any).user)?.id),
                 appointmentId: appointment.id
               }]
             },
@@ -905,41 +962,48 @@ export const getPOSHistory = async (req: Request, res: Response) => {
 export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
   try {
     const { declaredCash } = req.body;
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
     
-    // In a real app we'd track shift IDs. For now, just sum today's invoices for this user
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+    const shift = await prisma.cashRegisterShift.findFirst({
+      where: { openedBy: user.id, status: "OPEN" }
+    });
 
-    // If you have a way to track the current user (e.g., req.user.id), you could filter by it.
-    // For now, we'll just sum all of today's invoices.
+    if (!shift) return res.status(400).json({ error: "No open shift found." });
     
-    const invoices = await prisma.invoice.findMany({
-      where: {
-        createdAt: { gte: startOfDay, lte: endOfDay },
-        status: "PAID"
-      },
-      include: {
-        payments: true
-      }
+    const payments = await prisma.payment.findMany({
+      where: { shiftId: shift.id, status: "COMPLETED" }
     });
 
     let systemCashTotal = 0;
     let systemCardTotal = 0;
 
-    invoices.forEach(inv => {
-      inv.payments.forEach(payment => {
-        if (payment.method === "CASH") systemCashTotal += payment.amount;
-        if (payment.method === "CARD") systemCardTotal += payment.amount;
-      });
+    payments.forEach(payment => {
+      if (payment.method === "CASH") systemCashTotal += payment.amount;
+      if (payment.method === "CARD" || payment.method === "BANK" || payment.method === "QR") systemCardTotal += payment.amount;
+    });
+
+    const expectedCash = shift.openingFloat + systemCashTotal;
+    const variance = Number(declaredCash) - expectedCash;
+
+    await prisma.cashRegisterShift.update({
+      where: { id: shift.id },
+      data: {
+        closedAt: new Date(),
+        status: "CLOSED",
+        expectedCash,
+        actualCash: Number(declaredCash),
+        variance
+      }
     });
 
     const summary = {
-      totalInvoices: invoices.length,
+      totalInvoices: payments.length, // approximation
       systemCashTotal,
       systemCardTotal,
-      declaredCash: Number(declaredCash)
+      declaredCash: Number(declaredCash),
+      expectedCash,
+      variance
     };
 
     res.json({ success: true, data: summary });

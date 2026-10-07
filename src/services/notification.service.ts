@@ -2,6 +2,38 @@ import { prisma, withRetry } from "../lib/prisma.js";
 import { SMSService } from "./sms.service.js";
 
 export class NotificationService {
+  static initSweeper() {
+    setInterval(async () => {
+      try {
+        const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000);
+        const pendingJobs = await prisma.notificationJob.findMany({
+          where: { status: 'PENDING', createdAt: { lte: fiveMinsAgo } },
+          take: 50
+        });
+
+        for (const job of pendingJobs) {
+          try {
+            const success = await SMSService.sendSMS(job.phoneNumber, job.message);
+            await prisma.notificationJob.update({
+              where: { id: job.id },
+              data: {
+                status: success ? 'SENT' : 'FAILED',
+                sentAt: success ? new Date() : null,
+                errorReason: success ? null : 'Gateway rejected (Retry)'
+              }
+            });
+          } catch (e: any) {
+            await prisma.notificationJob.update({
+              where: { id: job.id },
+              data: { status: 'FAILED', errorReason: e.message }
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Notification sweeper error:', error);
+      }
+    }, 5 * 60 * 1000); // Run every 5 minutes
+  }
   /**
    * Fetch a template from DB, parse variables, and queue SMS.
    * SMS delivery is fire-and-forget (non-blocking) to prevent booking latency.

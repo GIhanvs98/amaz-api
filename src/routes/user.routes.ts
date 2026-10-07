@@ -5,7 +5,7 @@ import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ALL']));
+router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST', 'DOCTOR', 'NURSE', 'PHARMACIST', 'LABTECH', 'CASHIER']));
 
 router.get("/me", cacheMiddleware(60, true), getProfile);
 router.put("/me", updateProfile);

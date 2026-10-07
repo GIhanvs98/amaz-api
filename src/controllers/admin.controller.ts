@@ -241,29 +241,37 @@ export const updateRolePermissions = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { permissions } = req.body; // array of { action, resource }
-    
-    // First clear old permissions
-    await prisma.rolePermission.deleteMany({
-      where: { roleId: id as string }
-    });
+    const userRole = (req as any).user?.role;
 
-    // Create missing permissions if any and link them
-    for (const p of permissions) {
-      let perm = await prisma.permission.findFirst({
-        where: { action: p.action, resource: p.resource }
+    const roleToUpdate = await prisma.role.findUnique({ where: { id: id as string } });
+    if (!roleToUpdate) return res.status(404).json({ error: "Role not found" });
+
+    if (roleToUpdate.name === 'SUPERADMIN' && userRole !== 'SUPERADMIN') {
+       return res.status(403).json({ error: "Cannot modify SUPERADMIN role permissions" });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.rolePermission.deleteMany({
+        where: { roleId: id as string }
       });
-      if (!perm) {
-        perm = await prisma.permission.create({
-          data: { action: p.action, resource: p.resource }
+
+      for (const p of permissions) {
+        let perm = await tx.permission.findFirst({
+          where: { action: p.action, resource: p.resource }
+        });
+        if (!perm) {
+          perm = await tx.permission.create({
+            data: { action: p.action, resource: p.resource }
+          });
+        }
+        await tx.rolePermission.create({
+          data: {
+            roleId: id as string,
+            permissionId: perm.id
+          }
         });
       }
-      await prisma.rolePermission.create({
-        data: {
-          roleId: id as string,
-          permissionId: perm.id
-        }
-      });
-    }
+    });
 
     await clearCache('*roles*');
     res.json({ success: true, message: "Permissions updated" });

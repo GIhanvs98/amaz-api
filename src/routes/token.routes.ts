@@ -4,7 +4,7 @@ import { generateToken, getDoctorQueue, updateTokenStatus, getPendingPrescriptio
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ALL']));
+router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST', 'CASHIER', 'DOCTOR', 'NURSE']));
 
 router.post("/", generateToken);
 router.get("/queue", getDoctorQueue);

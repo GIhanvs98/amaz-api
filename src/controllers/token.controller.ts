@@ -162,6 +162,12 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
       return;
     }
 
+    const ALLOWED_STATUSES = ['BOOKED', 'CHECKED_IN', 'WAITING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'NO_SHOW', 'WAITING_FOR_LAB_TEST'];
+    if (!ALLOWED_STATUSES.includes(status)) {
+      res.status(400).json({ error: `Invalid status '${status}'. Must be one of: ${ALLOWED_STATUSES.join(', ')}` });
+      return;
+    }
+
     const appointment = await prisma.appointment.findFirst({
       where: {
         patientId: patientId,

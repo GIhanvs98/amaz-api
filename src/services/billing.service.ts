@@ -221,6 +221,9 @@ export class BillingService {
         throw new Error(`Insufficient payment amount. Expected at least ${invoice.totalAmount}, but received ${amount}`);
       }
       
+      // [P1 Fix] Cap the recorded revenue at the invoice total to prevent change from inflating revenue
+      const actualRevenue = Math.min(amount, invoice.totalAmount);
+
       // Atomic state transition using updateMany to prevent read-modify-write double payment race condition
       const updateResult = await tx.invoice.updateMany({
         where: { id: invoiceId, status: "DRAFT" },
@@ -234,7 +237,7 @@ export class BillingService {
       await tx.payment.create({
         data: {
           invoiceId,
-          amount,
+          amount: actualRevenue, // Capped revenue
           method,
           status: "COMPLETED",
           ...(tokenId ? { tokenId } : {})
@@ -326,48 +329,54 @@ export class BillingService {
   /**
    * Processes a refund for a specific payment, supporting partial or full refunds.
    */
-  async processRefund(paymentId: string, amount: number, reason: string) {
-    const payment = await prisma.payment.findUnique({
-      where: { id: paymentId },
-      include: { invoice: true }
-    });
+  async processRefund(paymentId: string, amount: number, reason: string, shiftId?: string) {
+    return prisma.$transaction(async (tx) => {
+      // 1. Lock the payment row to serialize concurrent refunds
+      await tx.$executeRaw`SELECT id FROM "Payment" WHERE id = ${paymentId} FOR UPDATE`;
 
-    if (!payment) throw new Error("Payment not found");
-    if (payment.status !== "COMPLETED") throw new Error("Can only refund completed payments");
-
-    // Calculate existing refunds
-    const existingRefunds = await prisma.refund.aggregate({
-      where: { paymentId, status: "COMPLETED" },
-      _sum: { amount: true }
-    });
-    const refundedAmount = existingRefunds._sum.amount || 0;
-
-    if (amount > (payment.amount - refundedAmount)) {
-      throw new Error(`Refund amount exceeds available payment balance. Available: ${payment.amount - refundedAmount}`);
-    }
-
-    const refund = await prisma.refund.create({
-      data: {
-        paymentId,
-        amount,
-        reason,
-        status: "COMPLETED"
-      }
-    });
-
-    // If fully refunded, mark the parent records
-    if (amount === (payment.amount - refundedAmount)) {
-      await prisma.payment.update({
+      const payment = await tx.payment.findUnique({
         where: { id: paymentId },
-        data: { status: "REFUNDED" }
+        include: { invoice: true }
       });
-      await prisma.invoice.update({
-        where: { id: payment.invoiceId },
-        data: { status: "REFUNDED" }
-      });
-    }
 
-    return refund;
+      if (!payment) throw new Error("Payment not found");
+      if (payment.status !== "COMPLETED") throw new Error("Can only refund completed payments");
+
+      // Calculate existing refunds securely within the locked transaction
+      const existingRefunds = await tx.refund.aggregate({
+        where: { paymentId, status: "COMPLETED" },
+        _sum: { amount: true }
+      });
+      const refundedAmount = existingRefunds._sum.amount || 0;
+
+      if (amount > (payment.amount - refundedAmount)) {
+        throw new Error(`Refund amount exceeds available payment balance. Available: ${payment.amount - refundedAmount}`);
+      }
+
+      const refund = await tx.refund.create({
+        data: {
+          paymentId,
+          amount,
+          reason,
+          status: "COMPLETED",
+          ...(shiftId ? { shiftId } : {})
+        }
+      });
+
+      // If fully refunded, mark the parent records
+      if (amount === (payment.amount - refundedAmount)) {
+        await tx.payment.update({
+          where: { id: paymentId },
+          data: { status: "REFUNDED" }
+        });
+        await tx.invoice.update({
+          where: { id: payment.invoiceId },
+          data: { status: "REFUNDED" }
+        });
+      }
+
+      return refund;
+    });
   }
 
   /**
