@@ -98,6 +98,7 @@ export class LabService {
                 ? Number(data.customPrices[test.id]) 
                 : test.price;
               
+              if (finalPrice < 0) throw new Error("Price cannot be negative");
               return {
                 labTestId: test.id,
                 price: finalPrice

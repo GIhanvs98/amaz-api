@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
+import { generateMRN } from "../utils/mrn.util.js";
 
 const prisma = new PrismaClient();
 
@@ -24,8 +25,10 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
         });
       }
     } else {
+      const patientId = await generateMRN(prisma);
       patient = await prisma.patient.create({
         data: {
+          patientId,
           fullName,
           phone,
           ageFallback: age ? parseInt(age.toString()) : null,

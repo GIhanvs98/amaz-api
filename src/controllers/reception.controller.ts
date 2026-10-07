@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import { BookingService } from "../services/booking.service.js";
 import { websocketService } from "../services/websocket.service.js";
 import { SMSService } from "../services/sms.service.js";
+import { generateMRN } from "../utils/mrn.util.js";
 
 export const getPatients = async (req: Request, res: Response) => {
   try {
@@ -175,8 +176,10 @@ export const generateToken = async (req: Request, res: Response) => {
     }
     
     if (!patient) {
+      const patientId = await generateMRN(prisma);
       patient = await prisma.patient.create({
         data: {
+          patientId,
           fullName: patientName || "Walk-in Patient",
           phone: patientPhone || `WALKIN-${randomUUID()}`, // UUID fallback guarantees uniqueness under concurrency
           ageFallback: ageFallback || null
@@ -418,7 +421,7 @@ export const generateToken = async (req: Request, res: Response) => {
           unitPrice: fee,
           total: fee
         });
-        totalAmount += fee;
+        totalAmount = Math.round((totalAmount + fee) * 100) / 100;
       }
 
 
@@ -436,7 +439,7 @@ export const generateToken = async (req: Request, res: Response) => {
             unitPrice: finalPrice,
             total: finalPrice
           });
-          totalAmount += finalPrice;
+          totalAmount = Math.round((totalAmount + finalPrice) * 100) / 100;
         });
       }
 
@@ -453,7 +456,7 @@ export const generateToken = async (req: Request, res: Response) => {
             unitPrice: finalPrice,
             total: finalPrice
           });
-          totalAmount += finalPrice;
+          totalAmount = Math.round((totalAmount + finalPrice) * 100) / 100;
         });
       }
 

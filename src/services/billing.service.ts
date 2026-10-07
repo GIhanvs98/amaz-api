@@ -128,7 +128,7 @@ export class BillingService {
     data.charges.forEach(charge => {
       const unitPrice = Math.round(charge.unitPrice * 100) / 100;
       const total = Math.round(charge.quantity * unitPrice * 100) / 100;
-      totalToIncrement += total;
+      totalToIncrement = Math.round((totalToIncrement + total) * 100) / 100;
       formattedCharges.push({
         invoiceId: invoice!.id,
         department: charge.department,

@@ -4,7 +4,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
 const prisma = new PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error("JWT_SECRET is not defined in environment variables");
 
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -60,6 +61,13 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       JWT_SECRET,
       { expiresIn: "1d" }
     );
+
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 24 * 60 * 60 * 1000 // 1 day
+    });
 
     res.status(201).json({
       message: "User registered successfully",
@@ -118,6 +126,13 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       { expiresIn: "1d" }
     );
 
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 24 * 60 * 60 * 1000 // 1 day
+    });
+
     res.status(200).json({
       message: "Login successful",
       token,
@@ -132,4 +147,49 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     console.error("Login Error:", error);
     res.status(500).json({ message: "Internal server error" });
   }
+};
+
+export const refresh = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const token = req.cookies?.token;
+    if (!token) {
+      res.status(401).json({ error: "No session token found" });
+      return;
+    }
+
+    // Verify token
+    const decoded = jwt.verify(token, JWT_SECRET as string) as { id: string; roleId: string; email: string };
+    
+    // Find user to return
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.id },
+      include: { Role: true }
+    });
+
+    if (!user || !user.isActive) {
+      res.status(401).json({ error: "Invalid session or deactivated user" });
+      return;
+    }
+
+    res.status(200).json({
+      token,
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        email: user.email,
+        role: (user as any).Role?.name || "Unknown",
+      }
+    });
+  } catch (error) {
+    res.status(401).json({ error: "Session expired or invalid" });
+  }
+};
+
+export const logout = async (req: Request, res: Response): Promise<void> => {
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax"
+  });
+  res.status(200).json({ message: "Logged out successfully" });
 };

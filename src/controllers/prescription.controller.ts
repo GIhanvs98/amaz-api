@@ -83,6 +83,13 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
        return;
     }
 
+    const doctorUser = await prisma.user.findUnique({ where: { id: doctorId } });
+    if (!doctorUser) {
+      res.status(404).json({ error: "Doctor not found" });
+      return;
+    }
+    const secureDoctorName = doctorUser.fullName;
+
     const newPrescription = await withRetry(async () => {
       return await (prisma as any).$transaction(async (tx: any) => {
         const rx = await tx.prescription.create({
@@ -91,7 +98,7 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
             patientName,
             visitId,
             doctorId,
-            doctorName,
+            doctorName: secureDoctorName,
             diagnosis,
             clinicalNotes,
             items: {

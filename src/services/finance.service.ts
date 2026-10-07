@@ -300,12 +300,12 @@ export class FinanceService {
   async createPurchaseOrder(data: { supplierId: string; items: { medicineId: string; quantity: number; unitPrice: number; }[] }) {
     let totalAmount = 0;
     const poItems = data.items.map(item => {
-      const totalPrice = item.quantity * item.unitPrice;
-      totalAmount += totalPrice;
+      const totalPrice = Math.round(item.quantity * item.unitPrice * 100) / 100;
+      totalAmount = Math.round((totalAmount + totalPrice) * 100) / 100;
       return {
         medicineId: item.medicineId,
         quantity: item.quantity,
-        unitPrice: item.unitPrice,
+        unitPrice: Math.round(item.unitPrice * 100) / 100,
         totalPrice
       };
     });

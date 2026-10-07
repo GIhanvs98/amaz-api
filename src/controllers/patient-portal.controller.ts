@@ -3,7 +3,8 @@ import { prisma } from "../lib/prisma.js";
 import { SMSService } from "../services/sms.service.js";
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error("JWT_SECRET is not defined in environment variables");
 
 // Simple in-memory OTP store. In production, use Redis or DB.
 const otpStore = new Map<string, { otp: string, expiresAt: number }>();

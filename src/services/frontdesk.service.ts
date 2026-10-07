@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma.js';
 import { websocketService } from './websocket.service.js';
 import { NotificationService } from './notification.service.js';
 import { billingService } from './billing.service.js';
+import { generateMRN } from '../utils/mrn.util.js';
 
 export class FrontdeskService {
   // 1. Get Doctor Status & Sessions for a given date
@@ -318,8 +319,10 @@ export class FrontdeskService {
     // Create or find patient (assuming patientData has name, phone)
     let patient = await prisma.patient.findFirst({ where: { phone: patientData.phone } });
     if (!patient) {
+      const patientId = await generateMRN(prisma);
       patient = await prisma.patient.create({
         data: {
+          patientId,
           fullName: patientData.fullName || `${patientData.firstName} ${patientData.lastName || ''}`.trim(),
           phone: patientData.phone,
           dateOfBirth: patientData.dateOfBirth ? new Date(patientData.dateOfBirth) : new Date(),
@@ -359,7 +362,7 @@ export class FrontdeskService {
             sessionId,
             tokenNumber: nextTokenNumberStr,
             appointmentDate: startOfDay,
-            status: 'ARRIVED', // walk-ins are inherently arrived
+            status: 'BOOKED', // Walk-ins start as BOOKED until they pay at Cashier
             bookingType: 'WALK_IN'
           }
         });
