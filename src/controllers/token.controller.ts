@@ -82,9 +82,10 @@ export const getDoctorQueue = async (req: Request, res: Response): Promise<void>
     const appointments = await prisma.appointment.findMany({
       where: {
         doctorId: doctorId as string,
-        appointmentDate: {
-          gte: today
-        },
+        OR: [
+          { appointmentDate: { gte: today } },
+          { status: { in: ['BOOKED', 'WAITING', 'WAITING_FOR_LAB_TEST', 'IN_PROGRESS'] } }
+        ]
       },
       include: {
         Patient: true,

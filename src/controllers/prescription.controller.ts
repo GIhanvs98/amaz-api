@@ -101,7 +101,8 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
                 dosage: item.dosage,
                 frequency: item.frequency,
                 duration: item.duration,
-                instructions: item.instructions
+                instructions: item.instructions,
+                dispenseQty: item.dispenseQty || 1
               })) : []
             }
           },
@@ -390,7 +391,8 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
                 dosage: item.dosage,
                 frequency: item.frequency,
                 duration: item.duration,
-                instructions: item.instructions
+                instructions: item.instructions,
+                dispenseQty: item.dispenseQty || 1
               }))
             }
           },
