@@ -112,6 +112,13 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
         });
 
         if (visitId) {
+          // 1. Complete the appointment to remove from queue
+          await tx.appointment.updateMany({
+            where: { id: visitId, status: { not: "COMPLETED" } },
+            data: { status: "COMPLETED" }
+          });
+
+          // 2. Fetch doctor for billing
           const doctor = await tx.user.findUnique({
             where: { id: doctorId },
             select: { consultationFee: true, feeType: true }

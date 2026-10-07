@@ -1,4 +1,7 @@
 import { prisma, withRetry } from "../lib/prisma.js";
+import { BillingService } from "./billing.service.js";
+
+const billingService = new BillingService();
 
 export class PharmacyService {
   async getAllMedicines(searchTerm?: string, page: number = 1, limit: number = 50) {
@@ -93,7 +96,11 @@ export class PharmacyService {
   }
 
   // --- DISPENSING ENGINE (FIFO LOGIC) ---
-  async dispenseMedicine(medicineId: string, quantityToDispense: number) {
+  async dispenseMedicine(
+    medicineId: string, 
+    quantityToDispense: number,
+    billingInfo?: { visitId?: string; patientId?: string; description?: string }
+  ) {
     return withRetry(() => prisma.$transaction(async (tx) => {
       // Lock all batches for this medicine to serialize concurrent dispensing
       await tx.$executeRaw`SELECT id FROM "StockBatch" WHERE "medicineId" = ${medicineId} FOR UPDATE`;
@@ -141,6 +148,21 @@ export class PharmacyService {
         });
 
         remainingToDispense -= quantityFromThisBatch;
+      }
+
+      if (billingInfo && (billingInfo.visitId || billingInfo.patientId)) {
+        const totalCost = batchesUsed.reduce((sum, b) => sum + (b.quantityDispensed * b.unitPrice), 0);
+        if (totalCost > 0) {
+          await billingService.addCharge({
+            visitId: billingInfo.visitId,
+            patientId: billingInfo.patientId,
+            department: 'PHARMACY',
+            referenceId: medicineId,
+            description: billingInfo.description || 'Pharmacy Medication',
+            quantity: 1,
+            unitPrice: totalCost
+          }, tx);
+        }
       }
 
       return {

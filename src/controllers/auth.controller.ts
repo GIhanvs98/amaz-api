@@ -99,6 +99,11 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    if (!user.isActive) {
+      res.status(403).json({ error: "Account is deactivated or suspended. Please contact the administrator." });
+      return;
+    }
+
     // Check password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {

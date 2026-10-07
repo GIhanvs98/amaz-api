@@ -109,28 +109,16 @@ export class PharmacyController {
         return res.status(400).json({ error: "Quantity must be a positive number" });
       }
 
-      const result = await pharmacyService.dispenseMedicine(medicineId, qty);
-      
-      // Calculate total price and add charge if visitId or patientId is provided
-      if (visitId || patientId) {
-        let totalCost = 0;
-        result.batchesUsed.forEach((b: any) => {
-          totalCost += b.quantityDispensed * b.unitPrice;
-        });
-
-        if (totalCost > 0) {
-          await billingService.addCharge({
-            visitId,
-            patientId,
-            department: 'PHARMACY',
-            referenceId: medicineId,
-            description: description || 'Pharmacy Medication',
-            quantity: 1, // We aggregate the cost into 1 line item
-            unitPrice: totalCost
-          });
+      const result = await pharmacyService.dispenseMedicine(
+        medicineId, 
+        qty,
+        {
+          visitId,
+          patientId,
+          description
         }
-      }
-
+      );
+      
       res.json(result);
     } catch (error: any) {
       res.status(400).json({ error: error.message });

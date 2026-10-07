@@ -2,6 +2,7 @@ import { billingService } from './billing.service.js';
 import { prisma as sharedPrisma, withRetry } from '../lib/prisma.js';
 import { NotificationService } from './notification.service.js';
 import { websocketService } from './websocket.service.js';
+import { S3Service } from './s3.service.js';
 
 // Use shared singleton to avoid multiple connection pools
 const prisma = sharedPrisma;
@@ -256,7 +257,8 @@ export class LabService {
    * Get all completed (published) lab requests
    */
   async getPublishedReports() {
-    return withRetry(() => prisma.labRequest.findMany({
+    return withRetry(async () => {
+      const reports = await prisma.labRequest.findMany({
       where: { status: "COMPLETED" },
       include: {
         items: {
@@ -266,7 +268,17 @@ export class LabService {
         Patient: true
       },
       orderBy: { requestedAt: 'desc' }
-    }));
+      });
+
+      for (const report of reports) {
+        if (report.reportUrl && report.reportUrl.includes('amazonaws.com')) {
+          const presignedUrl = await S3Service.generateDownloadUrl(report.reportUrl);
+          if (presignedUrl) report.reportUrl = presignedUrl;
+        }
+      }
+
+      return reports;
+    });
   }
 
   /**
@@ -389,14 +401,18 @@ export class LabService {
             status: req.status,
             requestedAt: req.requestedAt
           })),
-          recentPublished: recentPublished.map(req => ({
-            id: req.id,
-            patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
-            doctor: req.Visit?.User?.fullName || "Unknown Doctor",
-            tests: req.items.map(i => i.LabTest?.name),
-            reportUrl: req.reportUrl,
-            requestedAt: req.requestedAt
-          }))
+          recentPublished: recentPublished.map(req => {
+            // Note: Not making this fully async for metrics view, 
+            // but if reportUrl is S3 we could transform it. We'll leave metrics raw for speed
+            return {
+              id: req.id,
+              patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
+              doctor: req.Visit?.User?.fullName || "Unknown Doctor",
+              tests: req.items.map(i => i.LabTest?.name),
+              reportUrl: req.reportUrl,
+              requestedAt: req.requestedAt
+            };
+          })
         }
       };
     });
@@ -522,6 +538,10 @@ export class LabService {
       });
 
       if (!report) throw new Error('Report not found or not yet published');
+      if (report.reportUrl && report.reportUrl.includes('amazonaws.com')) {
+        const presignedUrl = await S3Service.generateDownloadUrl(report.reportUrl);
+        if (presignedUrl) report.reportUrl = presignedUrl;
+      }
       return report;
     });
   }

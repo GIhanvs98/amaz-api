@@ -26,6 +26,35 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
     // Get today's appointments for this doctor to determine the sequence number
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const dayOfWeek = today.getDay();
+
+    // Check if the doctor has an active schedule for today
+    const activeSessions = await prisma.doctorScheduleSession.findMany({
+      where: {
+        schedule: {
+          doctorId: doctorId,
+          validFrom: { lte: new Date() },
+          OR: [
+            { validUntil: null },
+            { validUntil: { gte: new Date() } }
+          ]
+        },
+        dayOfWeek: dayOfWeek,
+        isActive: true,
+      }
+    });
+
+    if (activeSessions.length === 0) {
+      res.status(400).json({ error: "Doctor is not scheduled for today" });
+      return;
+    }
+
+    const session = activeSessions[0];
+    if (!session) {
+      res.status(400).json({ error: "Doctor session is not available" });
+      return;
+    }
+    const maxWalkInCapacity = Math.floor(session.tokenCapacity * ((session.walkInPercentage || 100) / 100));
 
     // Wrap in a transaction with a row-level lock to prevent concurrent token generation race conditions
     const appointment = await prisma.$transaction(async (tx) => {
@@ -41,6 +70,10 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
         },
       });
 
+      if (tokensToday >= maxWalkInCapacity) {
+        throw new Error("Doctor's walk-in capacity reached for today");
+      }
+
       // Generate token number: First 3 letters of doctor's name + sequence
       const docPrefix = doctor.fullName.substring(0, 3).toUpperCase();
       const sequence = (tokensToday + 1).toString().padStart(3, "0");
@@ -51,6 +84,7 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
           tokenNumber,
           patientId,
           doctorId,
+          sessionId: session.id,
           status: "CHECKED_IN", // Mapping "waiting_for_counsiling_payment" or similar
         },
         include: {
@@ -68,8 +102,12 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
       patient: appointment.Patient,
       doctor: appointment.User
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error generating token:", error);
+    if (error.message === "Doctor's walk-in capacity reached for today") {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     res.status(500).json({ error: "Internal server error" });
   }
 };

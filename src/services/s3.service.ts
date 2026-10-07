@@ -46,4 +46,37 @@ export class S3Service {
       throw error;
     }
   }
+
+  /**
+   * Generates a pre-signed URL for direct download from S3 (secures public exposure).
+   * @param filename the stored filename (key) in S3
+   */
+  public static async generateDownloadUrl(filename: string) {
+    if (!process.env.AWS_ACCESS_KEY_ID) {
+       return null;
+    }
+    
+    // Check if filename is actually a full URL (legacy). If so, extract the key.
+    let key = filename;
+    try {
+      if (filename.startsWith('http')) {
+        const url = new URL(filename);
+        const pathParts = url.pathname.split('/');
+        key = pathParts[pathParts.length - 1] || filename; // very naive extraction for AWS paths
+      }
+    } catch (e) {}
+
+    const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+    const command = new GetObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+    });
+    
+    try {
+      return await getSignedUrl(this.s3Client, command, { expiresIn: 900 });
+    } catch (error) {
+      console.error("Error generating presigned GET URL", error);
+      return filename; // fallback to original
+    }
+  }
 }
