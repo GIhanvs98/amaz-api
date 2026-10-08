@@ -7,9 +7,15 @@ import { generateMRN } from '../utils/mrn.util.js';
 export class FrontdeskService {
   // 1. Get Doctor Status & Sessions for a given date
   async getDoctorsStatus(dateString: string) {
-    const targetDate = new Date(dateString);
-    const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+    // If dateString contains a T (ISO string), split it to get the local date part,
+    // otherwise just use it directly. This avoids UTC timezone shift bugs.
+    const localDateStr = dateString.includes('T') ? dateString.split('T')[0] : dateString;
+    
+    // Parse it as a local date by appending T00:00:00
+    const targetDate = new Date(`${localDateStr}T00:00:00`);
+    const startOfDay = new Date(targetDate);
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
     const dayOfWeek = startOfDay.getDay(); // 0=Sun, 1=Mon...
 
     // Find all doctors
@@ -438,11 +444,25 @@ export class FrontdeskService {
       }
     }
 
+    const scheduleDate = new Date(date);
+    let validFrom = new Date(scheduleDate);
+    validFrom.setHours(0, 0, 0, 0);
+
+    let validUntil = isRecurring 
+      ? new Date(scheduleData.until || '2099-12-31') 
+      : new Date(scheduleDate);
+    
+    if (!isRecurring) {
+        validUntil.setHours(23, 59, 59, 999);
+    } else {
+        validUntil.setHours(23, 59, 59, 999);
+    }
+
     const schedule = await prisma.doctorSchedule.create({
       data: {
         doctorId,
-        validFrom: isRecurring ? new Date(date || new Date()) : new Date(date),
-        validUntil: isRecurring ? new Date(scheduleData.until || '2099-12-31') : new Date(date),
+        validFrom: validFrom,
+        validUntil: validUntil,
         sessions: {
           create: numericDays.map((day: number) => ({
             dayOfWeek: day,
