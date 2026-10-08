@@ -42,7 +42,10 @@ export class DepartmentController {
       const doctors = await prisma.user.findMany({
         where: {
           Role: {
-            name: 'Doctor' // Role name in DB is 'Doctor'
+            name: {
+              equals: 'Doctor',
+              mode: 'insensitive'
+            }
           }
         },
         select: {
@@ -172,6 +175,15 @@ export class DepartmentController {
     try {
       const { doctorId } = req.params;
       const { departmentId, consultationFee, feeType } = req.body;
+
+      const existingUser = await prisma.user.findUnique({ where: { id: doctorId as string }, include: { Role: true } });
+      if (!existingUser) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      if (existingUser.Role.name.toUpperCase() !== 'DOCTOR') {
+        return res.status(400).json({ error: "Only Doctors can be assigned to a department or have consultation fees" });
+      }
 
       const user = await prisma.user.update({
         where: { id: doctorId as string },

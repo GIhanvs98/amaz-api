@@ -98,10 +98,14 @@ export const createStaff = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: "Name, email, password, and roleName are required" });
     }
 
-    // Find or create role
+    // Find role
     let role = await prisma.role.findUnique({ where: { name: roleName } });
     if (!role) {
-      role = await prisma.role.create({ data: { name: roleName } });
+      return res.status(400).json({ success: false, error: "Role not found" });
+    }
+
+    if (departmentId && role.name.toUpperCase() !== 'DOCTOR') {
+      return res.status(400).json({ success: false, error: "Only Doctors can be assigned to a department" });
     }
 
     const salt = await bcrypt.genSalt(10);
@@ -145,12 +149,22 @@ export const updateStaff = async (req: Request, res: Response) => {
     const { name, email, password, roleName, specialty, roomNumber, title, departmentId, consultationFee, feeType } = req.body;
     
     let roleId;
+    let foundRoleName;
     if (roleName) {
       let role = await prisma.role.findUnique({ where: { name: roleName } });
       if (!role) {
-        role = await prisma.role.create({ data: { name: roleName } });
+        return res.status(400).json({ success: false, error: "Role not found" });
       }
       roleId = role.id;
+      foundRoleName = role.name;
+    } else if (departmentId !== undefined) {
+       // if we are updating departmentId, we need to make sure the user is currently a doctor
+       const existingUser = await prisma.user.findUnique({ where: { id: id as string }, include: { Role: true }});
+       if (existingUser) foundRoleName = existingUser.Role.name;
+    }
+
+    if (departmentId && foundRoleName?.toUpperCase() !== 'DOCTOR') {
+      return res.status(400).json({ success: false, error: "Only Doctors can be assigned to a department" });
     }
 
     const data: any = {};
