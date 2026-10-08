@@ -167,7 +167,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       where: { id: id as string },
       include: {
         Appointment: {
-          where: { status: { not: "COMPLETED" } },
+          where: { status: { in: ['BOOKED', 'WAITING', 'CHECKED_IN', 'IN_PROGRESS', 'ARRIVED'] } },
           orderBy: { createdAt: "desc" },
           take: 1
         },
@@ -214,7 +214,9 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       chronicConditions: [], // Still mocked as no chronic condition model exists yet
       medicalHistory: medicalHistory,
       labResults: labResults,
-      activeVisitId: patient.Appointment[0]?.id || null
+      activeVisitId: patient.Appointment[0]?.id || null,
+      activeTokenNumber: patient.Appointment[0]?.tokenNumber || null,
+      activeVisitStartTime: patient.Appointment[0]?.updatedAt || null
     });
   } catch (error: any) {
     console.error("Error fetching patient:", error);
