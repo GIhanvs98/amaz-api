@@ -70,10 +70,12 @@ export class FrontdeskService {
   }
 
   // 2. Update Doctor Attendance
-  async updateDoctorAttendance(doctorId: string, status: string, roomNumber: string | null, userId: string, forceExit: boolean = false) {
-    const today = new Date();
-    const startOfDay = new Date(today.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(today.setHours(23, 59, 59, 999));
+  async updateDoctorAttendance(doctorId: string, status: string, roomNumber: string | null, userId: string, forceExit: boolean = false, dateString?: string) {
+    const targetDate = dateString ? new Date(`${dateString.includes('T') ? dateString.split('T')[0] : dateString}T00:00:00`) : new Date();
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
 
     let attendance = await prisma.doctorAttendance.findFirst({
       where: { doctorId, date: { gte: startOfDay, lte: endOfDay } }
@@ -161,7 +163,7 @@ export class FrontdeskService {
           doctorId,
           status,
           roomNumber,
-          date: new Date(),
+          date: targetDate,
           arrivedAt: status === 'ARRIVED' ? new Date() : null
         }
       });
