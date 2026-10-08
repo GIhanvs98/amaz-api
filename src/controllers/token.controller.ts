@@ -186,7 +186,11 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
 
     const updatedApp = await prisma.appointment.update({
       where: { id: appointment.id },
-      data: { status }
+      data: { status },
+      include: {
+        User: true,
+        Patient: true
+      }
     });
 
     websocketService.broadcast("TOKEN_STATUS_UPDATED", updatedApp);

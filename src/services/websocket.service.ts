@@ -13,18 +13,21 @@ class WebSocketService {
       }
     });
 
-    // Middleware for Authentication
+    // Middleware for Authentication (Optional)
     this.io.use((socket, next) => {
       try {
         const token = socket.handshake.auth.token || socket.handshake.query.token;
         if (!token) {
-          return next(new Error("Authentication error: No token provided"));
+          // Allow anonymous connections for public screens (Customer Display)
+          return next();
         }
         const decoded = jwt.verify(token, process.env.JWT_SECRET || "fallback_secret");
         (socket as any).user = decoded;
         next();
       } catch (err) {
-        next(new Error("Authentication error: Invalid token"));
+        // If token is invalid, log it but still allow connection as anonymous
+        console.warn(`[Socket.io] Invalid token provided for socket ${socket.id}`);
+        next();
       }
     });
 
