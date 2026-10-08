@@ -128,10 +128,11 @@ export const createStaff = async (req: Request, res: Response) => {
     });
 
     await clearCache("/api/admin/staff");
-    if (roleName === 'DOCTOR') {
+    if (roleName.toUpperCase() === 'DOCTOR') {
       await clearCache("/api/admin/doctors");
       await clearCache("/api/reception/doctors");
       await clearCache("/api/booking/doctors");
+      await clearCache("*departments*");
     }
 
     res.json({ success: true, data: newStaff });
@@ -192,6 +193,7 @@ export const updateStaff = async (req: Request, res: Response) => {
     await clearCache("/api/admin/doctors");
     await clearCache("/api/reception/doctors");
     await clearCache("/api/booking/doctors");
+    await clearCache("*departments*");
 
     res.json({ success: true, data: updatedStaff });
   } catch (error: any) {
@@ -211,6 +213,7 @@ export const deleteStaff = async (req: Request, res: Response) => {
     await clearCache("/api/admin/doctors");
     await clearCache("/api/reception/doctors");
     await clearCache("/api/booking/doctors");
+    await clearCache("*departments*");
 
     res.json({ success: true });
   } catch (error: any) {

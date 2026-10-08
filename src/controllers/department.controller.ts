@@ -13,6 +13,7 @@ export class DepartmentController {
       const departments = await prisma.department.findMany({
         include: {
           Users: {
+            where: { isActive: true },
             select: {
               id: true,
               fullName: true,
@@ -22,7 +23,11 @@ export class DepartmentController {
             }
           },
           _count: {
-            select: { Users: true }
+            select: { 
+              Users: {
+                where: { isActive: true }
+              } 
+            }
           }
         },
         orderBy: { name: 'asc' }
@@ -41,6 +46,7 @@ export class DepartmentController {
     try {
       const doctors = await prisma.user.findMany({
         where: {
+          isActive: true,
           Role: {
             name: {
               equals: 'Doctor',
@@ -195,6 +201,8 @@ export class DepartmentController {
       });
 
       await clearCache('*departments*');
+      await clearCache('/api/admin/staff');
+      await clearCache('/api/admin/doctors');
       res.json(user);
     } catch (error: any) {
       console.error("Update Doctor Assignment Error:", error);
