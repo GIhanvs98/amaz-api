@@ -136,7 +136,7 @@ export class FrontdeskService {
                 {
                   patientName: apt.Patient.fullName,
                   doctorName: apt.User?.fullName || 'Doctor',
-                  date: today.toLocaleDateString(),
+                  date: targetDate.toLocaleDateString(),
                   reason: 'Doctor had to leave early due to an emergency.',
                   hospitalName: "AMAZ Hospital"
                 }
