@@ -254,8 +254,18 @@ export const generateToken = async (req: Request, res: Response) => {
 
     // --- Billing Logic ---
     let doctorDetails = null;
+    let doctorRoomNumber = null;
     if (doctorId) {
       doctorDetails = await prisma.user.findUnique({ where: { id: doctorId } });
+      const targetDate = date ? new Date(date) : new Date();
+      const startOfDay = new Date(targetDate);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(targetDate);
+      endOfDay.setHours(23, 59, 59, 999);
+      const todayAttendance = await prisma.doctorAttendance.findFirst({
+        where: { doctorId: doctorId, date: { gte: startOfDay, lte: endOfDay } }
+      });
+      doctorRoomNumber = todayAttendance?.roomNumber || doctorDetails?.roomNumber || null;
     }
     
     let labTestsDetails: any[] = [];
@@ -432,7 +442,7 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const tokensToGenerate: { dept: string, docId: string | null, name: string, roomNumber: string | null, requestedTokenNumber?: number }[] = [];
     if (hasConsultation) {
-      tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician", roomNumber: doctorDetails?.roomNumber || null, requestedTokenNumber: doctorTokenNumber });
+      tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician", roomNumber: doctorRoomNumber, requestedTokenNumber: doctorTokenNumber });
     }
     if (hasLab) {
       const firstLabRoom = labTestsDetails.find((t: any) => t.roomNumber)?.roomNumber || null;
@@ -884,10 +894,29 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });
     }
 
-    const allTokens = await prisma.appointment.findMany({
+    let allTokens = await prisma.appointment.findMany({
       where: { id: { in: allApptIds } },
       include: { Patient: true, User: true }
     });
+
+    const targetDate = new Date();
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    allTokens = await Promise.all(allTokens.map(async (t) => {
+      let roomNumber = t.User?.roomNumber || null;
+      if (t.doctorId) {
+        const attendance = await prisma.doctorAttendance.findFirst({
+          where: { doctorId: t.doctorId, date: { gte: startOfDay, lte: endOfDay } }
+        });
+        if (attendance?.roomNumber) {
+          roomNumber = attendance.roomNumber;
+        }
+      }
+      return { ...t, roomNumber };
+    })) as any;
 
     res.json({
       success: true,

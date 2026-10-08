@@ -144,7 +144,7 @@ export class LabService {
    */
   async getPendingRequests() {
     return withRetry(() => prisma.labRequest.findMany({
-      where: { status: "PENDING" },
+      where: { status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } },
       include: {
         items: {
           include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }

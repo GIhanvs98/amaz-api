@@ -1,4 +1,5 @@
 import "dotenv/config";
+process.env.TZ = "Asia/Colombo";
 import app from "./app.js";
 
 import { websocketService } from "./services/websocket.service.js";
@@ -12,6 +13,3 @@ const server = app.listen(PORT, () => {
 
 websocketService.initialize(server);
 NotificationService.initSweeper();
-
-
-

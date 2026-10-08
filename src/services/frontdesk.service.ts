@@ -446,19 +446,16 @@ export class FrontdeskService {
       }
     }
 
-    const scheduleDate = new Date(date);
+    // Handle local date parsing safely
+    const localDateStr = date.includes('T') ? date.split('T')[0] : date;
+    const scheduleDate = new Date(`${localDateStr}T00:00:00`);
     let validFrom = new Date(scheduleDate);
-    validFrom.setHours(0, 0, 0, 0);
 
     let validUntil = isRecurring 
-      ? new Date(scheduleData.until || '2099-12-31') 
+      ? new Date(`${(scheduleData.until || '2099-12-31').split('T')[0]}T00:00:00`) 
       : new Date(scheduleDate);
     
-    if (!isRecurring) {
-        validUntil.setHours(23, 59, 59, 999);
-    } else {
-        validUntil.setHours(23, 59, 59, 999);
-    }
+    validUntil.setHours(23, 59, 59, 999);
 
     const schedule = await prisma.doctorSchedule.create({
       data: {
