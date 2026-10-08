@@ -49,7 +49,7 @@ export class FrontdeskService {
     const ongoingTokens = await prisma.appointment.findMany({
       where: {
         appointmentDate: { gte: startOfDay, lte: endOfDay },
-        status: 'CONSULTATION'
+        status: 'IN_PROGRESS'
       },
       select: { doctorId: true, tokenNumber: true }
     });
@@ -86,7 +86,7 @@ export class FrontdeskService {
         where: {
           doctorId,
           appointmentDate: { gte: startOfDay, lte: endOfDay },
-          status: { in: ['BOOKED', 'ARRIVED', 'CONSULTATION'] }
+          status: { in: ['BOOKED', 'ARRIVED', 'IN_PROGRESS'] }
         },
         include: { Patient: true, User: true }
       });
@@ -100,7 +100,7 @@ export class FrontdeskService {
             where: {
               doctorId,
               appointmentDate: { gte: startOfDay, lte: endOfDay },
-              status: { in: ['BOOKED', 'ARRIVED', 'CONSULTATION'] }
+              status: { in: ['BOOKED', 'ARRIVED', 'IN_PROGRESS'] }
             },
             data: { status: 'CANCELLED' }
           });
