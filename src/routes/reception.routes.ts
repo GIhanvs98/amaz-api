@@ -18,7 +18,7 @@ router.use(requireRole(['ADMIN', 'RECEPTIONIST']));
 router.get("/patients", cacheMiddleware(60), getPatients);
 
 // GET /api/reception/doctors
-router.get("/doctors", cacheMiddleware(300), getActiveDoctors);
+router.get("/doctors", getActiveDoctors);
 
 // GET /api/reception/metrics
 router.get("/metrics", cacheMiddleware(300), getMetrics);

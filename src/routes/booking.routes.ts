@@ -7,10 +7,10 @@ const router = Router();
 
 router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST']));
 
-router.get("/doctors", cacheMiddleware(3600), getDoctors);
-router.get("/availability", cacheMiddleware(60), getAvailability);
-router.get("/department-availability", cacheMiddleware(60), getDepartmentAvailability);
-router.get("/available-dates", cacheMiddleware(3600), getAvailableDates);
+router.get("/doctors", getDoctors);
+router.get("/availability", getAvailability);
+router.get("/department-availability", getDepartmentAvailability);
+router.get("/available-dates", getAvailableDates);
 router.get("/appointments", getTodayAppointments);
 router.post("/phone", bookPhoneToken);
 router.patch("/:id/arrive", markArrived);
