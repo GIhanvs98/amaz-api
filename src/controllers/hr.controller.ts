@@ -259,22 +259,19 @@ export const generatePayroll = async (req: Request, res: Response) => {
             category: "DEDUCTION",
             description: "Employee EPF (8%)",
             amount: epf8,
-            isTaxable: false,
-            isEpfEligible: false
+            isStatutory: true
           });
           lineItems.push({
             category: "EMPLOYER_CONTRIBUTION",
             description: "Employer EPF (12%)",
             amount: epf12,
-            isTaxable: false,
-            isEpfEligible: false
+            isStatutory: true
           });
           lineItems.push({
             category: "EMPLOYER_CONTRIBUTION",
             description: "Employer ETF (3%)",
             amount: etf3,
-            isTaxable: false,
-            isEpfEligible: false
+            isStatutory: true
           });
         }
 
@@ -290,7 +287,12 @@ export const generatePayroll = async (req: Request, res: Response) => {
             netSalary,
             status: "DRAFT",
             lineItems: {
-              create: lineItems
+              create: lineItems.map(item => ({
+                category: item.category,
+                description: item.description,
+                amount: item.amount,
+                isStatutory: item.isStatutory || false
+              }))
             }
           }
         });
