@@ -461,6 +461,40 @@ export class FinanceService {
       where: { id }
     });
   }
+
+  async getShifts(page: number = 1, limit: number = 50) {
+    const skip = (page - 1) * limit;
+    const [shifts, total] = await Promise.all([
+      prisma.cashRegisterShift.findMany({
+        skip,
+        take: limit,
+        orderBy: { openedAt: "desc" },
+        include: {
+          user: { select: { fullName: true } }
+        }
+      }),
+      prisma.cashRegisterShift.count()
+    ]);
+    return {
+      data: shifts.map(s => ({
+        id: s.id,
+        cashier: s.user?.fullName || "Unknown",
+        openedAt: s.openedAt,
+        closedAt: s.closedAt,
+        startingFloat: s.openingFloat,
+        expectedCash: s.expectedCash,
+        actualCash: s.actualCash,
+        variance: s.variance,
+        status: s.status
+      })),
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
+  }
 }
 
 export const financeService = new FinanceService();

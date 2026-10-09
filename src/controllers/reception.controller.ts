@@ -41,6 +41,37 @@ async function getOpenShiftId(userId: string): Promise<string | undefined> {
   return shift?.id;
 }
 
+export const getCurrentShift = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const shift = await prisma.cashRegisterShift.findFirst({
+      where: { openedBy: user.id, status: "OPEN" },
+      include: {
+        user: { select: { fullName: true } }
+      }
+    });
+
+    if (!shift) {
+      return res.json({ success: true, data: null });
+    }
+
+    res.json({ 
+      success: true, 
+      data: {
+        id: shift.id,
+        isOpen: true,
+        startedAt: shift.openedAt,
+        startingFloat: shift.openingFloat,
+        cashierName: shift.user?.fullName || "Unknown",
+      } 
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export const getPatients = async (req: Request, res: Response) => {
   try {
     const { q } = req.query;

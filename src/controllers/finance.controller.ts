@@ -47,6 +47,18 @@ class FinanceController {
     }
   }
 
+  async getShifts(req: Request, res: Response) {
+    try {
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 50;
+      const data = await financeService.getShifts(page, limit);
+      res.json({ success: true, ...data });
+    } catch (error: any) {
+      console.error("Error fetching shifts:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
   async updateExpense(req: Request, res: Response) {
     try {
       const { id } = req.params;

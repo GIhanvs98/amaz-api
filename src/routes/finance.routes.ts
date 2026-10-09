@@ -9,6 +9,7 @@ router.use(verifyToken, requireRole(['SUPERADMIN', 'ADMIN', 'FINANCE', 'MANAGER'
 
 router.get('/dashboard', cacheMiddleware(300), financeController.getDashboardData.bind(financeController));
 router.get('/settlements', financeController.getSettlements.bind(financeController));
+router.get('/shifts', financeController.getShifts.bind(financeController));
 
 router.post('/expenses', financeController.addExpense.bind(financeController));
 router.get('/expenses', financeController.getExpenses.bind(financeController));
