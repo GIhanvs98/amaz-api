@@ -29,7 +29,7 @@ export const updateRoleTemplate = async (req: Request, res: Response) => {
     const { id } = req.params;
     const data = req.body;
     const template = await prisma.rolePayrollTemplate.update({
-      where: { id },
+      where: { id: id as string },
       data
     });
     res.json(template);
@@ -42,7 +42,7 @@ export const deleteRoleTemplate = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     await prisma.rolePayrollTemplate.delete({
-      where: { id }
+      where: { id: id as string }
     });
     res.json({ success: true });
   } catch (error: any) {

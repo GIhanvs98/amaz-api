@@ -176,6 +176,7 @@ export const generatePayroll = async (req: Request, res: Response) => {
           OR: [{ terminationDate: null }, { terminationDate: { gt: start } }]
         },
         include: {
+          user: { include: { Role: true } },
           compensations: { where: { isActive: true }, orderBy: { effectiveFrom: 'desc' }, take: 1 },
           components: { 
             where: { OR: [{ effectiveTo: null }, { effectiveTo: { gt: start } }] },
@@ -184,48 +185,116 @@ export const generatePayroll = async (req: Request, res: Response) => {
         }
       });
 
-      for (const profile of profiles) {
-        const fullBaseSalary = profile.compensations[0]?.baseSalary || 0;
-        
-        // Proration Logic
-        let payableDays = 30; // standard 30-day divisor
-        const joinDate = new Date(profile.joiningDate);
-        const termDate = profile.terminationDate ? new Date(profile.terminationDate) : null;
-        
-        if (joinDate > start && joinDate <= end) {
-          payableDays = 30 - joinDate.getDate() + 1;
-        }
-        if (termDate && termDate >= start && termDate <= end) {
-          payableDays = termDate.getDate();
-        }
-        payableDays = Math.min(30, Math.max(0, payableDays));
-        
-        const baseSalary = fullBaseSalary > 0 ? (fullBaseSalary / 30) * payableDays : 0;
+      const roleTemplates = await tx.rolePayrollTemplate.findMany();
+      const attendances = await tx.staffAttendance.findMany({
+        where: { date: { gte: start, lte: end } }
+      });
+      const leaves = await tx.leaveRequest.findMany({
+        where: { status: 'APPROVED', startDate: { lte: end }, endDate: { gte: start } }
+      });
 
-        let totalEarnings = baseSalary;
+      for (const profile of profiles) {
+        const template = roleTemplates.find(t => t.role === profile.user.Role.name);
+        const workHours = template?.workingHoursPerDay || 8;
+        const otRate = template?.otRate || 0;
+        const perHourRate = template?.perHourRate || 0;
+        const allowedLeaves = template?.allowedLeavesPerMonth || 0;
+
+        const myAttendance = attendances.filter(a => a.userId === profile.userId);
+        
+        let totalEarnings = 0;
         let totalDeductions = 0;
         let totalEmployerCost = 0;
-        let epfBase = baseSalary;
-
+        let epfBase = 0;
         const lineItems = [];
-        
-        // Add Base Salary Line
-        if (baseSalary > 0) {
-          lineItems.push({
-            category: "BASIC",
-            description: payableDays < 30 ? `Prorated Base Salary (${payableDays} days)` : "Monthly Base Salary",
-            amount: baseSalary,
-            isTaxable: true,
-            isEpfEligible: true
-          });
+
+        if (profile.salaryBasis === 'HOURLY') {
+          // HOURLY CALCULATION
+          let totalWorkedHours = 0;
+          let totalOTHours = 0;
+          
+          for (const a of myAttendance) {
+            if ((a.status === 'PRESENT' || a.status === 'LATE') && a.checkIn && a.checkOut) {
+              const hours = (a.checkOut.getTime() - a.checkIn.getTime()) / (1000 * 60 * 60);
+              if (hours > workHours) {
+                totalWorkedHours += workHours;
+                totalOTHours += (hours - workHours);
+              } else {
+                totalWorkedHours += hours;
+              }
+            }
+          }
+
+          const baseWages = totalWorkedHours * perHourRate;
+          if (baseWages > 0) {
+            lineItems.push({ category: "BASIC", description: `Hourly Wages (${totalWorkedHours.toFixed(1)} hrs)`, amount: baseWages });
+            totalEarnings += baseWages;
+            epfBase += baseWages;
+          }
+
+          const otWages = totalOTHours * otRate;
+          if (otWages > 0) {
+            lineItems.push({ category: "EARNING", description: `Overtime Pay (${totalOTHours.toFixed(1)} hrs)`, amount: otWages });
+            totalEarnings += otWages;
+            epfBase += otWages;
+          }
+        } else {
+          // MONTHLY CALCULATION
+          const fullBaseSalary = profile.compensations[0]?.baseSalary || 0;
+          let payableDays = 30; 
+          const joinDate = new Date(profile.joiningDate);
+          const termDate = profile.terminationDate ? new Date(profile.terminationDate) : null;
+          
+          if (joinDate > start && joinDate <= end) {
+            payableDays = 30 - joinDate.getDate() + 1;
+          }
+          if (termDate && termDate >= start && termDate <= end) {
+            payableDays = termDate.getDate();
+          }
+          payableDays = Math.min(30, Math.max(0, payableDays));
+          
+          const baseSalary = fullBaseSalary > 0 ? (fullBaseSalary / 30) * payableDays : 0;
+          if (baseSalary > 0) {
+            lineItems.push({ category: "BASIC", description: payableDays < 30 ? `Prorated Base Salary (${payableDays} days)` : "Monthly Base Salary", amount: baseSalary });
+            totalEarnings += baseSalary;
+            epfBase += baseSalary;
+          }
+
+          // LOP (Loss of Pay)
+          const absentCount = myAttendance.filter(a => a.status === 'ABSENT').length;
+          const unapprovedAbsences = Math.max(0, absentCount - allowedLeaves);
+          if (unapprovedAbsences > 0) {
+            const lop = (fullBaseSalary / 30) * unapprovedAbsences;
+            lineItems.push({ category: "DEDUCTION", description: `Loss of Pay (${unapprovedAbsences} days)`, amount: lop });
+            totalDeductions += lop;
+            epfBase -= lop;
+          }
+
+          // OT Calculation
+          let totalOTHours = 0;
+          for (const a of myAttendance) {
+            if ((a.status === 'PRESENT' || a.status === 'LATE') && a.checkIn && a.checkOut) {
+              const hours = (a.checkOut.getTime() - a.checkIn.getTime()) / (1000 * 60 * 60);
+              if (hours > workHours) totalOTHours += (hours - workHours);
+            }
+          }
+          const otWages = totalOTHours * otRate;
+          if (otWages > 0) {
+            lineItems.push({ category: "EARNING", description: `Overtime Pay (${totalOTHours.toFixed(1)} hrs)`, amount: otWages });
+            totalEarnings += otWages;
+            epfBase += otWages;
+          }
         }
 
+        // Add static custom components
         for (const ec of profile.components) {
           const val = ec.value || 0; 
           let calculatedVal = val;
           
           if (ec.component.calculationMethod === "PERCENTAGE") {
-            calculatedVal = baseSalary * (val / 100);
+            // Percentages base off basic salary
+            const baseForPerc = profile.salaryBasis === 'HOURLY' ? 0 : (profile.compensations[0]?.baseSalary || 0);
+            calculatedVal = baseForPerc * (val / 100);
           }
 
           if (ec.component.category === "EARNING") {
@@ -240,9 +309,7 @@ export const generatePayroll = async (req: Request, res: Response) => {
           lineItems.push({
             category: ec.component.category,
             description: ec.component.name,
-            amount: calculatedVal,
-            isTaxable: ec.component.isTaxable,
-            isEpfEligible: ec.component.isEpfEligible
+            amount: calculatedVal
           });
         }
 
