@@ -72,7 +72,7 @@ export class FrontdeskService {
   }
 
   // 2. Update Doctor Attendance
-  async updateDoctorAttendance(doctorId: string, status: string, roomId: string | null, userId: string, forceExit: boolean = false, dateString?: string) {
+  async updateDoctorAttendance(doctorId: string, status: string, roomId: string | null, userId: string, forceExit: boolean = false, dateString?: string, startTime?: string, endTime?: string) {
     const targetDate = dateString ? new Date(`${dateString.includes('T') ? dateString.split('T')[0] : dateString}T00:00:00`) : new Date();
     const startOfDay = new Date(targetDate);
     startOfDay.setHours(0, 0, 0, 0);
@@ -156,7 +156,9 @@ export class FrontdeskService {
           status, 
           roomId: roomId || attendance.roomId,
           arrivedAt: status === 'ARRIVED' && !attendance.arrivedAt ? new Date() : attendance.arrivedAt,
-          leftAt: status === 'COMPLETED' ? new Date() : attendance.leftAt
+          leftAt: status === 'COMPLETED' ? new Date() : attendance.leftAt,
+          expectedStartTime: startTime || attendance.expectedStartTime,
+          expectedEndTime: endTime || attendance.expectedEndTime
         }
       });
     } else {
@@ -166,7 +168,9 @@ export class FrontdeskService {
           status,
           roomId: roomId,
           date: targetDate,
-          arrivedAt: status === 'ARRIVED' ? new Date() : null
+          arrivedAt: status === 'ARRIVED' ? new Date() : null,
+          expectedStartTime: startTime || null,
+          expectedEndTime: endTime || null
         }
       });
     }
