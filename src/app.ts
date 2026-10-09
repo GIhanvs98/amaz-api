@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
+import path from "path";
 
 const app = express();
 
@@ -17,6 +18,8 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads")));
 
 import pharmacyRoutes from "./routes/pharmacy.routes.js";
 import billingRoutes from "./routes/billing.routes.js";
@@ -37,8 +40,6 @@ import barcodeRoutes from "./routes/barcode.routes.js";
 import settingRoutes from "./routes/setting.routes.js";
 import patientPortalRoutes from "./routes/patient-portal.routes.js";
 import roomRoutes from "./routes/room.routes.js";
-import staffRoutes from "./routes/staff.routes.js";
-import hrRoutes from "./routes/hr.routes.js";
 import staffRoutes from "./routes/staff.routes.js";
 import hrRoutes from "./routes/hr.routes.js";
 

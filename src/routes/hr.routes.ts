@@ -7,7 +7,14 @@ import {
   getLeaves,
   updateLeaveStatus,
   generatePayroll,
-  getPayroll
+  getPayroll,
+  getPayrollProfile,
+  updatePayrollProfile,
+  getSalaryComponents,
+  createSalaryComponent,
+  assignEmployeeComponent,
+  removeEmployeeComponent,
+  getPayrollRunById
 } from "../controllers/hr.controller.js";
 
 const router = express.Router();
@@ -25,5 +32,16 @@ router.patch("/leaves/:id/status", updateLeaveStatus);
 // Payroll
 router.post("/payroll/generate", generatePayroll);
 router.get("/payroll", getPayroll);
+router.get("/payroll/:id", getPayrollRunById);
+
+// Employee Payroll Profiles & Components
+router.get("/employees/:userId/payroll-profile", getPayrollProfile);
+router.put("/employees/:userId/payroll-profile", updatePayrollProfile);
+router.post("/employees/:userId/components", assignEmployeeComponent);
+router.delete("/employees/:userId/components/:id", removeEmployeeComponent);
+
+// Global Salary Components
+router.get("/components", getSalaryComponents);
+router.post("/components", createSalaryComponent);
 
 export default router;

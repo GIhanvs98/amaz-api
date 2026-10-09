@@ -40,7 +40,7 @@ model Department {
 model Room {
   id                String             @id @default(uuid())
   roomNumber        String             @unique
-  department        String             // e.g., "CONSULTATION", "LAB", "EXTRA_SERVICE", "GENERAL"
+  department        String // e.g., "CONSULTATION", "LAB", "EXTRA_SERVICE", "GENERAL"
   status            String             @default("AVAILABLE") // "AVAILABLE", "OCCUPIED", "MAINTENANCE"
   description       String?
   isActive          Boolean            @default(true)
@@ -77,9 +77,9 @@ model StockBatch {
   updatedAt       DateTime  @updatedAt
   medicine        Medicine  @relation(fields: [medicineId], references: [id])
 
+  @@unique([medicineId, batchNumber])
   @@index([expiryDate])
   @@index([medicineId, currentQuantity])
-  @@unique([medicineId, batchNumber])
 }
 
 model PurchaseOrder {
@@ -136,31 +136,31 @@ model InvoiceLineItem {
 }
 
 model Payment {
-  id             String       @id @default(uuid())
+  id             String             @id @default(uuid())
   invoiceId      String
   amount         Float
   method         String
-  status         String       @default("COMPLETED")
+  status         String             @default("COMPLETED")
   transactionRef String?
   shiftId        String?
-  createdAt      DateTime     @default(now())
-  appointmentId  String?      @unique
-  invoice        Invoice      @relation(fields: [invoiceId], references: [id])
+  createdAt      DateTime           @default(now())
+  appointmentId  String?            @unique
+  invoice        Invoice            @relation(fields: [invoiceId], references: [id])
   shift          CashRegisterShift? @relation(fields: [shiftId], references: [id])
-  Appointment    Appointment? @relation(fields: [appointmentId], references: [id])
+  Appointment    Appointment?       @relation(fields: [appointmentId], references: [id])
   refunds        Refund[]
 }
 
 model Refund {
-  id        String   @id @default(uuid())
+  id        String             @id @default(uuid())
   paymentId String
   amount    Float
   reason    String
-  status    String   @default("COMPLETED")
+  status    String             @default("COMPLETED")
   shiftId   String?
-  createdAt DateTime @default(now())
+  createdAt DateTime           @default(now())
   shift     CashRegisterShift? @relation(fields: [shiftId], references: [id])
-  payment   Payment  @relation(fields: [paymentId], references: [id])
+  payment   Payment            @relation(fields: [paymentId], references: [id])
 }
 
 model LabTest {
@@ -366,32 +366,34 @@ model Appointment {
 }
 
 model User {
-  id               String             @id @default(uuid())
+  id               String              @id @default(uuid())
   fullName         String
-  email            String             @unique
+  email            String              @unique
   password         String
   roleId           String
   specialty        String?
   title            String?
   roomId           String?
-  room             Room?              @relation(fields: [roomId], references: [id])
-  consultationFee  Float?             @default(2500)
-  feeType          String             @default("POST") // UPFRONT or POST
+  room             Room?               @relation(fields: [roomId], references: [id])
+  consultationFee  Float?              @default(2500)
+  feeType          String              @default("POST") // UPFRONT or POST
   departmentId     String?
   basicSalary      Float?
-  isActive         Boolean            @default(true)
-  createdAt        DateTime           @default(now())
-  updatedAt        DateTime           @updatedAt
+  isActive         Boolean             @default(true)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
   Appointment      Appointment[]
   DoctorSchedule   DoctorSchedule[]
   DoctorAttendance DoctorAttendance[]
   ActivityLog      ActivityLog[]
-  Role             Role               @relation(fields: [roleId], references: [id])
-  Department       Department?        @relation(fields: [departmentId], references: [id])
+  Role             Role                @relation(fields: [roleId], references: [id])
+  Department       Department?         @relation(fields: [departmentId], references: [id])
   UserShift        CashRegisterShift[]
   StaffAttendance  StaffAttendance[]
   LeaveRequest     LeaveRequest[]
-  Payroll          Payroll[]
+  PayrollRecords   PayrollRecord[]
+  OvertimeRecords  OvertimeRecord[]
+  EmployeeProfile  EmployeeProfile?
 }
 
 model DoctorSchedule {
@@ -521,60 +523,149 @@ model PatientOTP {
 }
 
 model CashRegisterShift {
-  id             String    @id @default(uuid())
-  openedBy       String
-  openedAt       DateTime  @default(now())
-  closedAt       DateTime?
-  openingFloat   Float     @default(0)
-  expectedCash   Float     @default(0)
-  actualCash     Float?
-  variance       Float?
-  status         String    @default("OPEN") // OPEN, CLOSED
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  user           User      @relation(fields: [openedBy], references: [id])
-  payments       Payment[]
-  refunds        Refund[]
+  id           String    @id @default(uuid())
+  openedBy     String
+  openedAt     DateTime  @default(now())
+  closedAt     DateTime?
+  openingFloat Float     @default(0)
+  expectedCash Float     @default(0)
+  actualCash   Float?
+  variance     Float?
+  status       String    @default("OPEN") // OPEN, CLOSED
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User      @relation(fields: [openedBy], references: [id])
+  payments     Payment[]
+  refunds      Refund[]
 }
 
-
 model StaffAttendance {
-  id          String    @id @default(uuid())
-  userId      String
-  date        DateTime  @default(now())
-  checkIn     DateTime?
-  checkOut    DateTime?
-  status      String    @default("PRESENT") // PRESENT, LATE, ABSENT
-  notes       String?
-  user        User      @relation(fields: [userId], references: [id])
+  id       String    @id @default(uuid())
+  userId   String
+  date     DateTime  @default(now())
+  checkIn  DateTime?
+  checkOut DateTime?
+  status   String    @default("PRESENT") // PRESENT, LATE, ABSENT
+  notes    String?
+  user     User      @relation(fields: [userId], references: [id])
 
   @@unique([userId, date])
 }
 
 model LeaveRequest {
-  id          String    @id @default(uuid())
-  userId      String
-  type        String    // SICK, CASUAL, ANNUAL, MATERNITY
-  startDate   DateTime
-  endDate     DateTime
-  reason      String
-  status      String    @default("PENDING") // PENDING, APPROVED, REJECTED
-  appliedAt   DateTime  @default(now())
-  user        User      @relation(fields: [userId], references: [id])
+  id        String   @id @default(uuid())
+  userId    String
+  type      String // SICK, CASUAL, ANNUAL, MATERNITY
+  startDate DateTime
+  endDate   DateTime
+  reason    String
+  status    String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  appliedAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
 }
 
-model Payroll {
-  id            String    @id @default(uuid())
-  userId        String
-  month         Int
-  year          Int
-  basicSalary   Float
-  allowances    Float     @default(0)
-  deductions    Float     @default(0)
-  netSalary     Float
-  status        String    @default("DRAFT") // DRAFT, PAID
-  generatedAt   DateTime  @default(now())
-  user          User      @relation(fields: [userId], references: [id])
+model EmployeeProfile {
+  id              String                @id @default(uuid())
+  userId          String                @unique
+  employmentType  String // FULL_TIME, CONTRACT, PART_TIME
+  salaryBasis     String // MONTHLY, DAILY, HOURLY, SHIFT, MIXED
+  joiningDate     DateTime
+  terminationDate DateTime?
+  paymentMethod   String // BANK_TRANSFER, CASH, CHEQUE
+  bankDetails     Json? // Bank, Branch, Account No
+  isActive        Boolean               @default(true)
+  user            User                  @relation(fields: [userId], references: [id])
+  compensations   CompensationVersion[]
+  components      EmployeeComponent[]
+}
 
-  @@unique([userId, month, year])
+model CompensationVersion {
+  id                String          @id @default(uuid())
+  employeeProfileId String
+  baseSalary        Float // Applicable basic rate
+  effectiveFrom     DateTime
+  effectiveTo       DateTime?
+  isActive          Boolean         @default(true)
+  profile           EmployeeProfile @relation(fields: [employeeProfileId], references: [id])
+}
+
+model SalaryComponent {
+  id                String              @id @default(uuid())
+  code              String              @unique
+  name              String
+  category          String // EARNING, DEDUCTION, STATUTORY, EMPLOYER_CONTRIBUTION
+  calculationMethod String // FIXED, PERCENTAGE, HOURLY_MULTIPLIER, FORMULA
+  isTaxable         Boolean             @default(true)
+  isEpfEligible     Boolean             @default(true)
+  isActive          Boolean             @default(true)
+  assignments       EmployeeComponent[]
+}
+
+model EmployeeComponent {
+  id                String          @id @default(uuid())
+  employeeProfileId String
+  componentId       String
+  value             Float? // Override or fixed assignment amount
+  effectiveFrom     DateTime
+  effectiveTo       DateTime?
+  profile           EmployeeProfile @relation(fields: [employeeProfileId], references: [id])
+  component         SalaryComponent @relation(fields: [componentId], references: [id])
+}
+
+model PayrollRun {
+  id          String          @id @default(uuid())
+  type        String // MONTHLY, OFF_CYCLE
+  periodStart DateTime
+  periodEnd   DateTime
+  payDate     DateTime
+  status      String          @default("DRAFT") // DRAFT, PENDING_APPROVAL, APPROVED, PAID
+  approvedBy  String? // Super Admin ID
+  createdAt   DateTime        @default(now())
+  records     PayrollRecord[]
+}
+
+model PayrollRecord {
+  id              String            @id @default(uuid())
+  payrollRunId    String
+  userId          String
+  totalEarnings   Float             @default(0)
+  totalDeductions Float             @default(0)
+  employerCost    Float             @default(0)
+  netSalary       Float             @default(0)
+  status          String            @default("DRAFT")
+  run             PayrollRun        @relation(fields: [payrollRunId], references: [id])
+  user            User              @relation(fields: [userId], references: [id])
+  lineItems       PayrollLineItem[]
+
+  @@unique([payrollRunId, userId])
+}
+
+model PayrollLineItem {
+  id              String        @id @default(uuid())
+  payrollRecordId String
+  category        String // EARNING, DEDUCTION, EMPLOYER_CONTRIBUTION
+  description     String // e.g., "Basic Salary", "EPF 8%"
+  amount          Float
+  isStatutory     Boolean       @default(false)
+  record          PayrollRecord @relation(fields: [payrollRecordId], references: [id], onDelete: Cascade)
+}
+
+model OvertimeRecord {
+  id     String   @id @default(uuid())
+  userId String
+  date   DateTime
+  hours  Float
+  rate   Float
+  status String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  user   User     @relation(fields: [userId], references: [id])
+}
+
+model StatutoryRule {
+  id             String    @id @default(uuid())
+  code           String    @unique // e.g., EPF_EMPLOYEE, EPF_EMPLOYER
+  name           String
+  ratePercentage Float
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  isActive       Boolean   @default(true)
 }

@@ -204,6 +204,32 @@ export class LabController {
       res.status(400).json({ error: error.message });
     }
   }
+  async uploadReportPdf(req: Request, res: Response) {
+    try {
+      const requestId = req.params.requestId as string;
+      const file = req.file;
+
+      if (!file) {
+        return res.status(400).json({ error: "PDF file is required" });
+      }
+
+      // We use a relative path mapped to the static public folder
+      const reportUrl = `${process.env.API_URL || 'http://localhost:5000'}/uploads/lab-reports/${file.filename}`;
+
+      // Mark the request as COMPLETED and save the URL
+      const result = await labService.publishReport(
+        requestId,
+        [], // no manual results
+        reportUrl,
+        requestId.slice(0, 8).toUpperCase(),
+        'Outsourced Lab Report'
+      );
+
+      res.json(result);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  }
 }
 
 export const labController = new LabController();

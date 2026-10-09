@@ -2,6 +2,20 @@ import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from 'express';
 import { labController } from "../controllers/lab.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+
+const uploadDir = path.join(process.cwd(), 'public', 'uploads', 'lab-reports');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s+/g, '-')}`)
+});
+const upload = multer({ storage });
 
 const router = Router();
 
@@ -54,5 +68,8 @@ router.get('/reports/:referenceNo', labController.getReportByRef.bind(labControl
 
 // POST /api/lab/requests/:requestId/publish  — saves results + SMS + marks COMPLETED
 router.post('/requests/:requestId/publish', labController.publishReport.bind(labController));
+
+// POST /api/lab/requests/:requestId/upload-pdf
+router.post('/requests/:requestId/upload-pdf', upload.single('pdf'), labController.uploadReportPdf.bind(labController));
 
 export default router;
