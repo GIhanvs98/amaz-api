@@ -378,6 +378,7 @@ model User {
   consultationFee  Float?             @default(2500)
   feeType          String             @default("POST") // UPFRONT or POST
   departmentId     String?
+  basicSalary      Float?
   isActive         Boolean            @default(true)
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
@@ -388,6 +389,9 @@ model User {
   Role             Role               @relation(fields: [roleId], references: [id])
   Department       Department?        @relation(fields: [departmentId], references: [id])
   UserShift        CashRegisterShift[]
+  StaffAttendance  StaffAttendance[]
+  LeaveRequest     LeaveRequest[]
+  Payroll          Payroll[]
 }
 
 model DoctorSchedule {
@@ -533,3 +537,44 @@ model CashRegisterShift {
   refunds        Refund[]
 }
 
+
+model StaffAttendance {
+  id          String    @id @default(uuid())
+  userId      String
+  date        DateTime  @default(now())
+  checkIn     DateTime?
+  checkOut    DateTime?
+  status      String    @default("PRESENT") // PRESENT, LATE, ABSENT
+  notes       String?
+  user        User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, date])
+}
+
+model LeaveRequest {
+  id          String    @id @default(uuid())
+  userId      String
+  type        String    // SICK, CASUAL, ANNUAL, MATERNITY
+  startDate   DateTime
+  endDate     DateTime
+  reason      String
+  status      String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  appliedAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id])
+}
+
+model Payroll {
+  id            String    @id @default(uuid())
+  userId        String
+  month         Int
+  year          Int
+  basicSalary   Float
+  allowances    Float     @default(0)
+  deductions    Float     @default(0)
+  netSalary     Float
+  status        String    @default("DRAFT") // DRAFT, PAID
+  generatedAt   DateTime  @default(now())
+  user          User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, month, year])
+}
