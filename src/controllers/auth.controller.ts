@@ -81,20 +81,24 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    const normalizedEmail = email.toLowerCase().trim();
+
     // Find user
     const user = await prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
       include: {
         Role: true
       }
     });
 
     if (!user) {
+      console.log(`[LOGIN FAILED] No user found for email: ${normalizedEmail}`);
       res.status(401).json({ error: "Invalid credentials" });
       return;
     }
 
     if (!user.isActive) {
+      console.log(`[LOGIN FAILED] User is deactivated: ${normalizedEmail}`);
       res.status(403).json({ error: "Account is deactivated or suspended. Please contact the administrator." });
       return;
     }
@@ -102,6 +106,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     // Check password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
+      console.log(`[LOGIN FAILED] Password mismatch for: ${normalizedEmail}`);
       res.status(401).json({ error: "Invalid credentials" });
       return;
     }

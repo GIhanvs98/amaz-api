@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { verifyToken, requireRole, requirePermission } from '../middlewares/auth.middleware.js';
 import * as frontdeskController from '../controllers/frontdesk.controller.js';
-import * as roomController from '../controllers/room.controller.js';
+import { roomController } from '../controllers/room.controller.js';
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
@@ -17,7 +17,7 @@ router.get('/doctors/status', frontdeskController.getDoctorsStatus);
 router.put('/doctors/:id/attendance', frontdeskController.updateDoctorAttendance);
 
 // Room Management
-router.get('/rooms/matrix', roomController.getRoomMatrix);
+router.get('/rooms/matrix', roomController.getRoomMatrix.bind(roomController));
 
 // Tokens & Appointments
 router.get('/sessions/:sessionId/tokens', frontdeskController.getSessionTokens);

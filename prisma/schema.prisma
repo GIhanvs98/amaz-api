@@ -37,6 +37,21 @@ model Department {
   Users       User[] // Doctors assigned to this department
 }
 
+model Room {
+  id                String             @id @default(uuid())
+  roomNumber        String             @unique
+  department        String             // e.g., "CONSULTATION", "LAB", "EXTRA_SERVICE", "GENERAL"
+  status            String             @default("AVAILABLE") // "AVAILABLE", "OCCUPIED", "MAINTENANCE"
+  description       String?
+  isActive          Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  Users             User[]
+  DoctorAttendances DoctorAttendance[]
+  LabTests          LabTest[]
+  ExtraServices     ExtraService[]
+}
+
 model Supplier {
   id             String          @id @default(uuid())
   name           String
@@ -155,7 +170,8 @@ model LabTest {
   price      Float
   category   String?
   sampleType String?
-  roomNumber String?
+  roomId     String?
+  room       Room?    @relation(fields: [roomId], references: [id])
   isActive   Boolean  @default(true)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -357,7 +373,8 @@ model User {
   roleId           String
   specialty        String?
   title            String?
-  roomNumber       String?
+  roomId           String?
+  room             Room?              @relation(fields: [roomId], references: [id])
   consultationFee  Float?             @default(2500)
   feeType          String             @default("POST") // UPFRONT or POST
   departmentId     String?
@@ -446,7 +463,8 @@ model DoctorAttendance {
   doctorId          String
   date              DateTime  @default(now())
   status            String    @default("SCHEDULED") // SCHEDULED, ARRIVED, IN_CONSULTATION, ON_BREAK, LEFT
-  roomNumber        String?
+  roomId            String?
+  room              Room?     @relation(fields: [roomId], references: [id])
   expectedStartTime String?
   expectedEndTime   String?
   arrivedAt         DateTime?
@@ -474,7 +492,8 @@ model ExtraService {
   description String?
   price       Float
   barcode     String   @unique
-  roomNumber  String?
+  roomId      String?
+  room        Room?    @relation(fields: [roomId], references: [id])
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -513,3 +532,4 @@ model CashRegisterShift {
   payments       Payment[]
   refunds        Refund[]
 }
+

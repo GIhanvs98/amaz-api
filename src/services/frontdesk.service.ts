@@ -21,14 +21,15 @@ export class FrontdeskService {
     // Find all doctors
     const doctors = await prisma.user.findMany({
       where: { Role: { name: 'Doctor' }, isActive: true },
-      select: { id: true, fullName: true, specialty: true, title: true, roomNumber: true }
+      select: { id: true, fullName: true, specialty: true, title: true, room: true }
     });
 
     // Find today's attendance records
     const attendance = await prisma.doctorAttendance.findMany({
       where: {
         date: { gte: startOfDay, lte: endOfDay }
-      }
+      },
+      include: { room: true }
     });
 
     // Find today's schedules (sessions matching dayOfWeek, or active overrides)
@@ -61,16 +62,17 @@ export class FrontdeskService {
       
       return {
         ...doc,
-        roomNumber: docAttendance?.roomNumber || doc.roomNumber,
+        roomId: docAttendance?.roomId || doc.roomId || null,
+        roomNumber: docAttendance?.room?.roomNumber || doc.room?.roomNumber || null,
         attendance: docAttendance || null,
         sessions: docSchedule?.sessions || [],
-        currentlyServing: currentToken ? currentToken.tokenNumber : null
+        currentlyServing: currentToken ? (currentToken!.tokenNumber.includes('-') ? parseInt(currentToken!.tokenNumber.split('-')[1] || "0", 10) : currentToken!.tokenNumber) : null
       };
     });
   }
 
   // 2. Update Doctor Attendance
-  async updateDoctorAttendance(doctorId: string, status: string, roomNumber: string | null, userId: string, forceExit: boolean = false, dateString?: string) {
+  async updateDoctorAttendance(doctorId: string, status: string, roomId: string | null, userId: string, forceExit: boolean = false, dateString?: string) {
     const targetDate = dateString ? new Date(`${dateString.includes('T') ? dateString.split('T')[0] : dateString}T00:00:00`) : new Date();
     const startOfDay = new Date(targetDate);
     startOfDay.setHours(0, 0, 0, 0);
@@ -152,7 +154,7 @@ export class FrontdeskService {
         where: { id: attendance.id },
         data: { 
           status, 
-          roomNumber: roomNumber || attendance.roomNumber,
+          roomId: roomId || attendance.roomId,
           arrivedAt: status === 'ARRIVED' && !attendance.arrivedAt ? new Date() : attendance.arrivedAt,
           leftAt: status === 'COMPLETED' ? new Date() : attendance.leftAt
         }
@@ -162,7 +164,7 @@ export class FrontdeskService {
         data: {
           doctorId,
           status,
-          roomNumber,
+          roomId: roomId,
           date: targetDate,
           arrivedAt: status === 'ARRIVED' ? new Date() : null
         }

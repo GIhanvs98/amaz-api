@@ -36,6 +36,9 @@ import extraServiceRoutes from "./routes/extraService.routes.js";
 import barcodeRoutes from "./routes/barcode.routes.js";
 import settingRoutes from "./routes/setting.routes.js";
 import patientPortalRoutes from "./routes/patient-portal.routes.js";
+import roomRoutes from "./routes/room.routes.js";
+import staffRoutes from "./routes/staff.routes.js";
+import hrRoutes from "./routes/hr.routes.js";
 
 import { prisma } from "./lib/prisma.js";
 
@@ -74,6 +77,9 @@ app.use("/api/settings", settingRoutes);
 app.use("/api/frontdesk", frontdeskRoutes);
 app.use("/api/extra-services", extraServiceRoutes);
 app.use("/api/patient-portal", patientPortalRoutes);
+app.use("/api/rooms", roomRoutes);
+app.use("/api/staff", staffRoutes);
+app.use("/api/hr", hrRoutes);
 
 
 // Handle 404

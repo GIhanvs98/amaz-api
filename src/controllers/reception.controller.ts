@@ -215,7 +215,7 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       medicalHistory: medicalHistory,
       labResults: labResults,
       activeVisitId: patient.Appointment[0]?.id || null,
-      activeTokenNumber: patient.Appointment[0]?.tokenNumber || null,
+      activeTokenNumber: patient.Appointment[0]?.tokenNumber ? (patient.Appointment[0]!.tokenNumber.includes('-') ? parseInt(patient.Appointment[0]!.tokenNumber.split('-')[1] || "0", 10) : patient.Appointment[0]!.tokenNumber) : null,
       activeVisitStartTime: patient.Appointment[0]?.updatedAt || null
     });
   } catch (error: any) {
@@ -258,29 +258,32 @@ export const generateToken = async (req: Request, res: Response) => {
     let doctorDetails = null;
     let doctorRoomNumber = null;
     if (doctorId) {
-      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId } });
+      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true } });
       const targetDate = date ? new Date(date) : new Date();
       const startOfDay = new Date(targetDate);
       startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date(targetDate);
       endOfDay.setHours(23, 59, 59, 999);
       const todayAttendance = await prisma.doctorAttendance.findFirst({
-        where: { doctorId: doctorId, date: { gte: startOfDay, lte: endOfDay } }
+        where: { doctorId: doctorId, date: { gte: startOfDay, lte: endOfDay } },
+        include: { room: true }
       });
-      doctorRoomNumber = todayAttendance?.roomNumber || doctorDetails?.roomNumber || null;
+      doctorRoomNumber = todayAttendance?.room?.roomNumber || doctorDetails?.room?.roomNumber || null;
     }
     
     let labTestsDetails: any[] = [];
     if (hasLab) {
       labTestsDetails = await prisma.labTest.findMany({
-        where: { id: { in: testIds } }
+        where: { id: { in: testIds } },
+        include: { room: true }
       });
     }
 
     let extraServicesDetails: any[] = [];
     if (hasService) {
       extraServicesDetails = await prisma.extraService.findMany({
-        where: { id: { in: serviceIds } }
+        where: { id: { in: serviceIds } },
+        include: { room: true }
       });
     }
 
@@ -447,11 +450,11 @@ export const generateToken = async (req: Request, res: Response) => {
       tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician", roomNumber: doctorRoomNumber, requestedTokenNumber: doctorTokenNumber });
     }
     if (hasLab) {
-      const firstLabRoom = labTestsDetails.find((t: any) => t.roomNumber)?.roomNumber || null;
+      const firstLabRoom = labTestsDetails.find((t: any) => t.room?.roomNumber)?.room?.roomNumber || null;
       tokensToGenerate.push({ dept: "LAB", docId: null, name: "Laboratory", roomNumber: firstLabRoom, requestedTokenNumber: labTokenNumber });
     }
     if (hasService) {
-      const firstServiceRoom = extraServicesDetails.find((s: any) => s.roomNumber)?.roomNumber || null;
+      const firstServiceRoom = extraServicesDetails.find((s: any) => s.room?.roomNumber)?.room?.roomNumber || null;
       tokensToGenerate.push({ dept: "EXTRA_SERVICE", docId: null, name: "Extra Services", roomNumber: firstServiceRoom, requestedTokenNumber: serviceTokenNumber });
     }
 
@@ -576,7 +579,7 @@ export const generateToken = async (req: Request, res: Response) => {
           patientName: patient.fullName,
           doctorName: generatedTokens.map(t => t.doctorName).join(", "),
           appointmentDate: new Date().toLocaleDateString(),
-          tokenNumber: generatedTokens.map(t => `${t.department === 'LAB' ? 'LAB-' : ''}${t.tokenNumber}`).join(", "),
+          tokenNumber: generatedTokens.map(t => t.tokenNumber).join(", "),
           hospitalName: "AMAZ Hospital"
         }
       ).catch(console.error);
@@ -612,10 +615,10 @@ export const generateToken = async (req: Request, res: Response) => {
 export const markDoctorArrived = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { roomNumber, startTime, endTime } = req.body;
+    const { roomId, startTime, endTime } = req.body;
 
-    if (!roomNumber || roomNumber.trim() === "") {
-      return res.status(400).json({ success: false, error: "Room number is mandatory" });
+    if (!roomId || roomId.trim() === "") {
+      return res.status(400).json({ success: false, error: "Room is mandatory" });
     }
 
     
@@ -638,7 +641,7 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
         where: { id: attendance.id },
         data: {
           status: "ARRIVED",
-          roomNumber: roomNumber || null,
+          roomId: roomId || null,
           arrivedAt: attendance.arrivedAt || new Date(),
           expectedStartTime: startTime || attendance.expectedStartTime,
           expectedEndTime: endTime || attendance.expectedEndTime
@@ -650,7 +653,7 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
           doctorId: id as string,
           date: today,
           status: "ARRIVED",
-          roomNumber: roomNumber || null,
+          roomId: roomId || null,
           arrivedAt: new Date(),
           expectedStartTime: startTime || null,
           expectedEndTime: endTime || null
@@ -898,7 +901,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
 
     let allTokens = await prisma.appointment.findMany({
       where: { id: { in: allApptIds } },
-      include: { Patient: true, User: true }
+      include: { Patient: true, User: { include: { room: true } } }
     });
 
     const targetDate = new Date();
@@ -908,13 +911,14 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     allTokens = await Promise.all(allTokens.map(async (t) => {
-      let roomNumber = t.User?.roomNumber || null;
+      let roomNumber = t.User?.room?.roomNumber || null;
       if (t.doctorId) {
         const attendance = await prisma.doctorAttendance.findFirst({
-          where: { doctorId: t.doctorId, date: { gte: startOfDay, lte: endOfDay } }
+          where: { doctorId: t.doctorId, date: { gte: startOfDay, lte: endOfDay } },
+          include: { room: true }
         });
-        if (attendance?.roomNumber) {
-          roomNumber = attendance.roomNumber;
+        if (attendance?.room?.roomNumber) {
+          roomNumber = attendance.room.roomNumber;
         }
       }
       return { ...t, roomNumber };

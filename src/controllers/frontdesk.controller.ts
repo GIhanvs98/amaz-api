@@ -17,10 +17,10 @@ export const getDoctorsStatus = async (req: Request, res: Response) => {
 export const updateDoctorAttendance = async (req: Request, res: Response) => {
   try {
     const doctorId = req.params.id as string;
-    const { status, roomNumber, forceExit, date } = req.body;
+    const { status, roomId, forceExit, date } = req.body;
     const userId = (req as any).user?.id;
     
-    const data = await frontdeskService.updateDoctorAttendance(doctorId, status, roomNumber, userId, forceExit === true, date);
+    const data = await frontdeskService.updateDoctorAttendance(doctorId, status, roomId, userId, forceExit === true, date);
     res.json(data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });

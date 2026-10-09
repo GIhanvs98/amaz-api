@@ -19,10 +19,11 @@ export class BookingService {
           id: true,
           fullName: true,
           specialty: true,
-          roomNumber: true,
+          room: true,
           consultationFee: true,
           feeType: true,
           DoctorAttendance: {
+            include: { room: true },
             where: {
               date: { gte: today, lt: tomorrow },
               status: { in: ["ARRIVED", "LEFT"] }
@@ -38,7 +39,7 @@ export class BookingService {
           id: doc.id,
           fullName: doc.fullName,
           specialty: doc.specialty,
-          roomNumber: todayAttendance?.roomNumber || doc.roomNumber,
+          roomNumber: todayAttendance?.room?.roomNumber || doc.room?.roomNumber || null,
           consultationFee: doc.consultationFee,
           feeType: doc.feeType,
           expectedStartTime: todayAttendance?.expectedStartTime,

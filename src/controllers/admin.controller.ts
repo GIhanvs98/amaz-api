@@ -65,7 +65,7 @@ export const getStaff = async (req: Request, res: Response) => {
   try {
     const staff = await prisma.user.findMany({
       where: { isActive: true },
-      include: { Role: true, Department: true },
+      include: { Role: true, Department: true, room: true },
       orderBy: { createdAt: 'desc' }
     });
     
@@ -75,7 +75,8 @@ export const getStaff = async (req: Request, res: Response) => {
       email: s.email,
       role: s.Role.name,
       status: s.isActive ? "ACTIVE" : "INACTIVE",
-      roomNumber: s.roomNumber,
+      roomId: s.roomId,
+      roomNumber: s.room?.roomNumber || null,
       specialty: s.specialty,
       title: s.title,
       departmentId: s.departmentId,
@@ -92,7 +93,7 @@ export const getStaff = async (req: Request, res: Response) => {
 
 export const createStaff = async (req: Request, res: Response) => {
   try {
-    const { name, email, password, roleName, specialty, roomNumber, title, departmentId, consultationFee, feeType } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType } = req.body;
     
     if (!name || !email || !password || !roleName) {
       return res.status(400).json({ success: false, error: "Name, email, password, and roleName are required" });
@@ -118,7 +119,7 @@ export const createStaff = async (req: Request, res: Response) => {
         password: hashedPassword,
         roleId: role.id,
         specialty: specialty || null,
-        roomNumber: roomNumber || null,
+        roomId: roomId || null,
         title: title || null,
         departmentId: departmentId || null,
         consultationFee: consultationFee ? parseFloat(consultationFee) : null,
@@ -147,7 +148,7 @@ export const createStaff = async (req: Request, res: Response) => {
 export const updateStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, email, password, roleName, specialty, roomNumber, title, departmentId, consultationFee, feeType } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType } = req.body;
     
     let roleId;
     let foundRoleName;
@@ -177,7 +178,7 @@ export const updateStaff = async (req: Request, res: Response) => {
     }
     if (roleId) data.roleId = roleId;
     if (specialty !== undefined) data.specialty = specialty || null;
-    if (roomNumber !== undefined) data.roomNumber = roomNumber || null;
+    if (roomId !== undefined) data.roomId = roomId || null;
     if (title !== undefined) data.title = title || null;
     if (departmentId !== undefined) data.departmentId = departmentId || null;
     if (consultationFee !== undefined) data.consultationFee = consultationFee ? parseFloat(consultationFee) : null;
