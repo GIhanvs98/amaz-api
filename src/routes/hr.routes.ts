@@ -1,4 +1,5 @@
 import express from "express";
+import { getRoleTemplates, createRoleTemplate, updateRoleTemplate, deleteRoleTemplate } from "../controllers/payrollTemplate.controller.js";
 import {
   clockIn,
   clockOut,
@@ -43,5 +44,11 @@ router.delete("/employees/:userId/components/:id", removeEmployeeComponent);
 // Global Salary Components
 router.get("/components", getSalaryComponents);
 router.post("/components", createSalaryComponent);
+
+// Role Templates
+router.get("/role-templates", getRoleTemplates);
+router.post("/role-templates", createRoleTemplate);
+router.put("/role-templates/:id", updateRoleTemplate);
+router.delete("/role-templates/:id", deleteRoleTemplate);
 
 export default router;

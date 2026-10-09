@@ -669,3 +669,16 @@ model StatutoryRule {
   effectiveTo    DateTime?
   isActive       Boolean   @default(true)
 }
+
+model RolePayrollTemplate {
+  id                    String   @id @default(uuid())
+  role                  String   @unique // e.g. "Doctor", "Nurse", "Receptionist"
+  workingHoursPerDay    Float    @default(8)
+  perHourRate           Float    @default(0)
+  otRate                Float    @default(0)
+  allowedLeavesPerMonth Int      @default(2)
+  advancePayDate        Int?     // e.g. 10
+  fullSalaryPayDate     Int?     // e.g. 30
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
