@@ -96,7 +96,7 @@ async function main() {
         roleId: doctorRole!.id,
         specialty: spec,
         departmentId: dept?.id || departments[0].id,
-        roomNumber: `ROOM ${i}`,
+        // roomNumber: `ROOM ${i}`,
         feeType: i % 2 === 0 ? 'UPFRONT' : 'POST',
         consultationFee: 2000 + (Math.floor(Math.random() * 4) * 500)
       }
