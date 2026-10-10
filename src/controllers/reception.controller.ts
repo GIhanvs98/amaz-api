@@ -974,7 +974,53 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       }
     });
 
-    const allPatientIds = Array.from(new Set(invoices.map(i => i.patientId).filter(id => id !== null))) as string[];
+    const appointments = await prisma.appointment.findMany({
+      where: search ? {
+        OR: [
+          { bookingReference: { contains: search, mode: "insensitive" } },
+          { tokenNumber: { contains: search, mode: "insensitive" } },
+          ...(patientIds.length > 0 ? [{ patientId: { in: patientIds } }] : [])
+        ]
+      } : undefined,
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: {
+        User: { select: { fullName: true } }
+      }
+    });
+
+    const timelineItems: any[] = [];
+
+    invoices.forEach(inv => {
+      timelineItems.push({
+        type: "INVOICE",
+        id: inv.id,
+        createdAt: inv.createdAt,
+        patientId: inv.patientId,
+        totalAmount: inv.totalAmount,
+        status: inv.status,
+        lineItems: inv.lineItems,
+        visitId: inv.visitId
+      });
+    });
+
+    appointments.forEach(apt => {
+      timelineItems.push({
+        type: "TOKEN",
+        id: apt.id,
+        createdAt: apt.createdAt,
+        patientId: apt.patientId,
+        tokenNumber: apt.tokenNumber,
+        department: apt.department,
+        status: apt.status,
+        doctorName: apt.User?.fullName,
+        bookingReference: apt.bookingReference
+      });
+    });
+
+    timelineItems.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const allPatientIds = Array.from(new Set(timelineItems.map(i => i.patientId).filter(id => id !== null))) as string[];
     const patientsMap = new Map();
     if (allPatientIds.length > 0) {
       const pats = await prisma.patient.findMany({
@@ -983,12 +1029,13 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       pats.forEach(p => patientsMap.set(p.id, p));
     }
 
-    const data = invoices.map(inv => ({
-      ...inv,
-      Patient: inv.patientId ? patientsMap.get(inv.patientId) || null : null
+    const data = timelineItems.map(item => ({
+      ...item,
+      Patient: item.patientId ? patientsMap.get(item.patientId) || null : null
     }));
 
-    res.json({ success: true, data });
+    // Limit to 100 overall
+    res.json({ success: true, data: data.slice(0, 100) });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1029,6 +1076,22 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
         expectedCash,
         actualCash: Number(declaredCash),
         variance
+      }
+    });
+
+    // Clear not arrived tokens for today
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    await prisma.appointment.updateMany({
+      where: {
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: "BOOKED"
+      },
+      data: {
+        status: "NO_SHOW"
       }
     });
 

@@ -41,6 +41,11 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: "Prescription not found" });
     }
 
+    const labRequests = await prisma.labRequest.findMany({
+      where: { visitId: prescription.visitId },
+      include: { items: { include: { LabTest: true } } }
+    });
+
     // Format like getPendingPrescriptions does
     const formatted = {
       id: prescription.id,
@@ -65,6 +70,12 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
           name: i.medicine.name,
           stockBatches: i.medicine.stockBatches
         } : null
+      })),
+      labRequests: labRequests.map(lr => ({
+        id: lr.id,
+        status: lr.status,
+        requestedAt: lr.requestedAt,
+        tests: lr.items.map(item => item.LabTest?.name || "Unknown Test")
       }))
     };
 

@@ -142,9 +142,9 @@ export class LabService {
   /**
    * Get pending lab requests for the technicians
    */
-  async getPendingRequests() {
+  async getPendingRequests(doctorId?: string) {
     return withRetry(() => prisma.labRequest.findMany({
-      where: { status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } },
+      where: doctorId ? { doctorId, status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } } : { status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } },
       include: {
         items: {
           include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }
@@ -291,10 +291,10 @@ export class LabService {
   /**
    * Get all completed (published) lab requests
    */
-  async getPublishedReports() {
+  async getPublishedReports(doctorId?: string) {
     return withRetry(async () => {
       const reports = await prisma.labRequest.findMany({
-      where: { status: "COMPLETED" },
+      where: doctorId ? { doctorId, status: "COMPLETED" } : { status: "COMPLETED" },
       include: {
         items: {
           include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }

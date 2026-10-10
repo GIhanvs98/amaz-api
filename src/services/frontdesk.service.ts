@@ -46,19 +46,22 @@ export class FrontdeskService {
       }
     });
 
-    // Find ongoing tokens
+    // Find ongoing or recently completed tokens
     const ongoingTokens = await prisma.appointment.findMany({
       where: {
         appointmentDate: { gte: startOfDay, lte: endOfDay },
-        status: 'IN_PROGRESS'
+        status: { in: ['IN_PROGRESS', 'COMPLETED'] }
       },
-      select: { doctorId: true, tokenNumber: true }
+      select: { doctorId: true, tokenNumber: true, status: true },
+      orderBy: { updatedAt: 'desc' }
     });
 
     return doctors.map((doc: any) => {
       const docAttendance = attendance.find((a: any) => a.doctorId === doc.id);
       const docSchedule = schedules.find((s: any) => s.doctorId === doc.id);
-      const currentToken = ongoingTokens.find((t: any) => t.doctorId === doc.id);
+      
+      const docTokens = ongoingTokens.filter((t: any) => t.doctorId === doc.id);
+      const currentToken = docTokens.find((t: any) => t.status === 'IN_PROGRESS') || docTokens[0];
       
       return {
         ...doc,
@@ -66,7 +69,7 @@ export class FrontdeskService {
         roomNumber: docAttendance?.room?.roomNumber || doc.room?.roomNumber || null,
         attendance: docAttendance || null,
         sessions: docSchedule?.sessions || [],
-        currentlyServing: currentToken ? (currentToken!.tokenNumber.includes('-') ? parseInt(currentToken!.tokenNumber.split('-')[1] || "0", 10) : currentToken!.tokenNumber) : null
+        currentlyServing: currentToken ? (currentToken.tokenNumber.includes('-') ? parseInt(currentToken.tokenNumber.split('-')[1] || "0", 10) : currentToken.tokenNumber) : null
       };
     });
   }
