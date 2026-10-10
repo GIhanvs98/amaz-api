@@ -94,8 +94,7 @@ export class LabController {
 
   async getPendingRequests(req: Request, res: Response) {
     try {
-      const doctorId = req.query.doctorId as string | undefined;
-      const requests = await labService.getPendingRequests(doctorId);
+      const requests = await labService.getPendingRequests();
       res.json(requests);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -104,8 +103,7 @@ export class LabController {
 
   async getPublishedReports(req: Request, res: Response) {
     try {
-      const doctorId = req.query.doctorId as string | undefined;
-      const reports = await labService.getPublishedReports(doctorId);
+      const reports = await labService.getPublishedReports();
       res.json(reports);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -199,6 +197,32 @@ export class LabController {
         (reportUrl as string) || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reports/${refNo}`,
         refNo,
         (testProfile as string) || 'Lab Report'
+      );
+
+      res.json(result);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+  async uploadReportPdf(req: Request, res: Response) {
+    try {
+      const requestId = req.params.requestId as string;
+      const file = req.file;
+
+      if (!file) {
+        return res.status(400).json({ error: "PDF file is required" });
+      }
+
+      // We use a relative path mapped to the static public folder
+      const reportUrl = `${process.env.API_URL || 'http://localhost:5000'}/uploads/lab-reports/${file.filename}`;
+
+      // Mark the request as COMPLETED and save the URL
+      const result = await labService.publishReport(
+        requestId,
+        [], // no manual results
+        reportUrl,
+        requestId.slice(0, 8).toUpperCase(),
+        'Outsourced Lab Report'
       );
 
       res.json(result);

@@ -389,6 +389,11 @@ export class FinanceService {
         throw new Error('This Purchase Order has already been delivered and stock has been received.');
       }
 
+      // Guard against cancelling a delivered/completed PO without reverting stock
+      if (status === 'CANCELLED' && (po.status === 'DELIVERED' || po.status === 'COMPLETED')) {
+        throw new Error('Cannot cancel a Purchase Order that has already been delivered and received into stock.');
+      }
+
       const updatedPO = await tx.purchaseOrder.update({
         where: { id },
         data: { status },
@@ -455,6 +460,40 @@ export class FinanceService {
     return prisma.supplier.delete({
       where: { id }
     });
+  }
+
+  async getShifts(page: number = 1, limit: number = 50) {
+    const skip = (page - 1) * limit;
+    const [shifts, total] = await Promise.all([
+      prisma.cashRegisterShift.findMany({
+        skip,
+        take: limit,
+        orderBy: { openedAt: "desc" },
+        include: {
+          user: { select: { fullName: true } }
+        }
+      }),
+      prisma.cashRegisterShift.count()
+    ]);
+    return {
+      data: shifts.map(s => ({
+        id: s.id,
+        cashier: s.user?.fullName || "Unknown",
+        openedAt: s.openedAt,
+        closedAt: s.closedAt,
+        startingFloat: s.openingFloat,
+        expectedCash: s.expectedCash,
+        actualCash: s.actualCash,
+        variance: s.variance,
+        status: s.status
+      })),
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
   }
 }
 

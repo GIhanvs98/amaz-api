@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
+import path from "path";
 
 const app = express();
 
@@ -17,6 +18,8 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
+
+app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads")));
 
 import pharmacyRoutes from "./routes/pharmacy.routes.js";
 import billingRoutes from "./routes/billing.routes.js";
@@ -76,6 +79,10 @@ app.use("/api/frontdesk", frontdeskRoutes);
 app.use("/api/extra-services", extraServiceRoutes);
 app.use("/api/patient-portal", patientPortalRoutes);
 app.use("/api/rooms", roomRoutes);
+app.use("/api/staff", staffRoutes);
+app.use("/api/hr", hrRoutes);
+app.use("/api/staff", staffRoutes);
+app.use("/api/hr", hrRoutes);
 
 
 // Handle 404

@@ -87,7 +87,13 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     const user = await prisma.user.findUnique({
       where: { email: normalizedEmail },
       include: {
-        Role: true
+        Role: {
+          include: {
+            RolePermission: {
+              include: { Permission: true }
+            }
+          }
+        }
       }
     });
 
@@ -133,7 +139,10 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         id: user.id,
         fullName: user.fullName,
         email: user.email,
-        role: (user as any).Role?.name || "Unknown",
+        role: user.Role?.name || "Unknown",
+        permissions: user.Role?.RolePermission?.filter((rp: any) => 
+          rp.Permission.action === "READ" || rp.Permission.action === "ALL"
+        ).map((rp: any) => rp.Permission.resource) || [],
       },
     });
   } catch (error) {
@@ -156,7 +165,15 @@ export const refresh = async (req: Request, res: Response): Promise<void> => {
     // Find user to return
     const user = await prisma.user.findUnique({
       where: { id: decoded.id },
-      include: { Role: true }
+      include: {
+        Role: {
+          include: {
+            RolePermission: {
+              include: { Permission: true }
+            }
+          }
+        }
+      }
     });
 
     if (!user || !user.isActive) {
@@ -170,7 +187,10 @@ export const refresh = async (req: Request, res: Response): Promise<void> => {
         id: user.id,
         fullName: user.fullName,
         email: user.email,
-        role: (user as any).Role?.name || "Unknown",
+        role: user.Role?.name || "Unknown",
+        permissions: user.Role?.RolePermission?.filter((rp: any) => 
+          rp.Permission.action === "READ" || rp.Permission.action === "ALL"
+        ).map((rp: any) => rp.Permission.resource) || [],
       }
     });
   } catch (error) {
