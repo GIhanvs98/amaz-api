@@ -1,20 +1,20 @@
 import axios from 'axios';
 
 export class SMSService {
-  private static API_URL = 'https://sms.send.lk/api/v3/sms/send';
-  private static CONTACTS_API_URL = 'https://sms.send.lk/api/v3/contacts';
-  private static API_KEY = process.env.SENDLK_API_KEY;
-  private static SENDER_ID = process.env.SENDLK_SENDER_ID || 'Send.lk';
-  private static GROUP_ID = process.env.SENDLK_GROUP_ID || 'HOSPITAL_PATIENTS';
+  private static API_URL = 'https://app.text.lk/api/v3/sms/send';
+  private static CONTACTS_API_URL = 'https://app.text.lk/api/v3/contacts';
+  private static API_KEY = process.env.TEXTLK_API_TOKEN || process.env.TEXTLK_API_KEY;
+  private static SENDER_ID = process.env.TEXTLK_SENDER_ID || 'Text.lk';
+  private static GROUP_ID = process.env.TEXTLK_GROUP_ID || 'HOSPITAL_PATIENTS';
 
   /**
-   * Sends an SMS via Send.lk
+   * Sends an SMS via Text.lk
    * @param to Phone number starting with 94
    * @param message Message body
    */
   public static async sendSMS(to: string, message: string): Promise<boolean> {
     if (!this.API_KEY) {
-      console.warn('SMS skipped: SENDLK_API_KEY is not defined in environment variables.');
+      console.warn('SMS skipped: TEXTLK_API_TOKEN is not defined in environment variables.');
       return false;
     }
 
@@ -30,6 +30,7 @@ export class SMSService {
         {
           recipient: formattedPhone,
           sender_id: this.SENDER_ID,
+          type: 'plain',
           message: message,
         },
         {
@@ -41,7 +42,7 @@ export class SMSService {
       );
 
       if (response.data && response.data.status === 'error') {
-        console.error('Send.lk SMS Gateway Error:', response.data.message);
+        console.error('Text.lk SMS Gateway Error:', response.data.message);
         return false;
       }
 
@@ -81,7 +82,7 @@ Time: ${time}`;
   }
 
   /**
-   * Syncs a patient as a Contact in Send.lk
+   * Syncs a patient as a Contact in Text.lk
    * @param phone Patient's phone number
    * @param fullName Patient's full name
    */
@@ -115,7 +116,7 @@ Time: ${time}`;
       );
 
       if (response.data && response.data.status === 'error') {
-        console.error('Send.lk Contact Sync Error:', response.data.message);
+        console.error('Text.lk Contact Sync Error:', response.data.message);
         return false;
       }
 

@@ -13,10 +13,11 @@ async function testSMS() {
     console.log("Sending SMS to", formattedPhone);
 
     const response = await axios.post(
-      'https://sms.send.lk/api/v3/sms/send',
+      'https://app.text.lk/api/v3/sms/send',
       {
         recipient: formattedPhone,
         sender_id: 'AmazHospital',
+        type: 'plain',
         message: 'This is a test message from AMAZ Hospital Management System.',
       },
       {
