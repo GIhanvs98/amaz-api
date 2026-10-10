@@ -65,7 +65,7 @@ export const getStaff = async (req: Request, res: Response) => {
   try {
     const staff = await prisma.user.findMany({
       where: { isActive: true },
-      include: { Role: true, Department: true, room: true },
+      include: { Role: true, Department: true, room: true, EmployeeProfile: { include: { deviceMapping: true } } },
       orderBy: { createdAt: 'desc' }
     });
     
@@ -82,7 +82,8 @@ export const getStaff = async (req: Request, res: Response) => {
       departmentId: s.departmentId,
       departmentName: s.Department?.name,
       consultationFee: s.consultationFee,
-      feeType: s.feeType
+      feeType: s.feeType,
+      deviceUserId: s.EmployeeProfile?.deviceMapping?.deviceUserId || null
     }));
     
     res.json({ data: formattedStaff });
@@ -93,7 +94,7 @@ export const getStaff = async (req: Request, res: Response) => {
 
 export const createStaff = async (req: Request, res: Response) => {
   try {
-    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, deviceUserId } = req.body;
     
     if (!name || !email || !password || !roleName) {
       return res.status(400).json({ success: false, error: "Name, email, password, and roleName are required" });
@@ -128,6 +129,24 @@ export const createStaff = async (req: Request, res: Response) => {
       include: { Role: true, Department: true }
     });
 
+    if (deviceUserId) {
+      const profile = await prisma.employeeProfile.create({
+        data: {
+          userId: newStaff.id,
+          employmentType: "FULL_TIME",
+          salaryBasis: "MONTHLY",
+          joiningDate: new Date(),
+          paymentMethod: "BANK_TRANSFER"
+        }
+      });
+      await prisma.deviceUserMapping.create({
+        data: {
+          deviceUserId,
+          employeeId: profile.id
+        }
+      });
+    }
+
     await clearCache("/api/admin/staff");
     if (roleName.toUpperCase() === 'DOCTOR') {
       await clearCache("/api/admin/doctors");
@@ -148,7 +167,7 @@ export const createStaff = async (req: Request, res: Response) => {
 export const updateStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, deviceUserId } = req.body;
     
     let roleId;
     let foundRoleName;
@@ -187,8 +206,36 @@ export const updateStaff = async (req: Request, res: Response) => {
     const updatedStaff = await prisma.user.update({
       where: { id: id as string },
       data,
-      include: { Role: true, Department: true }
+      include: { Role: true, Department: true, EmployeeProfile: { include: { deviceMapping: true } } }
     });
+
+    if (deviceUserId !== undefined) {
+      let profile = updatedStaff.EmployeeProfile;
+      if (!profile) {
+        profile = await prisma.employeeProfile.create({
+          data: {
+            userId: id as string,
+            employmentType: "FULL_TIME",
+            salaryBasis: "MONTHLY",
+            joiningDate: new Date(),
+            paymentMethod: "BANK_TRANSFER"
+          },
+          include: { deviceMapping: true }
+        });
+      }
+
+      if (deviceUserId === "") {
+        if (profile.deviceMapping) {
+          await prisma.deviceUserMapping.delete({ where: { employeeId: profile.id } });
+        }
+      } else {
+        await prisma.deviceUserMapping.upsert({
+          where: { employeeId: profile.id },
+          create: { deviceUserId, employeeId: profile.id },
+          update: { deviceUserId }
+        });
+      }
+    }
 
     await clearCache("/api/admin/staff");
     await clearCache("/api/admin/doctors");
@@ -293,6 +340,110 @@ export const updateRolePermissions = async (req: Request, res: Response) => {
 
     await clearCache('*roles*');
     res.json({ success: true, message: "Permissions updated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getRooms = async (req: Request, res: Response) => {
+  try {
+    const rooms = await prisma.room.findMany({
+      orderBy: { roomNumber: 'asc' }
+    });
+    
+    const formattedRooms = rooms.map(r => ({
+      id: r.id,
+      name: r.roomNumber, // Frontend expects name
+      roomNumber: r.roomNumber,
+      department: r.department || "General",
+      status: r.status
+    }));
+    
+    res.json({ success: true, data: formattedRooms });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getRoomSchedules = async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.id as string;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
+    
+    if (!startDate || !endDate) {
+       return res.status(400).json({ success: false, error: "Missing date range" });
+    }
+
+    const start = new Date(startDate as string);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(endDate as string);
+    end.setHours(23, 59, 59, 999);
+
+    const room = await prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) return res.status(404).json({ success: false, error: "Room not found" });
+
+    // Sessions specifically assigned to this room, OR assigned to doctors who have this room as default (and no specific session room)
+    const sessions = await prisma.doctorScheduleSession.findMany({
+      where: {
+        OR: [
+          { roomId: roomId },
+          { roomId: null, schedule: { doctor: { roomId: roomId } } }
+        ],
+        isActive: true,
+      },
+      include: {
+        schedule: {
+          include: {
+            doctor: { select: { fullName: true } }
+          }
+        }
+      }
+    });
+
+    const results = [];
+    
+    let currentDate = new Date(start);
+    while (currentDate <= end) {
+      const dayIndex = currentDate.getDay(); // 0=Sun, 1=Mon...
+      
+      const daySessions = sessions.filter(s => s.dayOfWeek === dayIndex);
+      
+      for (const s of daySessions) {
+         const validFrom = new Date(s.schedule.validFrom);
+         validFrom.setHours(0, 0, 0, 0);
+         if (currentDate < validFrom) continue;
+         
+         if (s.schedule.validUntil) {
+            const validUntil = new Date(s.schedule.validUntil);
+            validUntil.setHours(23, 59, 59, 999);
+            if (currentDate > validUntil) continue;
+         }
+         
+         const isoDate = currentDate.toISOString().split('T')[0];
+         results.push({
+            id: s.id + '-' + isoDate, // unique id for table key
+            date: isoDate,
+            dayOfWeek: dayIndex,
+            startTime: s.startTime,
+            endTime: s.endTime,
+            sessionName: s.sessionName,
+            doctorName: s.schedule.doctor.fullName
+         });
+      }
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    // Sort by date then startTime
+    results.sort((a, b) => {
+      const dateA = a.date || "";
+      const dateB = b.date || "";
+      if (dateA !== dateB) return dateA.localeCompare(dateB);
+      return (a.startTime || "").localeCompare(b.startTime || "");
+    });
+
+    res.json({ success: true, data: results });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

@@ -39,10 +39,37 @@ class FinanceController {
     try {
       const page = Number(req.query.page) || 1;
       const limit = Number(req.query.limit) || 50;
-      const data = await financeService.getExpenses(page, limit);
+      const filters = {
+        category: req.query.category as string | undefined,
+        status: req.query.status as string | undefined,
+        startDate: req.query.startDate as string | undefined,
+        endDate: req.query.endDate as string | undefined,
+        search: req.query.search as string | undefined,
+      };
+      const data = await financeService.getExpenses(page, limit, filters);
       res.json({ success: true, ...data });
     } catch (error: any) {
       console.error("Error fetching expenses:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async getTransactions(req: Request, res: Response) {
+    try {
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 50;
+      const filters = {
+        type: req.query.type as string | undefined,
+        category: req.query.category as string | undefined,
+        status: req.query.status as string | undefined,
+        startDate: req.query.startDate as string | undefined,
+        endDate: req.query.endDate as string | undefined,
+        search: req.query.search as string | undefined,
+      };
+      const data = await financeService.getTransactions(page, limit, filters);
+      res.json({ success: true, ...data });
+    } catch (error: any) {
+      console.error("Error fetching transactions:", error);
       res.status(500).json({ success: false, error: error.message });
     }
   }

@@ -189,6 +189,7 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
 
     const enrichedPrescriptions = await Promise.all((prescriptions as any[]).map(async (rx: any) => {
       let consultationPaid = false;
+      let labRequestsData: any[] = [];
       if (rx.visitId) {
         const paidInvoice = await (prisma as any).invoice.findFirst({
           where: {
@@ -198,6 +199,17 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
           }
         });
         if (paidInvoice) consultationPaid = true;
+
+        const lrs = await (prisma as any).labRequest.findMany({
+          where: { visitId: rx.visitId },
+          include: { items: { include: { LabTest: true } } }
+        });
+        labRequestsData = lrs.map((lr: any) => ({
+          id: lr.id,
+          status: lr.status,
+          requestedAt: lr.requestedAt,
+          tests: lr.items.map((item: any) => item.LabTest?.name || "Unknown Test")
+        }));
       }
 
       const doctor = await (prisma as any).user.findUnique({
@@ -208,7 +220,8 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
       return {
         ...rx,
         consultationPaid,
-        doctor
+        doctor,
+        labRequests: labRequestsData
       };
     }));
 

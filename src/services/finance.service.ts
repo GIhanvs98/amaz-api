@@ -273,18 +273,155 @@ export class FinanceService {
     });
   }
 
-  async getExpenses(page: number = 1, limit: number = 50) {
+  async getExpenses(page: number = 1, limit: number = 50, filters: {
+    category?: string;
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    search?: string;
+  } = {}) {
     const skip = (page - 1) * limit;
+
+    const where: Prisma.ExpenseWhereInput = {};
+    if (filters.category) where.category = filters.category;
+    if (filters.status) where.status = filters.status;
+    if (filters.search) where.description = { contains: filters.search, mode: 'insensitive' };
+    if (filters.startDate || filters.endDate) {
+      where.date = {};
+      if (filters.startDate) where.date.gte = new Date(filters.startDate);
+      if (filters.endDate) {
+        const end = new Date(filters.endDate);
+        end.setHours(23, 59, 59, 999);
+        where.date.lte = end;
+      }
+    }
+
     const [data, total] = await Promise.all([
       prisma.expense.findMany({
+        where,
         orderBy: { date: 'desc' },
         skip,
         take: limit
       }),
-      prisma.expense.count()
+      prisma.expense.count({ where })
     ]);
     return {
       data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
+  }
+
+  async getTransactions(page: number = 1, limit: number = 50, filters: {
+    type?: string;         // INCOME | EXPENSE
+    category?: string;
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    search?: string;
+  } = {}) {
+    const skip = (page - 1) * limit;
+
+    const dateFilter: Prisma.DateTimeFilter | undefined =
+      filters.startDate || filters.endDate
+        ? {
+            ...(filters.startDate ? { gte: new Date(filters.startDate) } : {}),
+            ...(filters.endDate ? (() => { const d = new Date(filters.endDate!); d.setHours(23,59,59,999); return { lte: d }; })() : {})
+          }
+        : undefined;
+
+    const paymentWhere: Prisma.PaymentWhereInput = {};
+    if (filters.status) paymentWhere.status = filters.status;
+    if (dateFilter) paymentWhere.createdAt = dateFilter;
+
+    const poWhere: Prisma.PurchaseOrderWhereInput = {};
+    if (dateFilter) poWhere.createdAt = dateFilter;
+
+    const expWhere: Prisma.ExpenseWhereInput = {};
+    if (filters.category) expWhere.category = filters.category;
+    if (filters.status) expWhere.status = filters.status;
+    if (dateFilter) expWhere.date = dateFilter;
+    if (filters.search) expWhere.description = { contains: filters.search, mode: 'insensitive' };
+
+    // Determine what to fetch based on type filter
+    const fetchPayments = !filters.type || filters.type === 'INCOME';
+    const fetchExpenses = !filters.type || filters.type === 'EXPENSE';
+
+    const [payments, po, expenses] = await Promise.all([
+      fetchPayments ? prisma.payment.findMany({
+        where: paymentWhere,
+        orderBy: { createdAt: 'desc' },
+        include: { invoice: { include: { lineItems: true } } },
+        take: 500  // over-fetch before unified sort
+      }) : Promise.resolve([]),
+      fetchExpenses ? prisma.purchaseOrder.findMany({
+        where: poWhere,
+        orderBy: { createdAt: 'desc' },
+        include: { supplier: true },
+        take: 500
+      }) : Promise.resolve([]),
+      fetchExpenses ? prisma.expense.findMany({
+        where: expWhere,
+        orderBy: { date: 'desc' },
+        take: 500
+      }) : Promise.resolve([])
+    ]);
+
+    const unified: any[] = [];
+
+    payments.forEach((p: any) => {
+      const category = p.invoice?.lineItems[0]?.department || 'MIXED';
+      if (filters.category && filters.category !== category) return;
+      if (filters.search && !p.id.toLowerCase().includes(filters.search.toLowerCase()) && !category.toLowerCase().includes(filters.search.toLowerCase())) return;
+      unified.push({
+        id: (p.id.split('-')[0] || '').toUpperCase(),
+        fullId: p.id,
+        date: p.createdAt.toISOString(),
+        type: 'INCOME',
+        category,
+        amount: p.amount,
+        status: p.status
+      });
+    });
+
+    po.forEach((p: any) => {
+      if (filters.category && filters.category !== 'SUPPLIES') return;
+      unified.push({
+        id: (p.id.split('-')[0] || '').toUpperCase(),
+        fullId: p.id,
+        date: p.createdAt.toISOString(),
+        type: 'EXPENSE',
+        category: 'SUPPLIES',
+        amount: p.totalAmount,
+        status: p.status === 'PENDING' ? 'PENDING' : 'COMPLETED',
+        description: p.supplier?.name ? `Purchase Order - ${p.supplier.name}` : 'Purchase Order'
+      });
+    });
+
+    expenses.forEach((e: any) => {
+      unified.push({
+        id: (e.id.split('-')[0] || '').toUpperCase(),
+        fullId: e.id,
+        date: e.date.toISOString(),
+        type: 'EXPENSE',
+        category: e.category,
+        amount: e.amount,
+        status: e.status,
+        description: e.description
+      });
+    });
+
+    unified.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    const total = unified.length;
+    const paginated = unified.slice(skip, skip + limit);
+
+    return {
+      data: paginated,
       pagination: {
         page,
         limit,

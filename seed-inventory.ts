@@ -32,7 +32,7 @@ async function seedInventory() {
       const createdItem = await prisma.medicine.create({
         data: {
           name: item.name,
-          barcode: `AMZ-${Math.floor(10000000 + Math.random() * 90000000)}`,
+          barcode: Math.floor(1000000000 + Math.random() * 9000000000).toString(),
           genericName: item.genericName,
           category: item.category,
           form: item.form,

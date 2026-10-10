@@ -19,6 +19,14 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+// Disable caching globally for all API responses
+app.use((req, res, next) => {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
+    next();
+});
+
 app.use("/uploads", express.static(path.join(process.cwd(), "public", "uploads")));
 
 import pharmacyRoutes from "./routes/pharmacy.routes.js";

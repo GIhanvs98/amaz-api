@@ -10,8 +10,8 @@ export const barcodeController = {
       
       if (!code) return res.status(400).json({ error: "Barcode is required" });
 
-      // 1. Check if it's a UUID (36) or short Rx ID (8) for a prescription
-      if (code.length === 36 || code.length === 8) {
+      // 1. Check if it's a UUID (36) or short Rx ID (8 or 10) for a prescription
+      if (code.length === 36 || code.length === 10 || code.length === 8) {
         let prescription;
         
         if (code.length === 36) {

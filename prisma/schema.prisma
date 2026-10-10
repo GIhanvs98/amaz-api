@@ -50,6 +50,7 @@ model Room {
   DoctorAttendances DoctorAttendance[]
   LabTests          LabTest[]
   ExtraServices     ExtraService[]
+  ScheduleSessions  DoctorScheduleSession[]
 }
 
 model Supplier {
@@ -411,6 +412,8 @@ model DoctorScheduleSession {
   id               String         @id @default(uuid())
   scheduleId       String
   schedule         DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  roomId           String?
+  room             Room?          @relation(fields: [roomId], references: [id])
   dayOfWeek        Int // 0=Sun, 1=Mon, etc.
   sessionName      String // e.g., "Morning", "Evening"
   startTime        String // "08:00"
@@ -576,7 +579,9 @@ model EmployeeProfile {
   isActive        Boolean               @default(true)
   user            User                  @relation(fields: [userId], references: [id])
   compensations   CompensationVersion[]
-  components      EmployeeComponent[]
+  components          EmployeeComponent[]
+  deviceMapping       DeviceUserMapping?
+  processedAttendance ProcessedAttendance[]
 }
 
 model CompensationVersion {
@@ -681,4 +686,38 @@ model RolePayrollTemplate {
   fullSalaryPayDate     Int?     // e.g. 30
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
+}
+
+model BiometricDevice {
+  id           String   @id @default(uuid())
+  serialNumber String   @unique
+  ipAddress    String?
+  location     String
+  status       String   @default("OFFLINE") // ONLINE, OFFLINE
+  lastSeenAt   DateTime @default(now())
+}
+
+model DeviceUserMapping {
+  id             String          @id @default(uuid())
+  deviceUserId   String          // The ID stored on the physical scanner
+  employeeId     String          @unique // Links to our EmployeeProfile
+  employee       EmployeeProfile @relation(fields: [employeeId], references: [id])
+}
+
+model RawAttendanceLog {
+  id           String   @id @default(uuid())
+  deviceSerial String
+  payload      Json     // The raw WebSocket/API payload JSON
+  receivedAt   DateTime @default(now())
+  processed    Boolean  @default(false)
+}
+
+model ProcessedAttendance {
+  id         String          @id @default(uuid())
+  employeeId String
+  timestamp  DateTime
+  type       String          // CLOCK_IN, CLOCK_OUT
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id])
+  
+  @@unique([employeeId, timestamp]) // Prevent duplicate scans in the same second
 }

@@ -16,6 +16,8 @@ router.get('/expenses', financeController.getExpenses.bind(financeController));
 router.patch('/expenses/:id', financeController.updateExpense.bind(financeController));
 router.delete('/expenses/:id', financeController.deleteExpense.bind(financeController));
 
+router.get('/transactions', financeController.getTransactions.bind(financeController));
+
 router.post('/purchase-orders', financeController.createPurchaseOrder.bind(financeController));
 router.get('/purchase-orders', financeController.getPurchaseOrders.bind(financeController));
 router.patch('/purchase-orders/:id/status', financeController.updatePurchaseOrderStatus.bind(financeController));

@@ -36,8 +36,8 @@ export class PharmacyController {
         return res.status(400).json({ error: "Missing required fields: name, category, or unit." });
       }
       
-      if (barcode && !/^[a-zA-Z0-9-]{6,15}$/.test(barcode)) {
-        return res.status(400).json({ error: "Barcode must be between 6 and 15 alphanumeric characters." });
+      if (barcode && !/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
       }
       
       const isMedical = !itemType || itemType === "MEDICINE";
@@ -140,8 +140,8 @@ export class PharmacyController {
       const { id } = req.params;
       const { name, genericName, category, form, unit, reorderLevel, barcode } = req.body;
 
-      if (barcode && !/^[a-zA-Z0-9-]{6,15}$/.test(barcode)) {
-        return res.status(400).json({ error: "Barcode must be between 6 and 15 alphanumeric characters." });
+      if (barcode && !/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
       }
 
       const medicine = await pharmacyService.updateMedicine(id as string, { name, genericName, category, form, unit, reorderLevel: reorderLevel ? Number(reorderLevel) : undefined, barcode });
@@ -171,7 +171,7 @@ export class PharmacyController {
 
   async sell(req: Request, res: Response) {
     try {
-      const { items, paymentMethod, prescriptionId, visitId, patientId, postPayConsultation } = req.body;
+      const { items, paymentMethod, prescriptionId, visitId, patientId } = req.body;
 
       if (!items || items.length === 0) {
         return res.status(400).json({ error: 'No items provided' });
@@ -181,19 +181,6 @@ export class PharmacyController {
       const result = await prisma.$transaction(async (tx) => {
         // 1. Validate and dispense all items, collecting charges
         const charges: { department: string; referenceId?: string; description: string; quantity: number; unitPrice: number; medicineId?: string }[] = [];
-
-        if (postPayConsultation && visitId) {
-          const alreadyPaid = await tx.invoice.findFirst({
-            where: {
-              visitId,
-              status: 'PAID',
-              lineItems: { some: { department: 'CONSULTATION' } }
-            }
-          });
-          if (alreadyPaid) {
-            throw new Error(`Consultation fee for this visit has already been paid.`);
-          }
-        }
 
         for (const item of items) {
           const qty = Number(item.qty);
@@ -215,15 +202,7 @@ export class PharmacyController {
           });
         }
         
-        if (postPayConsultation) {
-          charges.push({
-            department: 'CONSULTATION',
-            referenceId: postPayConsultation.id,
-            description: `Specialist Consultation (Post Pay) - Dr. ${postPayConsultation.doctorName}`,
-            quantity: 1,
-            unitPrice: Number(postPayConsultation.price),
-          });
-        }
+
 
         const totalCost = charges.reduce((sum, c) => sum + c.unitPrice, 0);
 

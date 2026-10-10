@@ -299,7 +299,25 @@ export const generateToken = async (req: Request, res: Response) => {
         where: { doctorId: doctorId, date: { gte: startOfDay, lte: endOfDay } },
         include: { room: true }
       });
-      doctorRoomNumber = todayAttendance?.room?.roomNumber || doctorDetails?.room?.roomNumber || null;
+
+      const dayOfWeek = targetDate.getDay();
+      const session = await prisma.doctorScheduleSession.findFirst({
+        where: {
+          dayOfWeek: dayOfWeek,
+          isActive: true,
+          schedule: {
+            doctorId: doctorId,
+            validFrom: { lte: endOfDay },
+            OR: [
+              { validUntil: null },
+              { validUntil: { gte: startOfDay } }
+            ]
+          }
+        },
+        include: { room: true }
+      });
+
+      doctorRoomNumber = todayAttendance?.room?.roomNumber || session?.room?.roomNumber || doctorDetails?.room?.roomNumber || null;
     }
     
     let labTestsDetails: any[] = [];
@@ -321,7 +339,7 @@ export const generateToken = async (req: Request, res: Response) => {
     const isNonOPD = doctorDetails && doctorDetails.specialty && doctorDetails.specialty !== "General" && doctorDetails.specialty.toUpperCase() !== "OPD";
     const needsInvoice = isNonOPD || hasLab || hasService;
 
-    let sharedRefNo = Math.floor(10000000 + Math.random() * 90000000).toString();
+    let sharedRefNo = Math.floor(1000000000 + Math.random() * 9000000000).toString();
 
     // If it's a PHONE booking, check if this patient already has a BOOKED phone appointment today
     if (bookingType === "PHONE" && patient?.id) {

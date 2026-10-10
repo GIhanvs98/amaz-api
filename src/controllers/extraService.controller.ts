@@ -24,8 +24,8 @@ export const extraServiceController = {
     try {
       const { title, description, price, barcode, roomNumber } = req.body;
       
-      if (!/^[a-zA-Z0-9-]{6,15}$/.test(barcode)) {
-        return res.status(400).json({ error: "Barcode must be between 6 and 15 alphanumeric characters." });
+      if (!/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
       }
 
       const service = await prisma.extraService.create({
@@ -53,8 +53,8 @@ export const extraServiceController = {
       const id = req.params.id as string;
       const { title, description, price, barcode, roomNumber } = req.body;
       
-      if (barcode && !/^[a-zA-Z0-9-]{6,15}$/.test(barcode)) {
-        return res.status(400).json({ error: "Barcode must be between 6 and 15 alphanumeric characters." });
+      if (barcode && !/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
       }
 
       const service = await prisma.extraService.update({

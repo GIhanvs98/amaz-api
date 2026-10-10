@@ -1,6 +1,6 @@
 import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
-import { getAdminMetrics, getStaff, createStaff, updateStaff, deleteStaff, getRoles, createRole, updateRolePermissions } from "../controllers/admin.controller.js";
+import { getAdminMetrics, getStaff, createStaff, updateStaff, deleteStaff, getRoles, createRole, updateRolePermissions, getRooms, getRoomSchedules } from "../controllers/admin.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import departmentRoutes from "./department.routes.js";
 
@@ -21,5 +21,8 @@ router.put("/roles/:id/permissions", updateRolePermissions);
 
 // Departments
 router.use("/departments", departmentRoutes);
+// Rooms
+router.get("/rooms", cacheMiddleware(300), getRooms);
+router.get("/rooms/:id/schedules", getRoomSchedules);
 
 export default router;

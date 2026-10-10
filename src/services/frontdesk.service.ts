@@ -41,7 +41,8 @@ export class FrontdeskService {
       },
       include: {
         sessions: {
-          where: { dayOfWeek, isActive: true }
+          where: { dayOfWeek, isActive: true },
+          include: { room: true }
         }
       }
     });
@@ -52,7 +53,7 @@ export class FrontdeskService {
         appointmentDate: { gte: startOfDay, lte: endOfDay },
         status: { in: ['IN_PROGRESS', 'COMPLETED'] }
       },
-      select: { doctorId: true, tokenNumber: true, status: true },
+      select: { doctorId: true, tokenNumber: true, status: true, sessionId: true },
       orderBy: { updatedAt: 'desc' }
     });
 
@@ -69,6 +70,7 @@ export class FrontdeskService {
         roomNumber: docAttendance?.room?.roomNumber || doc.room?.roomNumber || null,
         attendance: docAttendance || null,
         sessions: docSchedule?.sessions || [],
+        currentSessionId: currentToken?.sessionId || null,
         currentlyServing: currentToken ? (currentToken.tokenNumber.includes('-') ? parseInt(currentToken.tokenNumber.split('-')[1] || "0", 10) : currentToken.tokenNumber) : null
       };
     });
@@ -218,7 +220,7 @@ export class FrontdeskService {
         OR: [{ validUntil: null }, { validUntil: { gte: startDate } }]
       },
       include: {
-        sessions: { where: { isActive: true } },
+        sessions: { where: { isActive: true }, include: { room: true } },
         exceptions: {
           where: { exceptionDate: { gte: startDate, lt: nextMonth } }
         },
@@ -430,7 +432,7 @@ export class FrontdeskService {
 
   // 7. Create Doctor Schedule (with Conflict Check)
   async createDoctorSchedule(doctorId: string, scheduleData: any, userId: string) {
-    const { isRecurring, date, days, startTime, endTime, room, type, tokenLimit, interval } = scheduleData;
+    const { isRecurring, date, days, startTime, endTime, roomId, type, tokenLimit, interval } = scheduleData;
     
     // Mapping 'Mon', 'Tue' to numbers
     const dayMap: Record<string, number> = { 'Sun':0, 'Mon':1, 'Tue':2, 'Wed':3, 'Thu':4, 'Fri':5, 'Sat':6 };
@@ -452,6 +454,24 @@ export class FrontdeskService {
         const dayNames = Object.keys(dayMap);
         const dayStr = dayNames.find(key => dayMap[key] === session.dayOfWeek);
         throw new Error(`Doctor already has an overlapping schedule on ${dayStr} from ${session.startTime} to ${session.endTime}.`);
+      }
+    }
+
+    if (roomId) {
+      const roomSessions = await prisma.doctorScheduleSession.findMany({
+        where: {
+          roomId: roomId,
+          dayOfWeek: { in: numericDays },
+          isActive: true
+        },
+        include: { schedule: { include: { doctor: true } } }
+      });
+      for (const session of roomSessions) {
+        if (startTime < session.endTime && endTime > session.startTime) {
+          const dayNames = Object.keys(dayMap);
+          const dayStr = dayNames.find(key => dayMap[key] === session.dayOfWeek);
+          throw new Error(`Room is already booked by Dr. ${session.schedule.doctor.fullName} on ${dayStr} from ${session.startTime} to ${session.endTime}.`);
+        }
       }
     }
 
@@ -477,7 +497,8 @@ export class FrontdeskService {
             sessionName: type || 'General Consultation',
             startTime,
             endTime,
-            tokenCapacity: tokenLimit
+            tokenCapacity: tokenLimit,
+            roomId: roomId || undefined
           }))
         }
       }
@@ -498,6 +519,56 @@ export class FrontdeskService {
 
   // 8. Session Management
   async updateSession(sessionId: string, data: any, userId: string) {
+    const existing = await prisma.doctorScheduleSession.findUnique({
+      where: { id: sessionId },
+      include: { schedule: true }
+    });
+    if (!existing) throw new Error("Session not found");
+
+    const startTime = data.startTime || existing.startTime;
+    const endTime = data.endTime || existing.endTime;
+    const roomId = data.roomId !== undefined ? data.roomId : existing.roomId;
+    
+    const dayMap: Record<string, number> = { 'Sun':0, 'Mon':1, 'Tue':2, 'Wed':3, 'Thu':4, 'Fri':5, 'Sat':6 };
+    const dayNames = Object.keys(dayMap);
+    
+    // Check doctor overlap
+    const existingSessions = await prisma.doctorScheduleSession.findMany({
+      where: {
+        schedule: { doctorId: existing.schedule.doctorId },
+        dayOfWeek: existing.dayOfWeek,
+        isActive: true,
+        id: { not: sessionId }
+      },
+      include: { schedule: true }
+    });
+    
+    for (const sess of existingSessions) {
+      if (startTime < sess.endTime && endTime > sess.startTime) {
+        const dayStr = dayNames.find(key => dayMap[key] === sess.dayOfWeek);
+        throw new Error(`Doctor already has an overlapping schedule on ${dayStr} from ${sess.startTime} to ${sess.endTime}.`);
+      }
+    }
+
+    // Check room overlap
+    if (roomId) {
+      const roomSessions = await prisma.doctorScheduleSession.findMany({
+        where: {
+          roomId: roomId,
+          dayOfWeek: existing.dayOfWeek,
+          isActive: true,
+          id: { not: sessionId }
+        },
+        include: { schedule: { include: { doctor: true } } }
+      });
+      for (const sess of roomSessions) {
+        if (startTime < sess.endTime && endTime > sess.startTime) {
+          const dayStr = dayNames.find(key => dayMap[key] === sess.dayOfWeek);
+          throw new Error(`Room is already booked by Dr. ${sess.schedule.doctor.fullName} on ${dayStr} from ${sess.startTime} to ${sess.endTime}.`);
+        }
+      }
+    }
+
     const session = await prisma.doctorScheduleSession.update({
       where: { id: sessionId },
       data

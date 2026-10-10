@@ -19,6 +19,9 @@ const upload = multer({ storage });
 
 const router = Router();
 
+// GET /api/lab/reports/:referenceNo  — public report viewer (no auth required)
+router.get('/reports/:referenceNo', labController.getReportByRef.bind(labController));
+
 router.use(verifyToken, requireRole(['SUPERADMIN', 'ADMIN', 'LABTECH', 'DOCTOR', 'RECEPTIONIST']));
 
 // GET /api/lab/upload-url
@@ -63,8 +66,6 @@ router.post('/requests/:requestId/results', labController.submitResults.bind(lab
 // GET /api/lab/metrics
 router.get('/metrics', cacheMiddleware(300), labController.getMetrics.bind(labController));
 
-// GET /api/lab/reports/:referenceNo  — public report viewer (no auth required)
-router.get('/reports/:referenceNo', labController.getReportByRef.bind(labController));
 
 // POST /api/lab/requests/:requestId/publish  — saves results + SMS + marks COMPLETED
 router.post('/requests/:requestId/publish', labController.publishReport.bind(labController));
