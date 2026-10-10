@@ -94,7 +94,8 @@ export class LabController {
 
   async getPendingRequests(req: Request, res: Response) {
     try {
-      const requests = await labService.getPendingRequests();
+      const doctorId = req.query.doctorId as string | undefined;
+      const requests = await labService.getPendingRequests(doctorId);
       res.json(requests);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -103,7 +104,8 @@ export class LabController {
 
   async getPublishedReports(req: Request, res: Response) {
     try {
-      const reports = await labService.getPublishedReports();
+      const doctorId = req.query.doctorId as string | undefined;
+      const reports = await labService.getPublishedReports(doctorId);
       res.json(reports);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
