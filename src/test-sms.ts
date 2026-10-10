@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const token = "4122|L8sw5AYQglw67U8XOVauolEPRjVBeZH7a3RVE4hi";
+const token = "8182|Pv9pJxIfBetUYDRWVeOT1RXX3yU3l3lDOu1pj4f522c44ba2";
 const phone = "0768521562";
 
 async function testSMS() {
@@ -16,7 +16,7 @@ async function testSMS() {
       'https://app.text.lk/api/v3/sms/send',
       {
         recipient: formattedPhone,
-        sender_id: 'AmazHospital',
+        sender_id: 'TextLKDemo',
         type: 'plain',
         message: 'This is a test message from AMAZ Hospital Management System.',
       },
