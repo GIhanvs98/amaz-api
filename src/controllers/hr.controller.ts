@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
+import { websocketService } from "../services/websocket.service.js";
 
 // === ATTENDANCE ===
 
@@ -103,9 +104,21 @@ export const applyLeave = async (req: Request, res: Response) => {
         startDate: new Date(startDate),
         endDate: new Date(endDate),
         reason
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            Role: { select: { name: true } },
+            Department: { select: { name: true } }
+          }
+        }
       }
     });
 
+    websocketService.broadcast("leave_request_created", leave);
     res.status(201).json({ success: true, data: leave });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -114,8 +127,35 @@ export const applyLeave = async (req: Request, res: Response) => {
 
 export const getLeaves = async (req: Request, res: Response) => {
   try {
+    const { userId, status } = req.query;
+
+    const where: any = {};
+    if (userId && typeof userId === "string") {
+      where.userId = userId;
+    }
+    if (status && typeof status === "string") {
+      where.status = status;
+    }
+
     const leaves = await prisma.leaveRequest.findMany({
-      include: { user: { select: { id: true, fullName: true, Role: { select: { name: true } } } } },
+      where,
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            Role: { select: { name: true } },
+            Department: { select: { name: true } }
+          }
+        },
+        reviewer: {
+          select: {
+            id: true,
+            fullName: true
+          }
+        }
+      },
       orderBy: { appliedAt: 'desc' }
     });
     res.json({ success: true, data: leaves });
@@ -127,17 +167,45 @@ export const getLeaves = async (req: Request, res: Response) => {
 export const updateLeaveStatus = async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
-    const { status } = req.body;
+    const { status, rejectionReason } = req.body;
+    const reviewerId = (req as any).user?.id || null;
     
     if (!['APPROVED', 'REJECTED'].includes(status)) {
-      return res.status(400).json({ error: "Invalid status" });
+      return res.status(400).json({ error: "Invalid status. Must be APPROVED or REJECTED" });
+    }
+
+    if (status === 'REJECTED' && (!rejectionReason || !rejectionReason.trim())) {
+      return res.status(400).json({ error: "Rejection reason is required when rejecting a leave request" });
     }
 
     const updated = await prisma.leaveRequest.update({
       where: { id },
-      data: { status }
+      data: {
+        status,
+        rejectionReason: status === 'REJECTED' ? rejectionReason.trim() : null,
+        reviewedAt: new Date(),
+        reviewedById: reviewerId
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            Role: { select: { name: true } },
+            Department: { select: { name: true } }
+          }
+        },
+        reviewer: {
+          select: {
+            id: true,
+            fullName: true
+          }
+        }
+      }
     });
 
+    websocketService.broadcast("leave_status_updated", updated);
     res.json({ success: true, data: updated });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

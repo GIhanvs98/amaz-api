@@ -1,4 +1,5 @@
 import express from "express";
+import { verifyToken } from "../middlewares/auth.middleware.js";
 import { getRoleTemplates, createRoleTemplate, updateRoleTemplate, deleteRoleTemplate } from "../controllers/payrollTemplate.controller.js";
 import {
   clockIn,
@@ -28,7 +29,7 @@ router.get("/attendance", getAttendance);
 // Leaves
 router.post("/leaves", applyLeave);
 router.get("/leaves", getLeaves);
-router.patch("/leaves/:id/status", updateLeaveStatus);
+router.patch("/leaves/:id/status", verifyToken, updateLeaveStatus);
 
 // Payroll
 router.post("/payroll/generate", generatePayroll);

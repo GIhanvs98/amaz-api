@@ -392,6 +392,7 @@ model User {
   UserShift        CashRegisterShift[]
   StaffAttendance  StaffAttendance[]
   LeaveRequest     LeaveRequest[]
+  ReviewedLeaves   LeaveRequest[]      @relation("LeaveReviewer")
   PayrollRecords   PayrollRecord[]
   OvertimeRecords  OvertimeRecord[]
   EmployeeProfile  EmployeeProfile?
@@ -556,15 +557,23 @@ model StaffAttendance {
 }
 
 model LeaveRequest {
-  id        String   @id @default(uuid())
-  userId    String
-  type      String // SICK, CASUAL, ANNUAL, MATERNITY
-  startDate DateTime
-  endDate   DateTime
-  reason    String
-  status    String   @default("PENDING") // PENDING, APPROVED, REJECTED
-  appliedAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id])
+  id              String    @id @default(uuid())
+  userId          String
+  type            String    // SICK, CASUAL, ANNUAL, MATERNITY
+  startDate       DateTime
+  endDate         DateTime
+  reason          String
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  rejectionReason String?
+  reviewedAt      DateTime?
+  reviewedById    String?
+  appliedAt       DateTime  @default(now())
+
+  user            User      @relation(fields: [userId], references: [id])
+  reviewer        User?     @relation("LeaveReviewer", fields: [reviewedById], references: [id])
+
+  @@index([userId])
+  @@index([status])
 }
 
 model EmployeeProfile {
