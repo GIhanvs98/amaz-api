@@ -46,6 +46,60 @@ export const getCurrentShift = async (req: Request, res: Response) => {
     const user = (req as any).user;
     if (!user) return res.status(401).json({ error: "Unauthorized" });
 
+    // Fetch user with Role to determine if this is a clinical Nurse
+    const dbUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      include: { Role: true }
+    });
+
+    const roleName = dbUser?.Role?.name?.toLowerCase() || "";
+
+    if (roleName === "nurse") {
+      // Nurse shifts are strictly linked to daily biometric/attendance clock-in, not cash registers
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const attendance = await prisma.staffAttendance.findUnique({
+        where: {
+          userId_date: {
+            userId: user.id,
+            date: today
+          }
+        }
+      });
+
+      const isClockedIn = !!(attendance?.checkIn && !attendance?.checkOut);
+
+      if (isClockedIn) {
+        return res.json({
+          success: true,
+          data: {
+            id: attendance!.id,
+            isOpen: true,
+            isAttendanceShift: true,
+            startedAt: attendance!.checkIn,
+            startingFloat: 0,
+            cashierName: dbUser?.fullName || "Nurse",
+            attendanceStatus: attendance!.status || "PRESENT"
+          }
+        });
+      } else {
+        return res.json({
+          success: true,
+          data: {
+            id: null,
+            isOpen: false,
+            isAttendanceShift: true,
+            startedAt: null,
+            startingFloat: 0,
+            cashierName: dbUser?.fullName || "Nurse",
+            clockedOutAt: attendance?.checkOut || null
+          }
+        });
+      }
+    }
+
+    // Standard cash register shift for cashier/receptionist
     const shift = await prisma.cashRegisterShift.findFirst({
       where: { openedBy: user.id, status: "OPEN" },
       include: {
@@ -62,6 +116,7 @@ export const getCurrentShift = async (req: Request, res: Response) => {
       data: {
         id: shift.id,
         isOpen: true,
+        isAttendanceShift: false,
         startedAt: shift.openedAt,
         startingFloat: shift.openingFloat,
         cashierName: shift.user?.fullName || "Unknown",

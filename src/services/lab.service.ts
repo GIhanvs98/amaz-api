@@ -14,6 +14,11 @@ export class LabService {
   async getCatalog() {
     return withRetry(() => prisma.labTest.findMany({
       where: { isActive: true },
+      include: {
+        room: {
+          select: { id: true, roomNumber: true, department: true }
+        }
+      },
       orderBy: { category: 'asc' }
     }));
   }
@@ -27,20 +32,70 @@ export class LabService {
     category: string;
     price: number;
     sampleType?: string;
+    roomId?: string;
     roomNumber?: string;
   }) {
-    return withRetry(() => prisma.labTest.create({ data }));
+    let targetRoomId = data.roomId;
+    if (!targetRoomId && data.roomNumber) {
+      const room = await prisma.room.findFirst({ where: { roomNumber: data.roomNumber } });
+      if (room) targetRoomId = room.id;
+    }
+
+    return withRetry(() => prisma.labTest.create({
+      data: {
+        name: data.name,
+        code: data.code,
+        category: data.category,
+        price: data.price,
+        sampleType: data.sampleType,
+        roomId: targetRoomId || undefined
+      },
+      include: {
+        room: {
+          select: { id: true, roomNumber: true, department: true }
+        }
+      }
+    }));
   }
 
   async updateTestInCatalog(id: string, data: {
     name?: string;
+    code?: string;
     price?: number;
     category?: string;
     sampleType?: string;
+    roomId?: string;
     roomNumber?: string;
     isActive?: boolean;
   }) {
-    return withRetry(() => prisma.labTest.update({ where: { id }, data }));
+    const updateData: any = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.code !== undefined) updateData.code = data.code;
+    if (data.price !== undefined) updateData.price = data.price;
+    if (data.category !== undefined) updateData.category = data.category;
+    if (data.sampleType !== undefined) updateData.sampleType = data.sampleType;
+    if (data.isActive !== undefined) updateData.isActive = data.isActive;
+
+    if (data.roomId !== undefined) {
+      updateData.roomId = data.roomId || null;
+    } else if (data.roomNumber !== undefined) {
+      if (data.roomNumber) {
+        const room = await prisma.room.findFirst({ where: { roomNumber: data.roomNumber } });
+        updateData.roomId = room ? room.id : null;
+      } else {
+        updateData.roomId = null;
+      }
+    }
+
+    return withRetry(() => prisma.labTest.update({
+      where: { id },
+      data: updateData,
+      include: {
+        room: {
+          select: { id: true, roomNumber: true, department: true }
+        }
+      }
+    }));
   }
 
   async deleteTestFromCatalog(id: string) {
