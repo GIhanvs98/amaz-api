@@ -211,24 +211,40 @@ export class LabController {
       const requestId = req.params.requestId as string;
       const file = req.file;
 
-      if (!file) {
+      if (!file || !file.buffer) {
         return res.status(400).json({ error: "PDF file is required" });
       }
 
-      // We use a relative path mapped to the static public folder
-      const reportUrl = `${process.env.API_URL || 'http://localhost:5000'}/uploads/lab-reports/${file.filename}`;
+      // Generate unique S3 object key inside the bucket
+      const safeFilename = file.originalname ? file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_') : 'report.pdf';
+      const s3Key = `lab-reports/${requestId}-${Date.now()}-${safeFilename}`;
 
-      // Mark the request as COMPLETED and save the URL
+      // Upload buffer directly to configured S3 bucket
+      const reportUrl = await S3Service.uploadBuffer(
+        file.buffer,
+        s3Key,
+        file.mimetype || 'application/pdf'
+      );
+
+      const refNo = (req.body?.referenceNo as string) || requestId.slice(0, 8).toUpperCase();
+      const testProfile = (req.body?.testProfile as string) || 'Outsourced Lab Report';
+
+      // Mark the request as COMPLETED and persist the S3 report URL
       const result = await labService.publishReport(
         requestId,
         [], // no manual results
         reportUrl,
-        requestId.slice(0, 8).toUpperCase(),
-        'Outsourced Lab Report'
+        refNo,
+        testProfile
       );
+
+      // Invalidate relevant caches
+      await clearCache('*lab/reports*');
+      await clearCache('*lab/metrics*');
 
       res.json(result);
     } catch (error: any) {
+      console.error("uploadReportPdf error:", error);
       res.status(400).json({ error: error.message });
     }
   }

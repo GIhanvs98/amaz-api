@@ -3,19 +3,19 @@ import { Router } from 'express';
 import { labController } from "../controllers/lab.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import multer from 'multer';
-import fs from 'fs';
-import path from 'path';
 
-const uploadDir = path.join(process.cwd(), 'public', 'uploads', 'lab-reports');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s+/g, '-')}`)
+// Use memoryStorage so uploads stream directly to S3 without saving to local disk
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed'));
+    }
+  }
 });
-const upload = multer({ storage });
 
 const router = Router();
 

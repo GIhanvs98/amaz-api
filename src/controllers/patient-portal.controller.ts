@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { SMSService } from "../services/sms.service.js";
+import { S3Service } from "../services/s3.service.js";
 import jwt from "jsonwebtoken";
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -112,6 +113,15 @@ export const getPatientHistory = async (req: Request, res: Response) => {
         }
       }
     });
+
+    if (patient && patient.LabRequests) {
+      for (const req of patient.LabRequests) {
+        if (req.reportUrl && S3Service.isS3Url(req.reportUrl)) {
+          const presigned = await S3Service.generateDownloadUrl(req.reportUrl);
+          if (presigned) req.reportUrl = presigned;
+        }
+      }
+    }
 
     res.json({ success: true, data: patient });
   } catch (error: any) {

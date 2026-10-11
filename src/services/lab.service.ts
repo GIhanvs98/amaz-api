@@ -88,11 +88,21 @@ export class LabService {
         throw new Error("One or more tests not found in catalog");
       }
 
+      let effectiveDoctorId = data.doctorId;
+      if (!effectiveDoctorId && data.visitId) {
+        const apt = await prisma.appointment.findUnique({
+          where: { id: data.visitId },
+          select: { doctorId: true }
+        });
+        if (apt?.doctorId) effectiveDoctorId = apt.doctorId;
+      }
+
       // 1. Create the lab request with items
       const request = await prisma.labRequest.create({
         data: {
           patientId: data.patientId,
-          doctorId: data.doctorId,
+          doctorId: effectiveDoctorId,
+          visitId: data.visitId,
           priority: data.priority || "ROUTINE",
           status: "PENDING",
           items: {
@@ -144,7 +154,15 @@ export class LabService {
    */
   async getPendingRequests(doctorId?: string) {
     return withRetry(() => prisma.labRequest.findMany({
-      where: doctorId ? { doctorId, status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } } : { status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } },
+      where: doctorId
+        ? {
+            status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] },
+            OR: [
+              { doctorId },
+              { Visit: { doctorId } }
+            ]
+          }
+        : { status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } },
       include: {
         items: {
           include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }
@@ -234,14 +252,14 @@ export class LabService {
   ) {
     return withRetry(async () => {
       const labReqResult = await prisma.$transaction(async (tx) => {
-        // 1. Atomic status update preventing lost updates from concurrent techs
+        // 1. Atomic status update allowing updates from active states and re-publishing
         const updateResult = await tx.labRequest.updateMany({
-          where: { id: requestId, status: { in: ['PENDING', 'SAVED'] } },
+          where: { id: requestId, status: { in: ['PENDING', 'SAVED', 'IN_PROGRESS', 'COMPLETED'] } },
           data: { status: 'COMPLETED', reportUrl }
         });
 
         if (updateResult.count === 0) {
-          throw new Error("Lab request has already been completed or is not pending. Cannot overwrite.");
+          throw new Error("Lab request not found or cannot be published.");
         }
 
         const labReq = await tx.labRequest.findUnique({
@@ -268,7 +286,15 @@ export class LabService {
         return labReq;
       });
 
-      // 3. Fire SMS — non-blocking (fire and forget), outside transaction
+      // 3. Broadcast real-time websocket event
+      websocketService.broadcast("lab_report_published", {
+        requestId,
+        reportUrl,
+        status: "COMPLETED",
+        referenceNo
+      });
+
+      // 4. Fire SMS — non-blocking (fire and forget), outside transaction
       const patient = labReqResult.Patient;
       if (patient?.phone) {
         NotificationService.sendTemplatedSMS(
@@ -294,19 +320,30 @@ export class LabService {
   async getPublishedReports(doctorId?: string) {
     return withRetry(async () => {
       const reports = await prisma.labRequest.findMany({
-      where: doctorId ? { doctorId, status: "COMPLETED" } : { status: "COMPLETED" },
-      include: {
-        items: {
-          include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }
+        where: doctorId
+          ? {
+              status: "COMPLETED",
+              OR: [
+                { doctorId },
+                { Visit: { doctorId } }
+              ]
+            }
+          : { status: "COMPLETED" },
+        include: {
+          items: {
+            include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }
+          },
+          results: true,
+          Patient: true,
+          Visit: {
+            include: { User: true }
+          }
         },
-        results: true,
-        Patient: true
-      },
-      orderBy: { requestedAt: 'desc' }
+        orderBy: { requestedAt: 'desc' }
       });
 
       for (const report of reports) {
-        if (report.reportUrl && report.reportUrl.includes('amazonaws.com')) {
+        if (report.reportUrl && S3Service.isS3Url(report.reportUrl)) {
           const presignedUrl = await S3Service.generateDownloadUrl(report.reportUrl);
           if (presignedUrl) report.reportUrl = presignedUrl;
         }
@@ -573,7 +610,7 @@ export class LabService {
       });
 
       if (!report) throw new Error('Report not found or not yet published');
-      if (report.reportUrl && report.reportUrl.includes('amazonaws.com')) {
+      if (report.reportUrl && S3Service.isS3Url(report.reportUrl)) {
         const presignedUrl = await S3Service.generateDownloadUrl(report.reportUrl);
         if (presignedUrl) report.reportUrl = presignedUrl;
       }

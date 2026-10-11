@@ -13,3 +13,4 @@ api.cjs
 # OS / IDE
 .DS_Store
 .idea/
+public/uploads/
