@@ -83,10 +83,42 @@ export class FrontdeskService {
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(targetDate);
     endOfDay.setHours(23, 59, 59, 999);
+    const dayOfWeek = startOfDay.getDay();
 
     let attendance = await prisma.doctorAttendance.findFirst({
       where: { doctorId, date: { gte: startOfDay, lte: endOfDay } }
     });
+
+    // Auto-resolve roomId if not explicitly provided
+    let effectiveRoomId = roomId;
+    if (!effectiveRoomId) {
+      const activeSchedule = await prisma.doctorSchedule.findFirst({
+        where: {
+          doctorId,
+          validFrom: { lte: endOfDay },
+          OR: [{ validUntil: null }, { validUntil: { gte: startOfDay } }],
+          sessions: {
+            some: { dayOfWeek, isActive: true, roomId: { not: null } }
+          }
+        },
+        include: {
+          sessions: {
+            where: { dayOfWeek, isActive: true, roomId: { not: null } }
+          }
+        }
+      });
+      if (activeSchedule?.sessions?.[0]?.roomId) {
+        effectiveRoomId = activeSchedule.sessions[0].roomId;
+      } else {
+        const docUser = await prisma.user.findUnique({
+          where: { id: doctorId },
+          select: { roomId: true }
+        });
+        if (docUser?.roomId) {
+          effectiveRoomId = docUser.roomId;
+        }
+      }
+    }
 
     if (status === 'COMPLETED' || status === 'LEFT') {
       const pendingApts = await prisma.appointment.findMany({
@@ -159,7 +191,7 @@ export class FrontdeskService {
         where: { id: attendance.id },
         data: { 
           status, 
-          roomId: roomId || attendance.roomId,
+          roomId: effectiveRoomId || attendance.roomId,
           arrivedAt: status === 'ARRIVED' && !attendance.arrivedAt ? new Date() : attendance.arrivedAt,
           leftAt: status === 'COMPLETED' ? new Date() : attendance.leftAt,
           expectedStartTime: startTime || attendance.expectedStartTime,
@@ -171,7 +203,7 @@ export class FrontdeskService {
         data: {
           doctorId,
           status,
-          roomId: roomId,
+          roomId: effectiveRoomId,
           date: targetDate,
           arrivedAt: status === 'ARRIVED' ? new Date() : null,
           expectedStartTime: startTime || null,
@@ -202,6 +234,7 @@ export class FrontdeskService {
 
     // Notify clients via WebSocket
     websocketService.broadcast('DOCTOR_ATTENDANCE_UPDATED', attendance);
+    websocketService.broadcast('ROOM_STATUS_UPDATED', { type: 'DOCTOR_ATTENDANCE_UPDATED', attendance });
 
     return attendance;
   }
@@ -514,6 +547,8 @@ export class FrontdeskService {
       }
     });
 
+    websocketService.broadcast('ROOM_STATUS_UPDATED', { type: 'SCHEDULE_CREATED', scheduleId: schedule.id });
+
     return schedule;
   }
 
@@ -583,6 +618,8 @@ export class FrontdeskService {
         userId
       }
     });
+
+    websocketService.broadcast('ROOM_STATUS_UPDATED', { type: 'SESSION_UPDATED', sessionId: session.id });
 
     return session;
   }
@@ -680,6 +717,7 @@ export class FrontdeskService {
 
     // Notify clients to refresh
     websocketService.broadcast('SESSION_CANCELLED', { sessionId, date, reason });
+    websocketService.broadcast('ROOM_STATUS_UPDATED', { type: 'SESSION_CANCELLED', sessionId, date });
 
     return exception;
   }
@@ -688,6 +726,7 @@ export class FrontdeskService {
     await prisma.doctorScheduleSession.delete({
       where: { id: sessionId }
     });
+    websocketService.broadcast('ROOM_STATUS_UPDATED', { type: 'SESSION_DELETED', sessionId });
     return { success: true };
   }
 

@@ -375,9 +375,12 @@ export const getRoomSchedules = async (req: Request, res: Response) => {
        return res.status(400).json({ success: false, error: "Missing date range" });
     }
 
-    const start = new Date(startDate as string);
+    const startStr = (startDate as string).includes('T') ? (startDate as string).split('T')[0] : (startDate as string);
+    const endStr = (endDate as string).includes('T') ? (endDate as string).split('T')[0] : (endDate as string);
+
+    const start = new Date(`${startStr}T00:00:00`);
     start.setHours(0, 0, 0, 0);
-    const end = new Date(endDate as string);
+    const end = new Date(`${endStr}T00:00:00`);
     end.setHours(23, 59, 59, 999);
 
     const room = await prisma.room.findUnique({ where: { id: roomId } });
@@ -395,7 +398,19 @@ export const getRoomSchedules = async (req: Request, res: Response) => {
       include: {
         schedule: {
           include: {
-            doctor: { select: { fullName: true } }
+            doctor: { select: { fullName: true } },
+            exceptions: {
+              where: {
+                exceptionDate: { gte: start, lte: end }
+              }
+            },
+            leaves: {
+              where: {
+                status: "APPROVED",
+                startDate: { lte: end },
+                endDate: { gte: start }
+              }
+            }
           }
         }
       }
@@ -406,6 +421,7 @@ export const getRoomSchedules = async (req: Request, res: Response) => {
     let currentDate = new Date(start);
     while (currentDate <= end) {
       const dayIndex = currentDate.getDay(); // 0=Sun, 1=Mon...
+      const isoDate = currentDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Colombo' });
       
       const daySessions = sessions.filter(s => s.dayOfWeek === dayIndex);
       
@@ -419,14 +435,30 @@ export const getRoomSchedules = async (req: Request, res: Response) => {
             validUntil.setHours(23, 59, 59, 999);
             if (currentDate > validUntil) continue;
          }
+
+         // Check leave
+         const onLeave = s.schedule.leaves?.some(l => {
+           const lStart = new Date(l.startDate);
+           lStart.setHours(0, 0, 0, 0);
+           const lEnd = new Date(l.endDate);
+           lEnd.setHours(23, 59, 59, 999);
+           return currentDate >= lStart && currentDate <= lEnd;
+         });
+         if (onLeave) continue;
+
+         // Check exceptions
+         const exception = s.schedule.exceptions?.find(e => {
+           const eDate = new Date(e.exceptionDate).toLocaleDateString('en-CA', { timeZone: 'Asia/Colombo' });
+           return eDate === isoDate;
+         });
+         if (exception?.isUnavailable) continue;
          
-         const isoDate = currentDate.toISOString().split('T')[0];
          results.push({
             id: s.id + '-' + isoDate, // unique id for table key
             date: isoDate,
             dayOfWeek: dayIndex,
-            startTime: s.startTime,
-            endTime: s.endTime,
+            startTime: exception?.newStartTime || s.startTime,
+            endTime: exception?.newEndTime || s.endTime,
             sessionName: s.sessionName,
             doctorName: s.schedule.doctor.fullName
          });
