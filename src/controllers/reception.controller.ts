@@ -34,8 +34,9 @@ export const openShift = async (req: Request, res: Response) => {
 };
 
 
-async function getOpenShiftId(userId: string): Promise<string | undefined> {
-  const shift = await prisma.cashRegisterShift.findFirst({
+async function getOpenShiftId(userId: string, tx?: any): Promise<string | undefined> {
+  const p = tx || prisma;
+  const shift = await p.cashRegisterShift.findFirst({
     where: { openedBy: userId, status: "OPEN" }
   });
   return shift?.id;
@@ -885,18 +886,18 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: "Appointment not found" });
     }
 
-    if (appointment.status === "COMPLETED" || appointment.status === "CANCELLED" || appointment.status === "WAITING") {
-      return res.status(400).json({ success: false, error: `Cannot checkout appointment in status: ${appointment.status}` });
+    if (appointment.status === "CANCELLED") {
+      return res.status(400).json({ success: false, error: "Cannot checkout a cancelled appointment" });
     }
 
     let allApptIds = [appointmentId];
     
-    let allApptsForPatient = [];
+    let allApptsForPatient: any[] = [];
     if (appointment.bookingReference) {
       allApptsForPatient = await prisma.appointment.findMany({
         where: { 
           bookingReference: appointment.bookingReference,
-          status: { in: ["BOOKED", "WAITING_FOR_LAB_TEST"] } // Include Lab tests which default to this status
+          status: { not: "CANCELLED" }
         }
       });
     } else {
@@ -912,27 +913,24 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
 
     let updatedAppointment = appointment;
 
-    // Update each appointment's status correctly
+    // Update appointment status appropriately (do not regress COMPLETED or IN_PROGRESS)
     for (const apptId of allApptIds) {
       const appt = allApptsForPatient.find(a => a.id === apptId) || appointment;
-      const newStatus = appt.department === "LAB" ? "WAITING_FOR_LAB_TEST" : "WAITING";
-      const updated = await prisma.appointment.update({
-        where: { id: apptId },
-        data: { status: newStatus }
-      });
-      if (apptId === appointmentId) {
-        updatedAppointment = updated as any;
+      if (appt.status === "BOOKED") {
+        const newStatus = appt.department === "LAB" ? "WAITING_FOR_LAB_TEST" : "WAITING";
+        const updated = await prisma.appointment.update({
+          where: { id: apptId },
+          data: { status: newStatus }
+        });
+        if (apptId === appointmentId) {
+          updatedAppointment = updated as any;
+        }
       }
     }
 
     let mergedInvoice: any = null;
 
     await prisma.$transaction(async (tx) => {
-      if (allApptIds.length > 0) {
-        const placeholders = allApptIds.map((_, i) => `$${i + 1}`).join(',');
-        await tx.$executeRawUnsafe(`SELECT id FROM "Invoice" WHERE "visitId" IN (${placeholders}) AND status = 'DRAFT' FOR UPDATE`, ...allApptIds);
-      }
-
       let invoices = await tx.invoice.findMany({
         where: {
           visitId: { in: allApptIds },
@@ -941,9 +939,40 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         include: { lineItems: true }
       });
 
+      const shiftId = await getOpenShiftId(((req as any).user)?.id, tx);
+
+      // Check if this appointment already has a linked payment record
+      const existingApptPayment = await tx.payment.findUnique({
+        where: { appointmentId: appointment.id }
+      });
+      let availableApptIdForPayment: string | null = existingApptPayment ? null : appointment.id;
+
+      // Check if consultation fee was already paid
+      const existingConsultPaid = await tx.invoice.findFirst({
+        where: {
+          visitId: { in: allApptIds },
+          status: "PAID",
+          lineItems: { some: { department: "CONSULTATION" } }
+        }
+      });
+
+      const numericFee = Number(fee) || 0;
+      const willCreateConsultInvoice = !existingConsultPaid && numericFee > 0;
+
       if (invoices.length > 0) {
         // Pay all existing DRAFT invoices
         for (const inv of invoices) {
+          const isConsultationInv = inv.lineItems?.some((li: any) => li.department === "CONSULTATION");
+          let linkApptId: string | null = null;
+
+          if (isConsultationInv && availableApptIdForPayment) {
+            linkApptId = availableApptIdForPayment;
+            availableApptIdForPayment = null;
+          } else if (!willCreateConsultInvoice && availableApptIdForPayment) {
+            linkApptId = availableApptIdForPayment;
+            availableApptIdForPayment = null;
+          }
+
           const updatedInv = await tx.invoice.update({
             where: { id: inv.id },
             data: {
@@ -952,8 +981,9 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
                 create: [{
                   amount: inv.totalAmount,
                   method: req.body.paymentMethod || "CASH",
-                  status: "COMPLETED", shiftId: await getOpenShiftId(((req as any).user)?.id),
-                  appointmentId: appointment.id
+                  status: "COMPLETED", 
+                  shiftId,
+                  ...(linkApptId ? { appointmentId: linkApptId } : {})
                 }]
               }
             },
@@ -966,20 +996,27 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
             mergedInvoice.lineItems.push(...updatedInv.lineItems);
           }
         }
-      } else if (isUpfront && fee > 0) {
-        // Create a new invoice if no draft exists
-        mergedInvoice = await tx.invoice.create({
+      }
+
+      if (willCreateConsultInvoice) {
+        const consultApptId = availableApptIdForPayment;
+        availableApptIdForPayment = null;
+
+        // Create a new paid invoice for consultation (upfront or post-pay)
+        const consultInvoice = await tx.invoice.create({
           data: {
+            visitId: appointment.id,
             patientId: appointment.patientId,
-            subtotal: fee,
-            totalAmount: fee,
+            subtotal: numericFee,
+            totalAmount: numericFee,
             status: "PAID",
             payments: {
               create: [{
-                amount: fee,
+                amount: numericFee,
                 method: req.body.paymentMethod || "CASH",
-                status: "COMPLETED", shiftId: await getOpenShiftId(((req as any).user)?.id),
-                appointmentId: appointment.id
+                status: "COMPLETED", 
+                shiftId,
+                ...(consultApptId ? { appointmentId: consultApptId } : {})
               }]
             },
             lineItems: {
@@ -987,8 +1024,8 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
                 {
                   description: `Consultation - Dr. ${appointment.User?.fullName || 'General'}`,
                   quantity: 1,
-                  unitPrice: fee,
-                  total: fee,
+                  unitPrice: numericFee,
+                  total: numericFee,
                   department: "CONSULTATION"
                 }
               ]
@@ -996,8 +1033,15 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
           },
           include: { lineItems: true }
         });
+
+        if (!mergedInvoice) {
+          mergedInvoice = consultInvoice;
+        } else {
+          mergedInvoice.totalAmount += consultInvoice.totalAmount;
+          mergedInvoice.lineItems.push(...consultInvoice.lineItems);
+        }
       }
-    });
+    }, { timeout: 15000, maxWait: 5000 });
 
     if (websocketService.getIo()) {
       websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });
@@ -1064,11 +1108,20 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       patientIds = patients.map(p => p.id);
     }
     
+    const isTimestamp = /^\d{10}$/.test(search) && Number(search) >= 1700000000 && Number(search) <= 1950000000;
+    const timeCondition = isTimestamp ? {
+      createdAt: {
+        gte: new Date(Number(search) * 1000 - 120000),
+        lte: new Date(Number(search) * 1000 + 120000)
+      }
+    } : null;
+
     const invoices = await prisma.invoice.findMany({
       where: search ? {
         OR: [
           { id: { contains: search, mode: "insensitive" } },
-          ...(patientIds.length > 0 ? [{ patientId: { in: patientIds } }] : [])
+          ...(patientIds.length > 0 ? [{ patientId: { in: patientIds } }] : []),
+          ...(timeCondition ? [timeCondition] : [])
         ]
       } : undefined,
       orderBy: { createdAt: "desc" },
@@ -1081,15 +1134,18 @@ export const getPOSHistory = async (req: Request, res: Response) => {
     const appointments = await prisma.appointment.findMany({
       where: search ? {
         OR: [
+          { id: { contains: search, mode: "insensitive" } },
           { bookingReference: { contains: search, mode: "insensitive" } },
           { tokenNumber: { contains: search, mode: "insensitive" } },
-          ...(patientIds.length > 0 ? [{ patientId: { in: patientIds } }] : [])
+          ...(patientIds.length > 0 ? [{ patientId: { in: patientIds } }] : []),
+          ...(timeCondition ? [{ appointmentDate: timeCondition.createdAt }] : [])
         ]
       } : undefined,
       orderBy: { createdAt: "desc" },
       take: 100,
       include: {
-        User: { select: { fullName: true } }
+        User: { select: { fullName: true } },
+        Patient: true
       }
     });
 

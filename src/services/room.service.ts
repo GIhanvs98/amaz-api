@@ -33,6 +33,26 @@ export class RoomService {
   }
 
   async deleteRoom(id: string) {
+    const [userCount, attendanceCount, labTestCount, extraServiceCount, scheduleCount] = await Promise.all([
+      prisma.user.count({ where: { roomId: id } }),
+      prisma.doctorAttendance.count({ where: { roomId: id } }),
+      prisma.labTest.count({ where: { roomId: id } }),
+      prisma.extraService.count({ where: { roomId: id } }),
+      prisma.doctorScheduleSession.count({ where: { roomId: id } }),
+    ]);
+
+    const totalRefs = userCount + attendanceCount + labTestCount + extraServiceCount + scheduleCount;
+    if (totalRefs > 0) {
+      const details = [
+        userCount > 0 ? `${userCount} staff` : null,
+        attendanceCount > 0 ? `${attendanceCount} attendance logs` : null,
+        labTestCount > 0 ? `${labTestCount} lab tests` : null,
+        extraServiceCount > 0 ? `${extraServiceCount} extra services` : null,
+        scheduleCount > 0 ? `${scheduleCount} schedules` : null,
+      ].filter(Boolean).join(', ');
+      throw new Error(`Cannot delete room: referenced by existing records (${details}). Please reassign them or set room to inactive.`);
+    }
+
     await prisma.room.delete({ where: { id } });
     websocketService.broadcast('ROOM_STATUS_UPDATED', { type: 'ROOM_DELETED', roomId: id });
     return { success: true };
