@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+import { websocketService } from "./websocket.service.js";
 
 const prisma = new PrismaClient();
 
@@ -47,6 +48,23 @@ export class BillingService {
           totalAmount: 0
         }
       });
+    }
+
+    // 2.5 Guard against duplicate CONSULTATION charges
+    if (data.department === "CONSULTATION") {
+      const existingConsult = await db.invoiceLineItem.findFirst({
+        where: {
+          invoiceId: invoice.id,
+          department: "CONSULTATION"
+        }
+      });
+      if (existingConsult) {
+        console.warn(`[BillingService] Consultation charge already exists for invoice ${invoice.id}. Skipping duplicate.`);
+        return db.invoice.findUnique({
+          where: { id: invoice.id },
+          include: { lineItems: true }
+        });
+      }
     }
 
     // 3. Add the line item
@@ -208,26 +226,44 @@ export class BillingService {
   }
 
   /**
-   * Pay an invoice
+   * Pay an invoice with optional discount
    */
-  async payInvoice(invoiceId: string, amount: number, method: string, tokenId?: string) {
+  async payInvoice(
+    invoiceId: string, 
+    amount: number, 
+    method: string, 
+    shiftId?: string,
+    discount?: { type?: string; value?: number; amount?: number; reason?: string }
+  ) {
     return prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
       if (!invoice) throw new Error("Invoice not found");
       if (invoice.status === "PAID") throw new Error("Invoice is already paid");
       
+      const discountAmount = Math.max(0, Math.min(invoice.subtotal, Number(discount?.amount) || 0));
+      const finalTotal = discount && discountAmount > 0 
+        ? Math.max(0, Math.round((invoice.subtotal - discountAmount) * 100) / 100)
+        : invoice.totalAmount;
+
       // Ensure strict financial integrity
-      if (amount < invoice.totalAmount) {
-        throw new Error(`Insufficient payment amount. Expected at least ${invoice.totalAmount}, but received ${amount}`);
+      if (amount < finalTotal) {
+        throw new Error(`Insufficient payment amount. Expected at least ${finalTotal}, but received ${amount}`);
       }
       
       // [P1 Fix] Cap the recorded revenue at the invoice total to prevent change from inflating revenue
-      const actualRevenue = Math.min(amount, invoice.totalAmount);
+      const actualRevenue = Math.min(amount, finalTotal);
 
       // Atomic state transition using updateMany to prevent read-modify-write double payment race condition
       const updateResult = await tx.invoice.updateMany({
         where: { id: invoiceId, status: "DRAFT" },
-        data: { status: "PAID" }
+        data: { 
+          status: "PAID",
+          discountAmount: discountAmount,
+          discountType: discount?.type || null,
+          discountValue: discount?.value !== undefined ? Number(discount.value) : null,
+          discountReason: discount?.reason || null,
+          totalAmount: finalTotal
+        }
       });
 
       if (updateResult.count === 0) {
@@ -240,9 +276,26 @@ export class BillingService {
           amount: actualRevenue, // Capped revenue
           method,
           status: "COMPLETED",
-          ...(tokenId ? { tokenId } : {})
+          ...(shiftId ? { shiftId } : {})
         }
       });
+
+      // Auto-settle linked prescription ONLY if it has zero medicines prescribed (advice-only / lab-only prescription)
+      if (invoice.visitId) {
+        const linkedRx = await tx.prescription.findFirst({
+          where: { visitId: invoice.visitId, status: { in: ["PENDING", "IN_PROGRESS"] } },
+          include: { items: true }
+        });
+        // Prescriptions with medicines (> 0 items) must NEVER be auto-dispensed by invoice payment;
+        // they must be explicitly dispensed at the pharmacy to deduct inventory and verify drugs.
+        if (linkedRx && (!linkedRx.items || linkedRx.items.length === 0)) {
+          const updatedRx = await tx.prescription.update({
+            where: { id: linkedRx.id },
+            data: { status: "DISPENSED" }
+          });
+          websocketService.broadcast("prescription_status_updated", updatedRx);
+        }
+      }
 
       return tx.invoice.findUnique({
         where: { id: invoiceId },
