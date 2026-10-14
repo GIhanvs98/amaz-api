@@ -6,6 +6,8 @@ import { BookingService } from "../services/booking.service.js";
 import { websocketService } from "../services/websocket.service.js";
 import { SMSService } from "../services/sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+import { expirePastTokens } from "../services/token-lifecycle.service.js";
 
 export const openShift = async (req: Request, res: Response) => {
   try {
@@ -637,27 +639,37 @@ export const generateToken = async (req: Request, res: Response) => {
         });
       }
 
-      const invoice = await prisma.invoice.create({
-        data: {
-          visitId: generatedTokens[0]?.id || "", // Associate invoice with the first primary token
-          patientId: patient.id,
-          status: bookingType === "PHONE" ? "DRAFT" : "PAID",
-          subtotal: totalAmount,
-          totalAmount: totalAmount,
-          lineItems: { create: lineItems },
-          ...(bookingType !== "PHONE" && {
-            payments: {
-              create: [{
-                amount: totalAmount,
-                method: req.body.paymentMethod || "CASH",
-                status: "COMPLETED", shiftId: await getOpenShiftId(((req as any).user)?.id)
-              }]
-            }
-          })
-        },
-        include: { lineItems: true }
-      });
-      invoiceData = invoice;
+      const discount = req.body.discount;
+      const discountAmount = Math.max(0, Math.min(totalAmount, Number(discount?.amount) || 0));
+      const finalAmount = Math.max(0, Math.round((totalAmount - discountAmount) * 100) / 100);
+
+      if (lineItems.length > 0 && totalAmount > 0) {
+        const invoice = await prisma.invoice.create({
+          data: {
+            visitId: generatedTokens[0]?.id || "", // Associate invoice with the first primary token
+            patientId: patient.id,
+            status: bookingType === "PHONE" ? "DRAFT" : "PAID",
+            subtotal: totalAmount,
+            discountAmount: discountAmount,
+            discountType: discount?.type || null,
+            discountValue: discount?.value !== undefined ? Number(discount.value) : null,
+            discountReason: discount?.reason || null,
+            totalAmount: finalAmount,
+            lineItems: { create: lineItems },
+            ...(bookingType !== "PHONE" && {
+              payments: {
+                create: [{
+                  amount: finalAmount,
+                  method: req.body.paymentMethod || "CASH",
+                  status: "COMPLETED", shiftId: await getOpenShiftId(((req as any).user)?.id)
+                }]
+              }
+            })
+          },
+          include: { lineItems: true }
+        });
+        invoiceData = invoice;
+      }
     }
 
     // --- Post Generation Hooks ---
@@ -872,7 +884,7 @@ export const updateShiftPeriod = async (req: Request, res: Response) => {
 
 export const checkoutAppointment = async (req: Request, res: Response) => {
   try {
-    const { appointmentId, fee, isUpfront } = req.body;
+    const { appointmentId, fee, isUpfront, discount } = req.body;
     if (!appointmentId) {
       return res.status(400).json({ success: false, error: "appointmentId is required" });
     }
@@ -956,8 +968,12 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         }
       });
 
+      const hasConsultInDraftInvoices = invoices.some((inv: any) =>
+        inv.lineItems?.some((li: any) => li.department === "CONSULTATION")
+      );
+
       const numericFee = Number(fee) || 0;
-      const willCreateConsultInvoice = !existingConsultPaid && numericFee > 0;
+      const willCreateConsultInvoice = !existingConsultPaid && !hasConsultInDraftInvoices && numericFee > 0;
 
       if (invoices.length > 0) {
         // Pay all existing DRAFT invoices
@@ -973,13 +989,23 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
             availableApptIdForPayment = null;
           }
 
+          const discountAmount = Math.max(0, Math.min(inv.subtotal, Number(discount?.amount) || 0));
+          const finalInvAmount = discount && discountAmount > 0 
+            ? Math.max(0, Math.round((inv.subtotal - discountAmount) * 100) / 100)
+            : inv.totalAmount;
+
           const updatedInv = await tx.invoice.update({
             where: { id: inv.id },
             data: {
               status: "PAID",
+              discountAmount,
+              discountType: discount?.type || null,
+              discountValue: discount?.value !== undefined ? Number(discount.value) : null,
+              discountReason: discount?.reason || null,
+              totalAmount: finalInvAmount,
               payments: {
                 create: [{
-                  amount: inv.totalAmount,
+                  amount: finalInvAmount,
                   method: req.body.paymentMethod || "CASH",
                   status: "COMPLETED", 
                   shiftId,
@@ -1239,16 +1265,16 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
       }
     });
 
-    // Clear not arrived tokens for today
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+    // Run lifecycle cleanup for any past uncompleted tokens
+    await expirePastTokens();
+
+    // Clear not arrived tokens up to end of today
+    const { endOfDay } = getTimezoneBoundaries();
 
     await prisma.appointment.updateMany({
       where: {
-        appointmentDate: { gte: startOfDay, lte: endOfDay },
-        status: "BOOKED"
+        appointmentDate: { lte: endOfDay },
+        status: { in: ["BOOKED", "WAITING", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
       },
       data: {
         status: "NO_SHOW"

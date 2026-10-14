@@ -6,8 +6,6 @@ api.js
 api.cjs
 
 # Env files
-.env
-.env.production
 
 !.env.example
 # OS / IDE
