@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import { websocketService } from "../services/websocket.service.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+import { expirePastTokens } from "../services/token-lifecycle.service.js";
 
 const prisma = new PrismaClient();
 
@@ -121,16 +123,17 @@ export const getDoctorQueue = async (req: Request, res: Response): Promise<void>
       return;
     }
     
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Automatically transition any uncompleted past tokens to NO_SHOW
+    await expirePastTokens();
 
+    const { startOfDay, endOfDay } = getTimezoneBoundaries();
+
+    // Query ONLY tokens scheduled for today
     const appointments = await prisma.appointment.findMany({
       where: {
         doctorId: doctorId as string,
-        OR: [
-          { appointmentDate: { gte: today } },
-          { status: { in: ['BOOKED', 'WAITING', 'WAITING_FOR_LAB_TEST', 'IN_PROGRESS'] } }
-        ]
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: { in: ['BOOKED', 'WAITING', 'WAITING_FOR_LAB_TEST', 'IN_PROGRESS'] }
       },
       include: {
         Patient: true,
@@ -204,14 +207,14 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
 
 export const getPendingPrescriptions = async (req: Request, res: Response): Promise<void> => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const { startOfDay, endOfDay } = getTimezoneBoundaries();
 
     const appointments = await prisma.appointment.findMany({
       where: {
         status: "prescription_issued",
         appointmentDate: {
-          gte: today
+          gte: startOfDay,
+          lte: endOfDay
         }
       },
       include: {
