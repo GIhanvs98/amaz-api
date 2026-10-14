@@ -171,7 +171,7 @@ export class PharmacyController {
 
   async sell(req: Request, res: Response) {
     try {
-      const { items, paymentMethod, prescriptionId, visitId, patientId } = req.body;
+      const { items, paymentMethod, prescriptionId, visitId, patientId, discount } = req.body;
 
       if (!items || items.length === 0) {
         return res.status(400).json({ error: 'No items provided' });
@@ -201,10 +201,10 @@ export class PharmacyController {
             medicineId: item.id,
           });
         }
-        
 
-
-        const totalCost = charges.reduce((sum, c) => sum + c.unitPrice, 0);
+        const subtotal = charges.reduce((sum, c) => sum + c.unitPrice, 0);
+        const discountAmount = Math.max(0, Math.min(subtotal, Number(discount?.amount) || 0));
+        const finalCost = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
 
         // 2. Create invoice + add all line items atomically (using bulk method)
         const invoice = await billingService.addChargesBulk({
@@ -248,7 +248,7 @@ export class PharmacyController {
         await tx.payment.create({
           data: {
             invoiceId: invoice.id,
-            amount: totalCost,
+            amount: finalCost,
             method: paymentMethod,
             status: 'COMPLETED',
           },
@@ -256,11 +256,19 @@ export class PharmacyController {
 
         const finalInvoice = await tx.invoice.update({
           where: { id: invoice.id },
-          data: { status: 'PAID' },
+          data: { 
+            status: 'PAID',
+            subtotal,
+            discountAmount,
+            discountType: discount?.type || null,
+            discountValue: discount?.value !== undefined ? Number(discount.value) : null,
+            discountReason: discount?.reason || null,
+            totalAmount: finalCost
+          },
           include: { lineItems: true, payments: true },
         });
 
-        return { invoice: finalInvoice, totalCost };
+        return { invoice: finalInvoice, totalCost: finalCost };
       }, { maxWait: 20000, timeout: 20000 });
 
       // Announce payment success via WebSockets (outside the tx — non-critical)
