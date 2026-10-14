@@ -1,4 +1,4 @@
-import { prisma } from "../lib/prisma.js";
+import { prisma, withRetry } from "../lib/prisma.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 import { websocketService } from "./websocket.service.js";
 
@@ -11,15 +11,17 @@ export async function expirePastTokens(): Promise<number> {
     const { startOfDay } = getTimezoneBoundaries();
 
     // Any appointment with appointmentDate before today that was left pending is a NO_SHOW
-    const result = await prisma.appointment.updateMany({
-      where: {
-        appointmentDate: { lt: startOfDay },
-        status: { in: ["BOOKED", "WAITING", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
-      },
-      data: {
-        status: "NO_SHOW"
-      }
-    });
+    const result = await withRetry(() =>
+      prisma.appointment.updateMany({
+        where: {
+          appointmentDate: { lt: startOfDay },
+          status: { in: ["BOOKED", "WAITING", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
+        },
+        data: {
+          status: "NO_SHOW"
+        }
+      })
+    );
 
     if (result.count > 0) {
       console.log(`[TokenLifecycle] Expired ${result.count} past pending tokens to NO_SHOW (prior to ${startOfDay.toISOString()}).`);
@@ -43,15 +45,17 @@ export async function expirePastPrescriptions(): Promise<number> {
   try {
     const { startOfDay } = getTimezoneBoundaries();
 
-    const result = await prisma.prescription.updateMany({
-      where: {
-        createdAt: { lt: startOfDay },
-        status: { in: ["PENDING", "IN_PROGRESS"] }
-      },
-      data: {
-        status: "EXPIRED"
-      }
-    });
+    const result = await withRetry(() =>
+      prisma.prescription.updateMany({
+        where: {
+          createdAt: { lt: startOfDay },
+          status: { in: ["PENDING", "IN_PROGRESS"] }
+        },
+        data: {
+          status: "EXPIRED"
+        }
+      })
+    );
 
     if (result.count > 0) {
       console.log(`[TokenLifecycle] Expired ${result.count} past pending prescriptions to EXPIRED (prior to ${startOfDay.toISOString()}).`);

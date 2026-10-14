@@ -1,10 +1,7 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { websocketService } from "../services/websocket.service.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
-import { expirePastTokens } from "../services/token-lifecycle.service.js";
-
-const prisma = new PrismaClient();
 
 export const generateToken = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -122,9 +119,6 @@ export const getDoctorQueue = async (req: Request, res: Response): Promise<void>
       res.status(400).json({ error: "doctorId query parameter is required" });
       return;
     }
-    
-    // Automatically transition any uncompleted past tokens to NO_SHOW
-    await expirePastTokens();
 
     const { startOfDay, endOfDay } = getTimezoneBoundaries();
 

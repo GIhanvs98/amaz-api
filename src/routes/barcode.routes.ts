@@ -4,7 +4,7 @@ import { barcodeController } from "../controllers/barcode.controller.js";
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST', 'PHARMACIST']));
+router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST', 'PHARMACIST', 'DOCTOR', 'LABTECH']));
 
 router.get("/:code", barcodeController.resolveBarcode);
 

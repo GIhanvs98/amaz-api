@@ -1,12 +1,9 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { websocketService } from "../services/websocket.service.js";
 import { billingService } from "../services/billing.service.js";
 import { pharmacyService } from "../services/pharmacy.service.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
-import { expirePastPrescriptions } from "../services/token-lifecycle.service.js";
-
-const prisma = new PrismaClient();
 
 // In case of transient NeonDB errors, wrapped execution:
 const withRetry = async <T>(operation: () => Promise<T>, retries = 3, delay = 1000): Promise<T> => {
@@ -48,9 +45,15 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
       include: { items: { include: { LabTest: true } } }
     });
 
+    const appt = prescription.visitId ? await prisma.appointment.findUnique({
+      where: { id: prescription.visitId },
+      select: { bookingReference: true }
+    }) : null;
+
     // Format like getPendingPrescriptions does
     const formatted = {
       id: prescription.id,
+      bookingReference: appt?.bookingReference || null,
       patientId: prescription.patientId,
       visitId: prescription.visitId,
       patientName: prescription.Patient.fullName,
@@ -132,10 +135,11 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
           }
         });
 
+        let appt: any = null;
         if (visitId) {
           // Check if consultation charge was already added or paid for this visit
           let visitIds = [visitId];
-          const appt = await tx.appointment.findUnique({
+          appt = await tx.appointment.findUnique({
             where: { id: visitId },
             select: { bookingReference: true }
           });
@@ -179,7 +183,10 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
           // click "Complete Consultation" to remove the patient from the queue.
         }
 
-        return rx;
+        return {
+          ...rx,
+          bookingReference: appt?.bookingReference || null
+        };
       }, { maxWait: 20000, timeout: 20000 });
     });
 
@@ -195,10 +202,7 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
 
 export const getPendingPrescriptions = async (req: Request, res: Response): Promise<void> => {
   try {
-    // 1. Lazy cleanup: Expire any stale prescriptions from past days
-    await expirePastPrescriptions().catch(err => console.error("Lazy prescription expiration error:", err));
-
-    // 2. Bound queue strictly to today (Asia/Colombo)
+    // Bound queue strictly to today (Asia/Colombo)
     const { startOfDay, endOfDay } = getTimezoneBoundaries();
 
     const prescriptions = await withRetry(() => (prisma as any).prescription.findMany({
@@ -228,8 +232,13 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
       let consultationPaid = false;
       let labRequestsData: any[] = [];
       let fullInvoiceStatus: string | null = null;
+      let appt: any = null;
 
       if (rx.visitId) {
+        appt = await (prisma as any).appointment.findUnique({
+          where: { id: rx.visitId },
+          select: { bookingReference: true }
+        });
         // Check for any active DRAFT invoice first, otherwise check PAID
         const invoices = await (prisma as any).invoice.findMany({
           where: { visitId: rx.visitId },
@@ -266,6 +275,7 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
 
       return {
         ...rx,
+        bookingReference: appt?.bookingReference || null,
         consultationPaid,
         invoiceStatus: fullInvoiceStatus,
         doctor,

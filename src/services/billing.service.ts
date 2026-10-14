@@ -1,8 +1,6 @@
-import { PrismaClient } from '@prisma/client';
+import { prisma } from "../lib/prisma.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 import { websocketService } from "./websocket.service.js";
-
-const prisma = new PrismaClient();
 
 export class BillingService {
   /**
@@ -31,6 +29,22 @@ export class BillingService {
       invoice = await db.invoice.findFirst({
         where: { visitId: data.visitId, status: "DRAFT" }
       });
+      if (!invoice) {
+        const currentAppt = await db.appointment.findUnique({
+          where: { id: data.visitId },
+          select: { bookingReference: true }
+        });
+        if (currentAppt?.bookingReference) {
+          const siblingAppts = await db.appointment.findMany({
+            where: { bookingReference: currentAppt.bookingReference },
+            select: { id: true }
+          });
+          const siblingIds = siblingAppts.map((a: any) => a.id);
+          invoice = await db.invoice.findFirst({
+            where: { visitId: { in: siblingIds }, status: "DRAFT" }
+          });
+        }
+      }
     } else if (data.patientId) {
        invoice = await db.invoice.findFirst({
         where: { patientId: data.patientId, status: "DRAFT" }

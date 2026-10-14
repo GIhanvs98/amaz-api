@@ -305,7 +305,9 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       labResults: labResults,
       activeVisitId: patient.Appointment[0]?.id || null,
       activeTokenNumber: patient.Appointment[0]?.tokenNumber ? (patient.Appointment[0]!.tokenNumber.includes('-') ? parseInt(patient.Appointment[0]!.tokenNumber.split('-')[1] || "0", 10) : patient.Appointment[0]!.tokenNumber) : null,
-      activeVisitStartTime: patient.Appointment[0]?.updatedAt || null
+      activeVisitStartTime: patient.Appointment[0]?.updatedAt || null,
+      bookingReference: patient.Appointment[0]?.bookingReference || null,
+      masterBarcode: patient.Appointment[0]?.bookingReference || null
     });
   } catch (error: any) {
     console.error("Error fetching patient:", error);

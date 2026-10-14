@@ -608,35 +608,191 @@ export class LabService {
   /**
    * Resolve a token to its patient and pending lab requests
    */
-  async getRequestByToken(tokenNumber: string) {
+  async getRequestByToken(tokenOrBarcode: string) {
     return withRetry(async () => {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
+      const code = (tokenOrBarcode || "").trim();
 
-      const appointment = await prisma.appointment.findFirst({
+      if (!code) {
+        throw new Error("Token or barcode is required");
+      }
+
+      // 1. Direct LabRequest ID check
+      const directLabReq = await prisma.labRequest.findFirst({
         where: {
-          tokenNumber: tokenNumber,
-          appointmentDate: { gte: today },
-          status: { notIn: ["CANCELLED"] }
+          OR: [
+            { id: code },
+            ...(code.length >= 8 ? [{ id: { startsWith: code.toLowerCase() } }] : [])
+          ]
         },
         include: {
           Patient: true,
-          LabRequests: {
-            where: { status: "PENDING" },
-            include: {
-              items: {
-                include: { LabTest: { include: { biomarkers: true } } }
-              }
-            }
+          items: {
+            include: { LabTest: { include: { biomarkers: true } } }
           }
         }
       });
 
-      if (!appointment) {
-        throw new Error("Token not found or expired today");
+      if (directLabReq) {
+        const appt = directLabReq.visitId ? await prisma.appointment.findUnique({
+          where: { id: directLabReq.visitId },
+          include: { Patient: true }
+        }) : null;
+
+        let allLabRequests = [directLabReq];
+        let allAppointments: any[] = appt ? [appt] : [];
+
+        if (appt?.bookingReference) {
+          allAppointments = await prisma.appointment.findMany({
+            where: { bookingReference: appt.bookingReference, status: { not: "CANCELLED" } },
+            include: { Patient: true },
+            orderBy: { createdAt: "asc" }
+          });
+          const apptIds = allAppointments.map(a => a.id);
+          allLabRequests = await prisma.labRequest.findMany({
+            where: {
+              OR: [
+                { visitId: { in: apptIds } },
+                { patientId: directLabReq.patientId, requestedAt: { gte: today } }
+              ]
+            },
+            include: {
+              Patient: true,
+              items: { include: { LabTest: { include: { biomarkers: true } } } }
+            },
+            orderBy: { requestedAt: "desc" }
+          });
+        }
+
+        const labAppt = allAppointments.find(a => a.department === "LAB") || appt;
+        const consultAppt = allAppointments.find(a => a.department === "CONSULTATION");
+
+        return {
+          ...(appt || {}),
+          id: appt?.id || directLabReq.visitId || directLabReq.id,
+          bookingReference: appt?.bookingReference || null,
+          tokenNumber: labAppt?.tokenNumber || appt?.tokenNumber || "LAB",
+          Patient: directLabReq.Patient,
+          allAppointments,
+          LabRequests: allLabRequests,
+          tokens: {
+            lab: labAppt?.tokenNumber || "LAB",
+            consultation: consultAppt?.tokenNumber || null
+          }
+        };
       }
-      
-      return appointment;
+
+      // 2. Appointment lookup by UUID, booking reference, or tokenNumber
+      const orConditions: any[] = [
+        { id: code },
+        { bookingReference: code }
+      ];
+
+      if (code.length >= 8) {
+        orConditions.push({ id: { startsWith: code } });
+      }
+
+      if (/^\d{1,3}$/.test(code)) {
+        orConditions.push({
+          tokenNumber: code.padStart(2, "0"),
+          appointmentDate: { gte: today }
+        });
+        orConditions.push({
+          tokenNumber: code,
+          appointmentDate: { gte: today }
+        });
+      }
+
+      let appointment = await prisma.appointment.findFirst({
+        where: {
+          OR: orConditions,
+          status: { notIn: ["CANCELLED"] }
+        },
+        include: {
+          Patient: true
+        },
+        orderBy: { appointmentDate: "desc" }
+      });
+
+      // 3. Fallback: check Invoice ID -> visitId
+      if (!appointment) {
+        const invoice = await prisma.invoice.findFirst({
+          where: {
+            OR: [
+              { id: code },
+              ...(code.length >= 8 ? [{ id: { startsWith: code } }] : [])
+            ]
+          }
+        });
+
+        if (invoice && invoice.visitId) {
+          appointment = await prisma.appointment.findUnique({
+            where: { id: invoice.visitId },
+            include: {
+              Patient: true
+            }
+          });
+        }
+      }
+
+      if (!appointment) {
+        throw new Error("Token or barcode not found");
+      }
+
+      // Fetch all appointments connected to this visit
+      let allAppointments: any[] = [];
+      if (appointment.bookingReference) {
+        allAppointments = await prisma.appointment.findMany({
+          where: {
+            bookingReference: appointment.bookingReference,
+            status: { not: "CANCELLED" }
+          },
+          include: { Patient: true },
+          orderBy: { createdAt: "asc" }
+        });
+      }
+
+      if (allAppointments.length === 0) {
+        allAppointments = [appointment];
+      }
+
+      const allApptIds = allAppointments.map(a => a.id);
+
+      // Fetch all LabRequests across all visit appointments or created for this patient today
+      const allLabRequests = await prisma.labRequest.findMany({
+        where: {
+          OR: [
+            { visitId: { in: allApptIds } },
+            {
+              patientId: appointment.patientId,
+              requestedAt: { gte: today }
+            }
+          ]
+        },
+        include: {
+          Patient: true,
+          items: {
+            include: { LabTest: { include: { biomarkers: true } } }
+          }
+        },
+        orderBy: { requestedAt: "desc" }
+      });
+
+      const labAppt = allAppointments.find(a => a.department === "LAB") || appointment;
+      const consultAppt = allAppointments.find(a => a.department === "CONSULTATION");
+
+      return {
+        ...appointment,
+        bookingReference: appointment.bookingReference,
+        tokenNumber: labAppt?.tokenNumber || appointment.tokenNumber,
+        allAppointments,
+        LabRequests: allLabRequests,
+        tokens: {
+          lab: labAppt?.tokenNumber || appointment.tokenNumber,
+          consultation: consultAppt?.tokenNumber || null
+        }
+      };
     });
   }
   /**

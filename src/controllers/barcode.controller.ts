@@ -1,7 +1,5 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
 
 export const barcodeController = {
   resolveBarcode: async (req: Request, res: Response) => {
@@ -74,6 +72,26 @@ export const barcodeController = {
         return res.json({ type: "EXTRA_SERVICE", data: extraService });
       }
 
+      // 3.5 Check Lab Request (by UUID or prefix >= 8)
+      if (code.length === 36 || code.length >= 8) {
+        const labRequest = await prisma.labRequest.findFirst({
+          where: {
+            OR: [
+              { id: code },
+              { id: { startsWith: code.toLowerCase() } }
+            ]
+          },
+          include: {
+            Patient: true,
+            items: { include: { LabTest: { include: { biomarkers: true } } } },
+            results: true
+          }
+        });
+        if (labRequest) {
+          return res.json({ type: "LAB_REQUEST", data: labRequest });
+        }
+      }
+
       // 4. Check Appointment / Token / Booking Reference
       const now = new Date();
       const startOfDay = new Date(now);
@@ -102,7 +120,7 @@ export const barcodeController = {
         where: {
           OR: appointmentOrConditions
         },
-        include: { Patient: true, User: true },
+        include: { Patient: true, User: { include: { room: true } } },
         orderBy: { createdAt: 'desc' }
       });
 
@@ -121,7 +139,7 @@ export const barcodeController = {
         if (invoice && invoice.visitId) {
           appointment = await prisma.appointment.findUnique({
             where: { id: invoice.visitId },
-            include: { Patient: true, User: true }
+            include: { Patient: true, User: { include: { room: true } } }
           });
         }
       }
@@ -145,7 +163,7 @@ export const barcodeController = {
           if (invoiceByTime && invoiceByTime.visitId) {
             appointment = await prisma.appointment.findUnique({
               where: { id: invoiceByTime.visitId },
-              include: { Patient: true, User: true }
+              include: { Patient: true, User: { include: { room: true } } }
             });
           }
         }
@@ -160,7 +178,7 @@ export const barcodeController = {
               bookingReference: appointment.bookingReference,
               status: { not: "CANCELLED" }
             },
-            include: { Patient: true, User: true },
+            include: { Patient: true, User: { include: { room: true } } },
             orderBy: { createdAt: 'asc' }
           });
         } else {
@@ -176,7 +194,7 @@ export const barcodeController = {
               appointmentDate: { gte: apptStart, lte: apptEnd },
               status: { not: "CANCELLED" }
             },
-            include: { Patient: true, User: true },
+            include: { Patient: true, User: { include: { room: true } } },
             orderBy: { createdAt: 'asc' }
           });
         }
@@ -242,6 +260,23 @@ export const barcodeController = {
           include: { items: { include: { medicine: { include: { stockBatches: true } } } } }
         });
 
+        // Fetch lab requests created during this visit
+        const labRequests = await prisma.labRequest.findMany({
+          where: {
+            OR: [
+              { visitId: { in: allApptIds } },
+              {
+                patientId: appointment.patientId,
+                requestedAt: { gte: startOfDay, lte: endOfDay }
+              }
+            ]
+          },
+          include: {
+            items: { include: { LabTest: { include: { biomarkers: true } } } },
+            results: true
+          }
+        });
+
         // Check if consultation fee was already paid
         const paidInvoice = await prisma.invoice.findFirst({
           where: {
@@ -252,16 +287,40 @@ export const barcodeController = {
         });
         const consultationPaid = !!paidInvoice;
 
+        // Extract extra services from merged invoice and appointments
+        const extraServiceItems = (mergedInvoice?.lineItems || []).filter(
+          (li: any) => li.department === 'EXTRA_SERVICE' || li.department === 'SERVICE'
+        );
+
         // Pick primary consultation appointment if present in allAppointments
         const consultAppt = allAppointments.find(a => a.department === "CONSULTATION") || appointment;
+        const labAppt = allAppointments.find(a => a.department === "LAB");
+        const extraServiceAppt = allAppointments.find(a => a.department === "EXTRA_SERVICE");
+
+        const masterBarcode = appointment.bookingReference || appointment.tokenNumber;
 
         return res.json({
           type: "APPOINTMENT",
+          masterBarcode,
           data: {
+            masterBarcode,
+            patient: appointment.Patient,
+            tokens: {
+              consultation: consultAppt?.tokenNumber || null,
+              lab: labAppt?.tokenNumber || null,
+              extraService: extraServiceAppt?.tokenNumber || null
+            },
+            rooms: {
+              consultation: consultAppt?.User?.room?.roomNumber || "01",
+              lab: labAppt?.User?.room?.roomNumber || "LAB",
+              extraService: extraServiceAppt?.User?.room?.roomNumber || "PROCEDURE"
+            },
             appointment: consultAppt,
             allAppointments,
             invoice: mergedInvoice,
             prescriptions,
+            labRequests,
+            extraServices: extraServiceItems,
             consultationPaid
           }
         });

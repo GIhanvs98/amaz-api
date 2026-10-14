@@ -1,8 +1,7 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { clearCache } from "../middlewares/cache.middleware.js";
 
-const prisma = new PrismaClient();
 
 export const extraServiceController = {
   getServices: async (req: Request, res: Response) => {

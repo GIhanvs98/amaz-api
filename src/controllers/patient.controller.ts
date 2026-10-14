@@ -1,8 +1,6 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../lib/prisma.js";
 import { generateMRN } from "../utils/mrn.util.js";
-
-const prisma = new PrismaClient();
 
 export const createOrGetPatient = async (req: Request, res: Response): Promise<void> => {
   try {
