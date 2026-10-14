@@ -108,16 +108,20 @@ model PurchaseOrderItem {
 }
 
 model Invoice {
-  id          String            @id @default(uuid())
-  visitId     String?
-  patientId   String?
-  status      String            @default("DRAFT")
-  subtotal    Float             @default(0)
-  totalAmount Float             @default(0)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-  lineItems   InvoiceLineItem[]
-  payments    Payment[]
+  id             String            @id @default(uuid())
+  visitId        String?
+  patientId      String?
+  status         String            @default("DRAFT")
+  subtotal       Float             @default(0)
+  discountAmount Float             @default(0)
+  discountType   String?
+  discountValue  Float?
+  discountReason String?
+  totalAmount    Float             @default(0)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  lineItems      InvoiceLineItem[]
+  payments       Payment[]
 
   @@index([status])
   @@index([createdAt])

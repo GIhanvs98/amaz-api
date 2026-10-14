@@ -75,7 +75,7 @@ export class BillingController {
   async payInvoice(req: Request, res: Response) {
     try {
       const { invoiceId } = req.params;
-      const { amount, method } = req.body;
+      const { amount, method, discount } = req.body;
 
       if (!amount || !method) {
         return res.status(400).json({ error: 'Missing payment amount or method' });
@@ -90,7 +90,7 @@ export class BillingController {
         shiftId = shift?.id;
       }
       
-      const updatedInvoice = await billingService.payInvoice(invoiceId as string, Number(amount), method as string, shiftId);
+      const updatedInvoice = await billingService.payInvoice(invoiceId as string, Number(amount), method as string, shiftId, discount);
       
       await clearCache("/api/finance/dashboard");
       await clearCache("/api/admin/metrics");

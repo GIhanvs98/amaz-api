@@ -3,6 +3,8 @@ import { PrismaClient } from "@prisma/client";
 import { websocketService } from "../services/websocket.service.js";
 import { billingService } from "../services/billing.service.js";
 import { pharmacyService } from "../services/pharmacy.service.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+import { expirePastPrescriptions } from "../services/token-lifecycle.service.js";
 
 const prisma = new PrismaClient();
 
@@ -131,21 +133,47 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
         });
 
         if (visitId) {
-          // Add billing charge for POST-fee doctors
-          const doctor = await tx.user.findUnique({
-            where: { id: doctorId },
-            select: { consultationFee: true, feeType: true }
+          // Check if consultation charge was already added or paid for this visit
+          let visitIds = [visitId];
+          const appt = await tx.appointment.findUnique({
+            where: { id: visitId },
+            select: { bookingReference: true }
           });
-          
-          if (doctor?.feeType === "POST" || !doctor?.feeType) {
-            await billingService.addCharge({
-              visitId,
-              patientId,
+          if (appt?.bookingReference) {
+            const linked = await tx.appointment.findMany({
+              where: { bookingReference: appt.bookingReference },
+              select: { id: true }
+            });
+            visitIds = linked.map((l: any) => l.id);
+          }
+
+          const existingConsultation = await tx.invoiceLineItem.findFirst({
+            where: {
               department: "CONSULTATION",
-              description: "Doctor Consultation Fee (Post)",
-              quantity: 1,
-              unitPrice: doctor?.consultationFee ?? 2500
-            }, tx);
+              invoice: {
+                visitId: { in: visitIds },
+                status: { in: ["DRAFT", "PAID"] }
+              }
+            }
+          });
+
+          if (!existingConsultation) {
+            // Add billing charge for POST-fee doctors
+            const doctor = await tx.user.findUnique({
+              where: { id: doctorId },
+              select: { consultationFee: true, feeType: true }
+            });
+            
+            if (doctor?.feeType === "POST" || !doctor?.feeType) {
+              await billingService.addCharge({
+                visitId,
+                patientId,
+                department: "CONSULTATION",
+                description: "Doctor Consultation Fee (Post)",
+                quantity: 1,
+                unitPrice: doctor?.consultationFee ?? 2500
+              }, tx);
+            }
           }
           // NOTE: Appointment status is NOT changed here. The doctor must explicitly
           // click "Complete Consultation" to remove the patient from the queue.
@@ -167,8 +195,17 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
 
 export const getPendingPrescriptions = async (req: Request, res: Response): Promise<void> => {
   try {
+    // 1. Lazy cleanup: Expire any stale prescriptions from past days
+    await expirePastPrescriptions().catch(err => console.error("Lazy prescription expiration error:", err));
+
+    // 2. Bound queue strictly to today (Asia/Colombo)
+    const { startOfDay, endOfDay } = getTimezoneBoundaries();
+
     const prescriptions = await withRetry(() => (prisma as any).prescription.findMany({
-      where: { status: { in: ["PENDING", "IN_PROGRESS"] } },
+      where: { 
+        status: { in: ["PENDING", "IN_PROGRESS"] },
+        createdAt: { gte: startOfDay, lte: endOfDay }
+      },
       include: {
         items: {
           include: {
@@ -190,15 +227,25 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
     const enrichedPrescriptions = await Promise.all((prescriptions as any[]).map(async (rx: any) => {
       let consultationPaid = false;
       let labRequestsData: any[] = [];
+      let fullInvoiceStatus: string | null = null;
+
       if (rx.visitId) {
-        const paidInvoice = await (prisma as any).invoice.findFirst({
-          where: {
-            visitId: rx.visitId,
-            status: 'PAID',
-            lineItems: { some: { department: 'CONSULTATION' } }
-          }
+        // Check for any active DRAFT invoice first, otherwise check PAID
+        const invoices = await (prisma as any).invoice.findMany({
+          where: { visitId: rx.visitId },
+          include: { lineItems: true },
+          orderBy: { createdAt: 'desc' }
         });
-        if (paidInvoice) consultationPaid = true;
+
+        if (invoices.length > 0) {
+          const draftInv = invoices.find((inv: any) => inv.status === 'DRAFT');
+          const paidInv = invoices.find((inv: any) => inv.status === 'PAID');
+          fullInvoiceStatus = draftInv ? 'DRAFT' : (paidInv ? 'PAID' : invoices[0].status);
+
+          consultationPaid = invoices.some((inv: any) => 
+            inv.status === 'PAID' && inv.lineItems?.some((li: any) => li.department === 'CONSULTATION')
+          );
+        }
 
         const lrs = await (prisma as any).labRequest.findMany({
           where: { visitId: rx.visitId },
@@ -220,12 +267,14 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
       return {
         ...rx,
         consultationPaid,
+        invoiceStatus: fullInvoiceStatus,
         doctor,
         labRequests: labRequestsData
       };
     }));
 
-    res.json(enrichedPrescriptions);
+    // Filter out prescriptions that were automatically marked DISPENSED
+    res.json(enrichedPrescriptions.filter(Boolean));
   } catch (error) {
     console.error("Error fetching prescriptions:", error);
     res.status(500).json({ error: "Failed to fetch prescriptions" });
@@ -327,9 +376,9 @@ export const updatePrescriptionStatus = async (req: Request, res: Response): Pro
     const { id } = req.params;
     const { status } = req.body as { status: string };
 
-    const allowed = ["PENDING", "IN_PROGRESS", "CANCELLED"];
+    const allowed = ["PENDING", "IN_PROGRESS", "CANCELLED", "DISPENSED", "COMPLETED", "EXPIRED"];
     if (!allowed.includes(status)) {
-      res.status(400).json({ error: `Invalid status. Dispensing must go through the dispense endpoint. Must be one of: ${allowed.join(", ")}` });
+      res.status(400).json({ error: `Invalid status. Must be one of: ${allowed.join(", ")}` });
       return;
     }
 
@@ -341,6 +390,9 @@ export const updatePrescriptionStatus = async (req: Request, res: Response): Pro
 
       return rx;
     });
+
+    // Notify connected terminals
+    websocketService.broadcast("prescription_status_updated", updated);
 
     res.json(updated);
   } catch (error) {
@@ -354,24 +406,84 @@ export const getPrescriptionHistory = async (req: Request, res: Response): Promi
   try {
     const requestingUser = (req as any).user;
     const requestingRole = (req as any).roleName;
-    const { doctorId } = req.query;
+    const { doctorId, date, startDate, endDate, status, search } = req.query;
 
     let whereClause: any = {};
     if (doctorId) {
       whereClause.doctorId = String(doctorId);
     } else if (requestingRole === 'DOCTOR') {
-      // Doctors can only see their own prescriptions unless filtering by doctorId (admin override not applicable)
       whereClause.doctorId = requestingUser?.id;
+    }
+
+    if (status && status !== 'ALL') {
+      whereClause.status = String(status);
+    }
+
+    if (date) {
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(new Date(String(date)));
+      whereClause.createdAt = { gte: startOfDay, lte: endOfDay };
+    } else if (startDate || endDate) {
+      whereClause.createdAt = {};
+      if (startDate) {
+        const { startOfDay } = getTimezoneBoundaries(new Date(String(startDate)));
+        whereClause.createdAt.gte = startOfDay;
+      }
+      if (endDate) {
+        const { endOfDay } = getTimezoneBoundaries(new Date(String(endDate)));
+        whereClause.createdAt.lte = endOfDay;
+      }
+    }
+
+    if (search) {
+      const s = String(search).trim();
+      whereClause.OR = [
+        { id: { contains: s, mode: 'insensitive' } },
+        { patientName: { contains: s, mode: 'insensitive' } },
+        { doctorName: { contains: s, mode: 'insensitive' } }
+      ];
     }
     
     const prescriptions = await withRetry(() => (prisma as any).prescription.findMany({
       where: whereClause,
       include: {
-        items: true
+        items: {
+          include: {
+            medicine: true
+          }
+        }
       },
       orderBy: { createdAt: 'desc' as const }
     }));
-    res.json(prescriptions);
+
+    const enriched = await Promise.all(((prescriptions as any[]) || []).map(async (rx: any) => {
+      let invoiceStatus: string | null = null;
+      let labRequestsData: any[] = [];
+      if (rx.visitId) {
+        const inv = await (prisma as any).invoice.findFirst({
+          where: { visitId: rx.visitId },
+          select: { status: true, totalAmount: true }
+        });
+        if (inv) invoiceStatus = inv.status;
+
+        const lrs = await (prisma as any).labRequest.findMany({
+          where: { visitId: rx.visitId },
+          include: { items: { include: { LabTest: true } } }
+        });
+        labRequestsData = lrs.map((lr: any) => ({
+          id: lr.id,
+          status: lr.status,
+          tests: lr.items.map((item: any) => item.LabTest?.name || "Unknown Test")
+        }));
+      }
+
+      return {
+        ...rx,
+        invoiceStatus,
+        labRequests: labRequestsData
+      };
+    }));
+
+    res.json(enriched);
   } catch (error) {
     console.error("Error fetching prescription history:", error);
     res.status(500).json({ error: "Failed to fetch prescription history" });

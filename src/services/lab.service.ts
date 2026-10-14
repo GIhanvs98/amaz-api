@@ -3,6 +3,7 @@ import { prisma as sharedPrisma, withRetry } from '../lib/prisma.js';
 import { NotificationService } from './notification.service.js';
 import { websocketService } from './websocket.service.js';
 import { S3Service } from './s3.service.js';
+import { getTimezoneBoundaries } from '../lib/dateUtils.js';
 
 // Use shared singleton to avoid multiple connection pools
 const prisma = sharedPrisma;
@@ -550,14 +551,13 @@ export class LabService {
    */
   async getQueueTokens() {
     return withRetry(async () => {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const { startOfDay, endOfDay } = getTimezoneBoundaries();
 
       return prisma.appointment.findMany({
         where: {
           department: { in: ["LAB", "MULTI"] },
-          appointmentDate: { gte: today },
-          status: { notIn: ["COMPLETED", "CANCELLED"] }
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          status: { in: ["WAITING", "BOOKED", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
         },
         include: {
           Patient: true
