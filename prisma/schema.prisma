@@ -125,6 +125,7 @@ model Invoice {
 
   @@index([status])
   @@index([createdAt])
+  @@index([visitId])
 }
 
 model InvoiceLineItem {
@@ -214,6 +215,7 @@ model LabRequest {
 
   @@index([patientId])
   @@index([status])
+  @@index([visitId])
 }
 
 model LabRequestItem {
@@ -267,6 +269,7 @@ model Prescription {
 
   @@index([patientId])
   @@index([status])
+  @@index([visitId])
 }
 
 model PrescriptionItem {
@@ -370,6 +373,8 @@ model Appointment {
   @@unique([sessionId, appointmentDate, tokenNumber])
   @@index([appointmentDate, doctorId])
   @@index([status])
+  @@index([bookingReference])
+  @@index([patientId])
 }
 
 model User {
