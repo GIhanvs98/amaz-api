@@ -221,7 +221,7 @@ export class LabService {
         : { status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } },
       include: {
         items: {
-          include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }
+          include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } }, room: true } } }
         },
         Patient: true,
         Visit: {
@@ -387,7 +387,7 @@ export class LabService {
           : { status: "COMPLETED" },
         include: {
           items: {
-            include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } } } } }
+            include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } }, room: true } } }
           },
           results: true,
           Patient: true,
@@ -549,18 +549,28 @@ export class LabService {
   /**
    * Get waiting lab queue tokens
    */
-  async getQueueTokens() {
+  async getQueueTokens(roomId?: string) {
     return withRetry(async () => {
       const { startOfDay, endOfDay } = getTimezoneBoundaries();
 
+      const whereClause: any = {
+        department: { in: ["LAB", "MULTI"] },
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: { in: ["WAITING", "BOOKED", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
+      };
+
+      if (roomId) {
+        whereClause.OR = [
+          { roomId: roomId },
+          { room: { roomNumber: roomId } }
+        ];
+      }
+
       return prisma.appointment.findMany({
-        where: {
-          department: { in: ["LAB", "MULTI"] },
-          appointmentDate: { gte: startOfDay, lte: endOfDay },
-          status: { in: ["WAITING", "BOOKED", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
-        },
+        where: whereClause,
         include: {
-          Patient: true
+          Patient: true,
+          room: true
         },
         orderBy: { createdAt: 'asc' }
       });
@@ -629,7 +639,7 @@ export class LabService {
         include: {
           Patient: true,
           items: {
-            include: { LabTest: { include: { biomarkers: true } } }
+            include: { LabTest: { include: { biomarkers: true, room: true } } }
           }
         }
       });
@@ -659,7 +669,7 @@ export class LabService {
             },
             include: {
               Patient: true,
-              items: { include: { LabTest: { include: { biomarkers: true } } } }
+              items: { include: { LabTest: { include: { biomarkers: true, room: true } } } }
             },
             orderBy: { requestedAt: "desc" }
           });
@@ -710,7 +720,8 @@ export class LabService {
           status: { notIn: ["CANCELLED"] }
         },
         include: {
-          Patient: true
+          Patient: true,
+          room: true
         },
         orderBy: { appointmentDate: "desc" }
       });
@@ -730,7 +741,8 @@ export class LabService {
           appointment = await prisma.appointment.findUnique({
             where: { id: invoice.visitId },
             include: {
-              Patient: true
+              Patient: true,
+              room: true
             }
           });
         }
@@ -748,7 +760,7 @@ export class LabService {
             bookingReference: appointment.bookingReference,
             status: { not: "CANCELLED" }
           },
-          include: { Patient: true },
+          include: { Patient: true, room: true },
           orderBy: { createdAt: "asc" }
         });
       }
@@ -779,17 +791,17 @@ export class LabService {
         orderBy: { requestedAt: "desc" }
       });
 
-      const labAppt = allAppointments.find(a => a.department === "LAB") || appointment;
+      const labAppts = allAppointments.filter(a => a.department === "LAB");
       const consultAppt = allAppointments.find(a => a.department === "CONSULTATION");
 
       return {
         ...appointment,
         bookingReference: appointment.bookingReference,
-        tokenNumber: labAppt?.tokenNumber || appointment.tokenNumber,
+        tokenNumber: labAppts.map(a => a.tokenNumber).join(", ") || appointment.tokenNumber,
         allAppointments,
         LabRequests: allLabRequests,
         tokens: {
-          lab: labAppt?.tokenNumber || appointment.tokenNumber,
+          lab: labAppts.map(a => a.tokenNumber).join(", ") || appointment.tokenNumber,
           consultation: consultAppt?.tokenNumber || null
         }
       };

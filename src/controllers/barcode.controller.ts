@@ -57,7 +57,7 @@ export const barcodeController = {
         if (isNumeric10) {
           allAppointments = await prisma.appointment.findMany({
             where: { bookingReference: code, status: { not: "CANCELLED" } },
-            include: { Patient: true, User: { include: { room: true } } },
+            include: { Patient: true, room: true, User: { include: { room: true } } },
             orderBy: { createdAt: "asc" }
           });
           if (allAppointments.length > 0) {
@@ -68,7 +68,7 @@ export const barcodeController = {
         if (!appointment) {
           appointment = await prisma.appointment.findFirst({
             where: { OR: appointmentOrConditions },
-            include: { Patient: true, User: { include: { room: true } } },
+            include: { Patient: true, room: true, User: { include: { room: true } } },
             orderBy: { createdAt: "desc" }
           });
         }
@@ -125,7 +125,7 @@ export const barcodeController = {
                   bookingReference: appointment.bookingReference,
                   status: { not: "CANCELLED" }
                 },
-                include: { Patient: true, User: { include: { room: true } } },
+                include: { Patient: true, room: true, User: { include: { room: true } } },
                 orderBy: { createdAt: "asc" }
               });
             } else {
@@ -141,7 +141,7 @@ export const barcodeController = {
                   appointmentDate: { gte: apptStart, lte: apptEnd },
                   status: { not: "CANCELLED" }
                 },
-                include: { Patient: true, User: { include: { room: true } } },
+                include: { Patient: true, room: true, User: { include: { room: true } } },
                 orderBy: { createdAt: "asc" }
               });
             }
@@ -215,7 +215,7 @@ export const barcodeController = {
                 items: {
                   include: {
                     LabTest: {
-                      select: { id: true, name: true, code: true, price: true, category: true }
+                      select: { id: true, name: true, code: true, price: true, category: true, roomId: true, room: { select: { roomNumber: true } } }
                     }
                   }
                 },
@@ -252,8 +252,20 @@ export const barcodeController = {
           );
 
           const consultAppt = allAppointments.find(a => a.department === "CONSULTATION") || appointment;
-          const labAppt = allAppointments.find(a => a.department === "LAB");
-          const extraServiceAppt = allAppointments.find(a => a.department === "EXTRA_SERVICE");
+          const labAppts = allAppointments.filter(a => a.department === "LAB");
+          const extraServiceAppts = allAppointments.filter(a => a.department === "EXTRA_SERVICE");
+
+          const labTokensSummary = labAppts.map(a => ({
+            tokenNumber: a.tokenNumber,
+            roomId: a.roomId,
+            roomNumber: a.room?.roomNumber || "LAB"
+          }));
+
+          const extraServiceTokensSummary = extraServiceAppts.map(a => ({
+            tokenNumber: a.tokenNumber,
+            roomId: a.roomId,
+            roomNumber: a.room?.roomNumber || "PROCEDURE"
+          }));
 
           const masterBarcode = appointment.bookingReference || appointment.tokenNumber;
 
@@ -265,13 +277,15 @@ export const barcodeController = {
               patient: appointment.Patient,
               tokens: {
                 consultation: consultAppt?.tokenNumber || null,
-                lab: labAppt?.tokenNumber || null,
-                extraService: extraServiceAppt?.tokenNumber || null
+                lab: labAppts.map(a => a.tokenNumber).join(", ") || null,
+                extraService: extraServiceAppts.map(a => a.tokenNumber).join(", ") || null,
+                labList: labTokensSummary,
+                extraServiceList: extraServiceTokensSummary
               },
               rooms: {
-                consultation: consultAppt?.User?.room?.roomNumber || "01",
-                lab: labAppt?.User?.room?.roomNumber || "LAB",
-                extraService: extraServiceAppt?.User?.room?.roomNumber || "PROCEDURE"
+                consultation: consultAppt?.room?.roomNumber || consultAppt?.User?.room?.roomNumber || "01",
+                lab: labAppts.map(a => a.room?.roomNumber).filter(Boolean).join(", ") || "LAB",
+                extraService: extraServiceAppts.map(a => a.room?.roomNumber).filter(Boolean).join(", ") || "PROCEDURE"
               },
               appointment: consultAppt,
               allAppointments,

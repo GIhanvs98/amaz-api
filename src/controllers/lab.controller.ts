@@ -139,7 +139,8 @@ export class LabController {
 
   async getQueueTokens(req: Request, res: Response) {
     try {
-      const tokens = await labService.getQueueTokens();
+      const { roomId } = req.query;
+      const tokens = await labService.getQueueTokens(roomId as string | undefined);
       res.json({ success: true, data: tokens });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message });

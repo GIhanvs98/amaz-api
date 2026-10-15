@@ -4,6 +4,7 @@ import { NotificationService } from './notification.service.js';
 import { billingService } from './billing.service.js';
 import { generateMRN } from '../utils/mrn.util.js';
 import { generateIdentityKey } from '../utils/identity.util.js';
+import { getTimezoneBoundaries } from '../lib/dateUtils.js';
 
 export class FrontdeskService {
   // 1. Get Doctor Status & Sessions for a given date
@@ -346,10 +347,9 @@ export class FrontdeskService {
   }
 
   // 5. Walk-in Registration
-  async createWalkIn(doctorId: string, sessionId: string, patientData: any, userId: string) {
-    const today = new Date();
-    const startOfDay = new Date(today.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(today.setHours(23, 59, 59, 999));
+  async createWalkIn(doctorId: string, sessionId: string, patientData: any, userId: string, date?: string) {
+    const targetDate = date ? new Date(date) : new Date();
+    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
 
     // Fetch session to check walk-in capacity
     const session = await prisma.doctorScheduleSession.findUnique({

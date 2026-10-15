@@ -409,16 +409,13 @@ export const generateToken = async (req: Request, res: Response) => {
     if (doctorId) {
       doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true } });
       const targetDate = date ? new Date(date) : new Date();
-      const startOfDay = new Date(targetDate);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(targetDate);
-      endOfDay.setHours(23, 59, 59, 999);
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
       const todayAttendance = await prisma.doctorAttendance.findFirst({
         where: { doctorId: doctorId, date: { gte: startOfDay, lte: endOfDay } },
         include: { room: true }
       });
 
-      const dayOfWeek = targetDate.getDay();
+      const dayOfWeek = startOfDay.getDay();
       const session = await prisma.doctorScheduleSession.findFirst({
         where: {
           dayOfWeek: dayOfWeek,
@@ -462,10 +459,7 @@ export const generateToken = async (req: Request, res: Response) => {
     // If it's a PHONE booking, check if this patient already has a BOOKED phone appointment today
     if (bookingType === "PHONE" && patient?.id) {
       const targetDate = date ? new Date(date) : new Date();
-      const startOfDay = new Date(targetDate);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(targetDate);
-      endOfDay.setHours(23, 59, 59, 999);
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
 
       const existingPhoneBooking = await prisma.appointment.findFirst({
         where: {
@@ -483,18 +477,22 @@ export const generateToken = async (req: Request, res: Response) => {
     }
 
     // Helper to robustly generate a single token
-    const generateSpecificToken = async (dept: string, docId: string | null, requestedTokenNumber?: number) => {
+    // Helper to robustly generate a single token
+    const generateSpecificToken = async (
+      dept: string,
+      docId: string | null,
+      roomId: string | null,
+      prefix: string,
+      requestedTokenNumber?: number
+    ) => {
       const targetDate = date ? new Date(date) : new Date();
-      const startOfDay = new Date(targetDate);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(targetDate);
-      endOfDay.setHours(23, 59, 59, 999);
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
 
       let token = null;
 
       let sessionId = null;
       if (dept === "CONSULTATION" && docId) {
-        const dayOfWeek = targetDate.getDay();
+        const dayOfWeek = startOfDay.getDay();
         const session = await prisma.doctorScheduleSession.findFirst({
           where: {
             dayOfWeek: dayOfWeek,
@@ -514,13 +512,19 @@ export const generateToken = async (req: Request, res: Response) => {
         }
       }
 
+      // Format tokenDisplay
+      const formatTokenNumber = (num: number) => {
+        const padded = num.toString().padStart(2, "0");
+        return prefix ? `${prefix}-${padded}` : padded;
+      };
+
       if (requestedTokenNumber) {
-        const tokenDisplay = requestedTokenNumber.toString().padStart(2, "0");
+        const tokenDisplay = formatTokenNumber(requestedTokenNumber);
         const exists = await prisma.appointment.findFirst({
           where: {
             appointmentDate: { gte: startOfDay, lte: endOfDay },
             department: dept,
-            doctorId: docId || null,
+            ...(roomId ? { roomId } : { doctorId: docId || null }),
             tokenNumber: tokenDisplay,
             status: { notIn: ["CANCELLED", "NO_SHOW"] }
           }
@@ -536,10 +540,11 @@ export const generateToken = async (req: Request, res: Response) => {
             patientId: patient!.id,
             doctorId: docId || null,
             sessionId: sessionId,
+            roomId: roomId || null,
             department: dept,
             status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
             bookingType: bookingType || "WALK_IN",
-            appointmentDate: targetDate,
+            appointmentDate: startOfDay,
             bookingReference: sharedRefNo
           }
         });
@@ -551,33 +556,36 @@ export const generateToken = async (req: Request, res: Response) => {
         where: {
           appointmentDate: { gte: startOfDay, lte: endOfDay },
           department: dept,
-          doctorId: docId || null,
+          ...(roomId ? { roomId } : { doctorId: docId || null }),
           status: { notIn: ["CANCELLED", "NO_SHOW"] }
         },
         orderBy: { createdAt: 'desc' }
       });
 
       let nextTokenInt = 1;
-      if (lastToken && !isNaN(parseInt(lastToken.tokenNumber))) {
-        nextTokenInt = parseInt(lastToken.tokenNumber) + 1;
+      if (lastToken) {
+        const digits = lastToken.tokenNumber.match(/\d+/);
+        if (digits) {
+          nextTokenInt = parseInt(digits[0], 10) + 1;
+        }
       } else {
         const count = await prisma.appointment.count({
           where: {
             appointmentDate: { gte: startOfDay, lte: endOfDay },
             department: dept,
-            doctorId: docId || null
+            ...(roomId ? { roomId } : { doctorId: docId || null })
           }
         });
         nextTokenInt = count + 1;
       }
 
       while (!token && attempts < 20) {
-        const tokenDisplay = nextTokenInt.toString().padStart(2, "0");
+        const tokenDisplay = formatTokenNumber(nextTokenInt);
         const exists = await prisma.appointment.findFirst({
           where: {
             appointmentDate: { gte: startOfDay, lte: endOfDay },
             department: dept,
-            doctorId: docId || null,
+            ...(roomId ? { roomId } : { doctorId: docId || null }),
             tokenNumber: tokenDisplay
           }
         });
@@ -595,10 +603,11 @@ export const generateToken = async (req: Request, res: Response) => {
               patientId: patient!.id,
               doctorId: docId || null,
               sessionId: sessionId,
+              roomId: roomId || null,
               department: dept,
               status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
               bookingType: bookingType || "WALK_IN",
-              appointmentDate: targetDate,
+              appointmentDate: startOfDay,
               bookingReference: sharedRefNo
             }
           });
@@ -612,17 +621,100 @@ export const generateToken = async (req: Request, res: Response) => {
       return token;
     };
 
-    const tokensToGenerate: { dept: string, docId: string | null, name: string, roomNumber: string | null, requestedTokenNumber?: number }[] = [];
+    const tokensToGenerate: {
+      dept: string;
+      docId: string | null;
+      roomId: string | null;
+      prefix: string;
+      name: string;
+      roomNumber: string | null;
+      requestedTokenNumber?: number;
+      testIds?: string[];
+      serviceIds?: string[];
+    }[] = [];
+
     if (hasConsultation) {
-      tokensToGenerate.push({ dept: "CONSULTATION", docId: doctorId, name: doctorName || "General Physician", roomNumber: doctorRoomNumber, requestedTokenNumber: doctorTokenNumber });
+      tokensToGenerate.push({
+        dept: "CONSULTATION",
+        docId: doctorId,
+        roomId: doctorDetails?.roomId || null,
+        prefix: "",
+        name: doctorName || "General Physician",
+        roomNumber: doctorRoomNumber,
+        requestedTokenNumber: doctorTokenNumber
+      });
     }
+
     if (hasLab) {
-      const firstLabRoom = labTestsDetails.find((t: any) => t.room?.roomNumber)?.room?.roomNumber || null;
-      tokensToGenerate.push({ dept: "LAB", docId: null, name: "Laboratory", roomNumber: firstLabRoom, requestedTokenNumber: labTokenNumber });
+      const labRooms = await prisma.room.findMany({
+        where: { department: "LAB", isActive: true },
+        orderBy: { roomNumber: "asc" }
+      });
+      const defaultLabRoom = labRooms[0] || null;
+
+      const labGroups = new Map<string, { roomId: string | null; roomNumber: string; testIds: string[] }>();
+      for (const t of labTestsDetails) {
+        const assignedRoom = t.room || labRooms.find(r => r.id === t.roomId) || defaultLabRoom;
+        const rId = assignedRoom?.id || "default-lab";
+        const rNum = assignedRoom?.roomNumber || "LAB-A";
+        if (!labGroups.has(rId)) {
+          labGroups.set(rId, { roomId: assignedRoom?.id || null, roomNumber: rNum, testIds: [] });
+        }
+        labGroups.get(rId)!.testIds.push(t.id);
+      }
+
+      for (const [_, grp] of labGroups.entries()) {
+        const isLabA = grp.roomNumber.toUpperCase().includes("A");
+        const isLabB = grp.roomNumber.toUpperCase().includes("B");
+        const prefix = isLabA ? "LA" : isLabB ? "LB" : "LAB";
+
+        tokensToGenerate.push({
+          dept: "LAB",
+          docId: null,
+          roomId: grp.roomId,
+          prefix: prefix,
+          name: `Laboratory (${grp.roomNumber})`,
+          roomNumber: grp.roomNumber,
+          requestedTokenNumber: labGroups.size === 1 ? labTokenNumber : undefined,
+          testIds: grp.testIds
+        });
+      }
     }
+
     if (hasService) {
-      const firstServiceRoom = extraServicesDetails.find((s: any) => s.room?.roomNumber)?.room?.roomNumber || null;
-      tokensToGenerate.push({ dept: "EXTRA_SERVICE", docId: null, name: "Extra Services", roomNumber: firstServiceRoom, requestedTokenNumber: serviceTokenNumber });
+      const serviceRooms = await prisma.room.findMany({
+        where: { department: "EXTRA_SERVICE", isActive: true },
+        orderBy: { roomNumber: "asc" }
+      });
+      const defaultServiceRoom = serviceRooms[0] || null;
+
+      const serviceGroups = new Map<string, { roomId: string | null; roomNumber: string; serviceIds: string[] }>();
+      for (const s of extraServicesDetails) {
+        const assignedRoom = s.room || serviceRooms.find(r => r.id === s.roomId) || defaultServiceRoom;
+        const rId = assignedRoom?.id || "default-es";
+        const rNum = assignedRoom?.roomNumber || "EXT-01";
+        if (!serviceGroups.has(rId)) {
+          serviceGroups.set(rId, { roomId: assignedRoom?.id || null, roomNumber: rNum, serviceIds: [] });
+        }
+        serviceGroups.get(rId)!.serviceIds.push(s.id);
+      }
+
+      for (const [_, grp] of serviceGroups.entries()) {
+        const isES1 = grp.roomNumber.includes("01") || grp.roomNumber.includes("1");
+        const isES2 = grp.roomNumber.includes("02") || grp.roomNumber.includes("2");
+        const prefix = isES1 ? "ES1" : isES2 ? "ES2" : "ES";
+
+        tokensToGenerate.push({
+          dept: "EXTRA_SERVICE",
+          docId: null,
+          roomId: grp.roomId,
+          prefix: prefix,
+          name: `Extra Services (${grp.roomNumber})`,
+          roomNumber: grp.roomNumber,
+          requestedTokenNumber: serviceGroups.size === 1 ? serviceTokenNumber : undefined,
+          serviceIds: grp.serviceIds
+        });
+      }
     }
 
     if (tokensToGenerate.length === 0) {
@@ -631,7 +723,7 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const generatedTokens = [];
     for (const t of tokensToGenerate) {
-      const token = await generateSpecificToken(t.dept, t.docId, t.requestedTokenNumber);
+      const token = await generateSpecificToken(t.dept, t.docId, t.roomId, t.prefix, t.requestedTokenNumber);
       generatedTokens.push({
         id: token.id,
         refNo: token.bookingReference,
@@ -641,7 +733,10 @@ export const generateToken = async (req: Request, res: Response) => {
         doctorName: t.name,
         patientName: patient.fullName,
         appointmentDate: token.appointmentDate,
-        roomNumber: t.roomNumber
+        roomId: t.roomId,
+        roomNumber: t.roomNumber,
+        testIds: t.testIds,
+        serviceIds: t.serviceIds
       });
     }
 
@@ -735,16 +830,21 @@ export const generateToken = async (req: Request, res: Response) => {
     // --- Post Generation Hooks ---
     if (hasLab) {
       const { labService } = await import('../services/lab.service.js');
-      const labToken = generatedTokens.find(t => t.department === "LAB");
-      await labService.createRequest({
-        patientId: patient.id,
-        visitId: labToken?.id || generatedTokens[0]?.id || "",
-        testIds,
-        doctorId: doctorId || null,
-        priority: "ROUTINE",
-        customPrices: customLabPrices,
-        skipBilling: true
-      });
+      const labTokens = generatedTokens.filter(t => t.department === "LAB");
+      for (const lt of labTokens) {
+        const testsForThisRoom = lt.testIds && lt.testIds.length > 0 ? lt.testIds : testIds;
+        if (testsForThisRoom && testsForThisRoom.length > 0) {
+          await labService.createRequest({
+            patientId: patient.id,
+            visitId: lt.id,
+            testIds: testsForThisRoom,
+            doctorId: doctorId || null,
+            priority: "ROUTINE",
+            customPrices: customLabPrices,
+            skipBilling: true
+          });
+        }
+      }
     }
 
     if (patientPhone && !patientPhone.startsWith('WALKIN')) {

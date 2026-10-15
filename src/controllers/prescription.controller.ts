@@ -20,7 +20,7 @@ const withRetry = async <T>(operation: () => Promise<T>, retries = 3, delay = 10
 };
 
 export const calcDispenseQty = (item: any): number => {
-  if (item.dispenseQty && Number(item.dispenseQty) > 1) {
+  if (item.dispenseQty != null && Number(item.dispenseQty) >= 1) {
     return parseInt(String(item.dispenseQty), 10);
   }
 

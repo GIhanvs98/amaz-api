@@ -8,12 +8,12 @@ const router = Router();
 router.use(verifyToken, requireRole(['ADMIN', 'DOCTOR', 'PHARMACIST', 'RECEPTIONIST']));
 
 router.post("/", createPrescription);
-router.get("/", cacheMiddleware(60), getPrescriptionHistory);
+router.get("/", getPrescriptionHistory);
 router.get("/pending", getPendingPrescriptions);
 router.patch("/:id/status", updatePrescriptionStatus);
 router.post("/:id/dispense", markPrescriptionDispensed);
 router.put("/:id", updatePrescription);
 router.delete("/:id", deletePrescription);
-router.get("/:id", cacheMiddleware(60), getPrescriptionById);
+router.get("/:id", getPrescriptionById);
 
 export default router;

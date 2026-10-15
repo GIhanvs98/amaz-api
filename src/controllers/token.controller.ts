@@ -5,7 +5,7 @@ import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 
 export const generateToken = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { patientId, doctorId } = req.body;
+    const { patientId, doctorId, appointmentDate } = req.body;
 
     if (!patientId || !doctorId) {
       res.status(400).json({ error: "Please provide patientId and doctorId" });
@@ -22,20 +22,20 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    // Get today's appointments for this doctor to determine the sequence number
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const dayOfWeek = today.getDay();
+    // Determine target date and timezone boundaries
+    const targetDate = appointmentDate ? new Date(appointmentDate) : new Date();
+    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+    const dayOfWeek = startOfDay.getDay();
 
-    // Check if the doctor has an active schedule for today
+    // Check if the doctor has an active schedule for the target day
     const activeSessions = await prisma.doctorScheduleSession.findMany({
       where: {
         schedule: {
           doctorId: doctorId,
-          validFrom: { lte: new Date() },
+          validFrom: { lte: endOfDay },
           OR: [
             { validUntil: null },
-            { validUntil: { gte: new Date() } }
+            { validUntil: { gte: startOfDay } }
           ]
         },
         dayOfWeek: dayOfWeek,
@@ -44,7 +44,7 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
     });
 
     if (activeSessions.length === 0) {
-      res.status(400).json({ error: "Doctor is not scheduled for today" });
+      res.status(400).json({ error: "Doctor is not scheduled for this date" });
       return;
     }
 
@@ -64,13 +64,14 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
         where: {
           doctorId,
           appointmentDate: {
-            gte: today,
+            gte: startOfDay,
+            lte: endOfDay,
           },
         },
       });
 
       if (tokensToday >= maxWalkInCapacity) {
-        throw new Error("Doctor's walk-in capacity reached for today");
+        throw new Error("Doctor's walk-in capacity reached for this date");
       }
 
       // Generate token number: First 3 letters of doctor's name + sequence
@@ -84,7 +85,8 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
           patientId,
           doctorId,
           sessionId: session.id,
-          status: "CHECKED_IN", // Mapping "waiting_for_counsiling_payment" or similar
+          appointmentDate: startOfDay,
+          status: "CHECKED_IN",
         },
         include: {
           Patient: true,

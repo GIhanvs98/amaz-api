@@ -1,4 +1,5 @@
 import { prisma, withRetry } from "../lib/prisma.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 import { NotificationService } from "./notification.service.js";
 import { websocketService } from "./websocket.service.js";
 import { SMSService } from "./sms.service.js";
@@ -55,12 +56,9 @@ export class BookingService {
 
   static async getAvailability(doctorId: string, date: string) {
     return withRetry(async () => {
-      const dayOfWeek = new Date(date).getDay();
       const targetDate = new Date(date);
-      const startOfDay = new Date(date);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(date);
-      endOfDay.setHours(23, 59, 59, 999);
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+      const dayOfWeek = startOfDay.getDay();
 
       const session = await prisma.doctorScheduleSession.findFirst({
         where: { 
@@ -150,10 +148,7 @@ export class BookingService {
 
   static async getDepartmentAvailability(department: string, date: string) {
     const targetDate = new Date(date);
-    const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
+    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
 
     const existingTokens = await prisma.appointment.findMany({
       where: {
@@ -214,12 +209,9 @@ export class BookingService {
   }
 
   static async bookPhoneToken(phone: string, fullName: string, doctorId: string, date: string, selectedTokenNumber?: number) {
-    const dayOfWeek = new Date(date).getDay();
-    const appointmentDate = new Date(date);
-    const startOfDay = new Date(date);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(date);
-    endOfDay.setHours(23, 59, 59, 999);
+    const targetDate = new Date(date);
+    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+    const dayOfWeek = startOfDay.getDay();
 
     let retries = 0;
     while (retries < 3) {
@@ -327,7 +319,7 @@ export class BookingService {
             {
               patientName: fullName,
               doctorName: token.User?.fullName || 'General Physician',
-              appointmentDate: appointmentDate.toLocaleDateString(),
+              appointmentDate: startOfDay.toLocaleDateString(),
               tokenNumber: token.tokenNumber,
               hospitalName: "AMAZ Hospital"
             }

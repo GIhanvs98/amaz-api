@@ -55,10 +55,10 @@ export const updateAppointmentStatus = async (req: Request, res: Response) => {
 
 export const createWalkIn = async (req: Request, res: Response) => {
   try {
-    const { doctorId, sessionId, patient } = req.body;
+    const { doctorId, sessionId, patient, date } = req.body;
     const userId = (req as any).user?.id;
 
-    const data = await frontdeskService.createWalkIn(doctorId, sessionId, patient, userId);
+    const data = await frontdeskService.createWalkIn(doctorId, sessionId, patient, userId, date);
     res.status(201).json(data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });

@@ -51,6 +51,7 @@ model Room {
   LabTests          LabTest[]
   ExtraServices     ExtraService[]
   ScheduleSessions  DoctorScheduleSession[]
+  Appointments      Appointment[]
 }
 
 model Supplier {
@@ -368,10 +369,13 @@ model Appointment {
   User             User?                  @relation(fields: [doctorId], references: [id])
   Patient          Patient                @relation(fields: [patientId], references: [id], onDelete: Cascade)
   Session          DoctorScheduleSession? @relation(fields: [sessionId], references: [id])
+  roomId           String?
+  room             Room?                  @relation(fields: [roomId], references: [id])
   LabRequests      LabRequest[]
 
   @@unique([sessionId, appointmentDate, tokenNumber])
   @@index([appointmentDate, doctorId])
+  @@index([appointmentDate, roomId])
   @@index([status])
   @@index([bookingReference])
   @@index([patientId])
