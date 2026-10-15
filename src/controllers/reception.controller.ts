@@ -6,6 +6,7 @@ import { BookingService } from "../services/booking.service.js";
 import { websocketService } from "../services/websocket.service.js";
 import { SMSService } from "../services/sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
+import { generateIdentityKey } from "../utils/identity.util.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 import { expirePastTokens } from "../services/token-lifecycle.service.js";
 
@@ -141,13 +142,19 @@ export const getPatients = async (req: Request, res: Response) => {
       return res.json({ success: true, data: recentPatients });
     }
     
+    const searchTerm = (q as string).trim();
     const patients = await prisma.patient.findMany({
       where: {
-        phone: {
-          contains: q as string
-        }
+        isActive: true,
+        OR: [
+          { phone: { contains: searchTerm } },
+          { fullName: { contains: searchTerm, mode: 'insensitive' } },
+          { patientId: { contains: searchTerm, mode: 'insensitive' } },
+          { nic: { contains: searchTerm, mode: 'insensitive' } }
+        ]
       },
-      take: 5
+      take: 20,
+      orderBy: { createdAt: 'desc' }
     });
     
     res.json({ success: true, data: patients });
@@ -317,22 +324,73 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
 
 export const generateToken = async (req: Request, res: Response) => {
   try {
-    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds, customLabPrices, serviceIds, customServicePrices, doctorTokenNumber, labTokenNumber, serviceTokenNumber, date, bookingType } = req.body;
+    const { 
+      patientId: requestedPatientId,
+      isNewPatient,
+      gender,
+      patientName, 
+      patientPhone, 
+      ageFallback, 
+      doctorId, 
+      doctorName, 
+      testIds, 
+      customLabPrices, 
+      serviceIds, 
+      customServicePrices, 
+      doctorTokenNumber, 
+      labTokenNumber, 
+      serviceTokenNumber, 
+      date, 
+      bookingType 
+    } = req.body;
 
-    // Find or create patient
-    let patient;
-    if (patientPhone) {
-      patient = await prisma.patient.findFirst({ where: { phone: patientPhone } });
+    // Multi-tenant patient resolution
+    let patient: any = null;
+
+    // 1. Explicit patientId provided (e.g. receptionist clicked a specific family member)
+    if (requestedPatientId) {
+      patient = await prisma.patient.findUnique({ where: { id: requestedPatientId } });
     }
-    
+
+    // 2. Composite lookup if not explicitly flagged as new patient
+    if (!patient && !isNewPatient && patientName && patientPhone) {
+      const identityKey = generateIdentityKey(patientName, patientPhone);
+      if (identityKey) {
+        patient = await prisma.patient.findUnique({ where: { identityKey } });
+      }
+      if (!patient) {
+        patient = await prisma.patient.findFirst({
+          where: {
+            phone: patientPhone,
+            fullName: { equals: patientName, mode: "insensitive" }
+          }
+        });
+      }
+    }
+
+    // 3. Create new distinct patient if still not resolved
     if (!patient) {
       const patientId = await generateMRN(prisma);
+      const effectiveName = patientName || "Walk-in Patient";
+      const effectivePhone = patientPhone || `WALKIN-${randomUUID()}`;
+      let identityKey = generateIdentityKey(effectiveName, effectivePhone);
+
+      // Handle rare key collision
+      if (identityKey) {
+        const existingKey = await prisma.patient.findUnique({ where: { identityKey } });
+        if (existingKey) {
+          identityKey = `${identityKey}_${Date.now().toString().slice(-4)}`;
+        }
+      }
+
       patient = await prisma.patient.create({
         data: {
           patientId,
-          fullName: patientName || "Walk-in Patient",
-          phone: patientPhone || `WALKIN-${randomUUID()}`, // UUID fallback guarantees uniqueness under concurrency
-          ageFallback: ageFallback || null
+          identityKey: identityKey || null,
+          fullName: effectiveName,
+          phone: effectivePhone,
+          ageFallback: ageFallback ? parseInt(ageFallback.toString(), 10) : null,
+          gender: gender || null
         }
       });
       

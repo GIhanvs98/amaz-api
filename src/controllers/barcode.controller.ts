@@ -204,11 +204,17 @@ export const barcodeController = {
         }
 
         const allApptIds = allAppointments.map(a => a.id);
+        const allVisitIdentifiers = Array.from(new Set([
+          ...allApptIds,
+          ...allAppointments.map((a: any) => a.bookingReference).filter(Boolean),
+          appointment.bookingReference,
+          code
+        ])).filter(Boolean) as string[];
 
         // Fetch DRAFT invoices linked to this visit
         const invoices = await prisma.invoice.findMany({
           where: {
-            visitId: { in: allApptIds },
+            visitId: { in: allVisitIdentifiers },
             status: "DRAFT"
           },
           include: { lineItems: true }
@@ -246,25 +252,26 @@ export const barcodeController = {
           }
         }
 
-        // Fetch prescriptions created during this visit
+        // Fetch prescriptions created during this visit (ordered newest first)
         const prescriptions = await prisma.prescription.findMany({
           where: {
             OR: [
-              { visitId: { in: allApptIds } },
+              { visitId: { in: allVisitIdentifiers } },
               {
                 patientId: appointment.patientId,
                 createdAt: { gte: startOfDay, lte: endOfDay }
               }
             ]
           },
-          include: { items: { include: { medicine: { include: { stockBatches: true } } } } }
+          include: { items: { include: { medicine: { include: { stockBatches: true } } } } },
+          orderBy: { createdAt: 'desc' }
         });
 
         // Fetch lab requests created during this visit
         const labRequests = await prisma.labRequest.findMany({
           where: {
             OR: [
-              { visitId: { in: allApptIds } },
+              { visitId: { in: allVisitIdentifiers } },
               {
                 patientId: appointment.patientId,
                 requestedAt: { gte: startOfDay, lte: endOfDay }
@@ -274,13 +281,14 @@ export const barcodeController = {
           include: {
             items: { include: { LabTest: { include: { biomarkers: true } } } },
             results: true
-          }
+          },
+          orderBy: { requestedAt: 'desc' }
         });
 
         // Check if consultation fee was already paid
         const paidInvoice = await prisma.invoice.findFirst({
           where: {
-            visitId: { in: allApptIds },
+            visitId: { in: allVisitIdentifiers },
             status: 'PAID',
             lineItems: { some: { department: 'CONSULTATION' } }
           }

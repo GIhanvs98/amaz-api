@@ -3,6 +3,7 @@ import { websocketService } from './websocket.service.js';
 import { NotificationService } from './notification.service.js';
 import { billingService } from './billing.service.js';
 import { generateMRN } from '../utils/mrn.util.js';
+import { generateIdentityKey } from '../utils/identity.util.js';
 
 export class FrontdeskService {
   // 1. Get Doctor Status & Sessions for a given date
@@ -368,14 +369,29 @@ export class FrontdeskService {
       throw new Error("Walk-in slots are fully booked for this session");
     }
 
-    // Create or find patient (assuming patientData has name, phone)
-    let patient = await prisma.patient.findFirst({ where: { phone: patientData.phone } });
+    // Create or find patient (multi-tenant safe)
+    const effectiveName = patientData.fullName || `${patientData.firstName || ''} ${patientData.lastName || ''}`.trim() || 'Walk-in Patient';
+    const identityKey = generateIdentityKey(effectiveName, patientData.phone);
+    let patient = patientData.id
+      ? await prisma.patient.findUnique({ where: { id: patientData.id } })
+      : (identityKey ? await prisma.patient.findUnique({ where: { identityKey } }) : null);
+
+    if (!patient && patientData.phone) {
+      patient = await prisma.patient.findFirst({
+        where: {
+          phone: patientData.phone,
+          fullName: { equals: effectiveName, mode: 'insensitive' }
+        }
+      });
+    }
+
     if (!patient) {
       const patientId = await generateMRN(prisma);
       patient = await prisma.patient.create({
         data: {
           patientId,
-          fullName: patientData.fullName || `${patientData.firstName} ${patientData.lastName || ''}`.trim(),
+          identityKey: identityKey || null,
+          fullName: effectiveName,
           phone: patientData.phone,
           dateOfBirth: patientData.dateOfBirth ? new Date(patientData.dateOfBirth) : new Date(),
           gender: patientData.gender || 'OTHER',

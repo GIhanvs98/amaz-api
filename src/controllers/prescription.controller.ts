@@ -228,39 +228,66 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
       orderBy: { createdAt: 'desc' as const }
     }));
 
-    const enrichedPrescriptions = await Promise.all((prescriptions as any[]).map(async (rx: any) => {
+    const visitIds = Array.from(new Set((prescriptions as any[]).map((rx: any) => rx.visitId).filter(Boolean)));
+    const doctorIds = Array.from(new Set((prescriptions as any[]).map((rx: any) => rx.doctorId).filter(Boolean)));
+
+    const [appts, invoices, lrs, doctors] = await Promise.all([
+      visitIds.length > 0 ? (prisma as any).appointment.findMany({
+        where: { id: { in: visitIds } },
+        select: { id: true, bookingReference: true }
+      }) : [],
+      visitIds.length > 0 ? (prisma as any).invoice.findMany({
+        where: { visitId: { in: visitIds } },
+        include: { lineItems: true },
+        orderBy: { createdAt: 'desc' }
+      }) : [],
+      visitIds.length > 0 ? (prisma as any).labRequest.findMany({
+        where: { visitId: { in: visitIds } },
+        include: { items: { include: { LabTest: true } } }
+      }) : [],
+      doctorIds.length > 0 ? (prisma as any).user.findMany({
+        where: { id: { in: doctorIds } },
+        select: { id: true, feeType: true, consultationFee: true, fullName: true }
+      }) : []
+    ]);
+
+    const apptMap = new Map<string, any>(appts.map((a: any) => [a.id, a]));
+    const invoicesByVisit = new Map<string, any[]>();
+    for (const inv of invoices) {
+      if (inv.visitId) {
+        if (!invoicesByVisit.has(inv.visitId)) invoicesByVisit.set(inv.visitId, []);
+        invoicesByVisit.get(inv.visitId)!.push(inv);
+      }
+    }
+    const labRequestsByVisit = new Map<string, any[]>();
+    for (const lr of lrs) {
+      if (lr.visitId) {
+        if (!labRequestsByVisit.has(lr.visitId)) labRequestsByVisit.set(lr.visitId, []);
+        labRequestsByVisit.get(lr.visitId)!.push(lr);
+      }
+    }
+    const doctorMap = new Map<string, any>(doctors.map((d: any) => [d.id, d]));
+
+    const enrichedPrescriptions = (prescriptions as any[]).map((rx: any) => {
       let consultationPaid = false;
       let labRequestsData: any[] = [];
       let fullInvoiceStatus: string | null = null;
-      let appt: any = null;
+      const appt = rx.visitId ? apptMap.get(rx.visitId) : null;
 
       if (rx.visitId) {
-        appt = await (prisma as any).appointment.findUnique({
-          where: { id: rx.visitId },
-          select: { bookingReference: true }
-        });
-        // Check for any active DRAFT invoice first, otherwise check PAID
-        const invoices = await (prisma as any).invoice.findMany({
-          where: { visitId: rx.visitId },
-          include: { lineItems: true },
-          orderBy: { createdAt: 'desc' }
-        });
+        const invList = invoicesByVisit.get(rx.visitId) || [];
+        if (invList.length > 0) {
+          const draftInv = invList.find((inv: any) => inv.status === 'DRAFT');
+          const paidInv = invList.find((inv: any) => inv.status === 'PAID');
+          fullInvoiceStatus = draftInv ? 'DRAFT' : (paidInv ? 'PAID' : invList[0].status);
 
-        if (invoices.length > 0) {
-          const draftInv = invoices.find((inv: any) => inv.status === 'DRAFT');
-          const paidInv = invoices.find((inv: any) => inv.status === 'PAID');
-          fullInvoiceStatus = draftInv ? 'DRAFT' : (paidInv ? 'PAID' : invoices[0].status);
-
-          consultationPaid = invoices.some((inv: any) => 
+          consultationPaid = invList.some((inv: any) => 
             inv.status === 'PAID' && inv.lineItems?.some((li: any) => li.department === 'CONSULTATION')
           );
         }
 
-        const lrs = await (prisma as any).labRequest.findMany({
-          where: { visitId: rx.visitId },
-          include: { items: { include: { LabTest: true } } }
-        });
-        labRequestsData = lrs.map((lr: any) => ({
+        const visitLrs = labRequestsByVisit.get(rx.visitId) || [];
+        labRequestsData = visitLrs.map((lr: any) => ({
           id: lr.id,
           status: lr.status,
           requestedAt: lr.requestedAt,
@@ -268,10 +295,7 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
         }));
       }
 
-      const doctor = await (prisma as any).user.findUnique({
-        where: { id: rx.doctorId },
-        select: { id: true, feeType: true, consultationFee: true, fullName: true }
-      });
+      const doctor = rx.doctorId ? doctorMap.get(rx.doctorId) || null : null;
 
       return {
         ...rx,
@@ -281,7 +305,7 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
         doctor,
         labRequests: labRequestsData
       };
-    }));
+    });
 
     // Filter out prescriptions that were automatically marked DISPENSED
     res.json(enrichedPrescriptions.filter(Boolean));

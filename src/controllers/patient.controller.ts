@@ -1,19 +1,27 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { generateMRN } from "../utils/mrn.util.js";
+import { generateIdentityKey } from "../utils/identity.util.js";
 
 export const createOrGetPatient = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { fullName, phone, age } = req.body;
+    const { fullName, phone, age, gender } = req.body;
 
     if (!fullName || !phone) {
       res.status(400).json({ error: "Please provide full name and phone number." });
       return;
     }
 
-    let patient = await prisma.patient.findFirst({
-      where: { phone, fullName },
-    });
+    const identityKey = generateIdentityKey(fullName, phone);
+    let patient = identityKey ? await prisma.patient.findUnique({
+      where: { identityKey },
+    }) : null;
+
+    if (!patient) {
+      patient = await prisma.patient.findFirst({
+        where: { phone, fullName: { equals: fullName, mode: "insensitive" } },
+      });
+    }
 
     if (patient) {
       if (!patient.isActive) {
@@ -27,9 +35,11 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
       patient = await prisma.patient.create({
         data: {
           patientId,
+          identityKey: identityKey || null,
           fullName,
           phone,
           ageFallback: age ? parseInt(age.toString()) : null,
+          gender: gender || null,
         },
       });
     }
@@ -43,7 +53,7 @@ export const createOrGetPatient = async (req: Request, res: Response): Promise<v
 
 export const searchPatient = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { phone, query } = req.query;
+    const { phone, query, single } = req.query;
     const searchTerm = query || phone;
     
     if (!searchTerm) {
@@ -61,11 +71,11 @@ export const searchPatient = async (req: Request, res: Response): Promise<void> 
           { nic: { contains: searchTerm as string, mode: 'insensitive' } }
         ]
       },
-      take: 10
+      take: 20
     });
 
-    // If frontend expects a single object for legacy phone search, we can return the first match
-    if (phone && !query && patients.length > 0) {
+    // If caller explicitly asks for a single object
+    if (single === 'true' && patients.length > 0) {
       res.status(200).json(patients[0]);
       return;
     }

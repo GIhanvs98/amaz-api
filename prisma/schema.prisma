@@ -287,6 +287,7 @@ model PrescriptionItem {
 model Patient {
   id               String    @id @default(uuid())
   patientId        String?   @unique @default(cuid()) // Unique MRN, using cuid as temporary default before migration
+  identityKey      String?   @unique // Deterministic composite: normalized(name) + normalized(phone)
   fullName         String
   phone            String
   dateOfBirth      DateTime?
@@ -307,6 +308,7 @@ model Patient {
 
   @@index([phone])
   @@index([fullName])
+  @@index([phone, fullName])
 }
 
 model Permission {
