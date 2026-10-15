@@ -60,6 +60,8 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
       patientPhone: prescription.Patient.phone,
       doctorName: prescription.doctorName,
       status: prescription.status,
+      diagnosis: prescription.diagnosis,
+      clinicalNotes: prescription.clinicalNotes,
       createdAt: prescription.createdAt,
       items: prescription.items.map((i: any) => ({
         id: i.id,
@@ -93,7 +95,38 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
 
 export const createPrescription = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items } = req.body;
+    let { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items } = req.body;
+
+    if (visitId) {
+      const apptRecord = await prisma.appointment.findUnique({
+        where: { id: visitId },
+        include: { Patient: true }
+      });
+      if (apptRecord) {
+        if (!doctorId && apptRecord.doctorId) doctorId = apptRecord.doctorId;
+        if (!patientId && apptRecord.patientId) patientId = apptRecord.patientId;
+        if (!patientName && apptRecord.Patient?.fullName) patientName = apptRecord.Patient.fullName;
+      }
+    }
+
+    if (!doctorId) {
+      doctorId = (req as any).user?.id;
+    }
+
+    if (!doctorId) {
+      res.status(400).json({ error: "Doctor ID is required" });
+      return;
+    }
+
+    if (!patientId) {
+      res.status(400).json({ error: "Patient ID is required" });
+      return;
+    }
+
+    if (!visitId) {
+      res.status(400).json({ error: "Visit ID is required" });
+      return;
+    }
 
     if ((req as any).roleName === 'DOCTOR' && doctorId !== (req as any).user?.id) {
        res.status(403).json({ error: "Forbidden: You can only create prescriptions for yourself" });
@@ -106,6 +139,11 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
       return;
     }
     const secureDoctorName = doctorUser.fullName;
+
+    if (!patientName) {
+      const pRecord = await prisma.patient.findUnique({ where: { id: patientId }, select: { fullName: true } });
+      patientName = pRecord?.fullName || "Patient";
+    }
 
     const newPrescription = await withRetry(async () => {
       return await (prisma as any).$transaction(async (tx: any) => {
@@ -440,9 +478,15 @@ export const getPrescriptionHistory = async (req: Request, res: Response): Promi
   try {
     const requestingUser = (req as any).user;
     const requestingRole = (req as any).roleName;
-    const { doctorId, date, startDate, endDate, status, search } = req.query;
+    const { doctorId, date, startDate, endDate, status, search, visitId, patientId } = req.query;
 
     let whereClause: any = {};
+    if (visitId) {
+      whereClause.visitId = String(visitId);
+    }
+    if (patientId) {
+      whereClause.patientId = String(patientId);
+    }
     if (doctorId) {
       whereClause.doctorId = String(doctorId);
     } else if (requestingRole === 'DOCTOR') {
@@ -598,7 +642,7 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
         await tx.prescriptionItem.deleteMany({ where: { prescriptionId: id } });
         
         // 2. Update the main prescription and recreate items
-        return await tx.prescription.update({
+        const updated = await tx.prescription.update({
           where: { id },
           data: {
             diagnosis,
@@ -615,14 +659,70 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
               }))
             }
           },
-          include: { items: true }
+          include: {
+            items: true,
+            Patient: true
+          }
         });
-      });
+
+        // Ensure consultation billing line item is present if not already added
+        let bookingRef: string | null = null;
+        if (rx.visitId) {
+          let visitIds = [rx.visitId];
+          const appt = await tx.appointment.findUnique({
+            where: { id: rx.visitId },
+            select: { bookingReference: true }
+          });
+          if (appt?.bookingReference) {
+            bookingRef = appt.bookingReference;
+            const linked = await tx.appointment.findMany({
+              where: { bookingReference: appt.bookingReference },
+              select: { id: true }
+            });
+            visitIds = linked.map((l: any) => l.id);
+          }
+
+          const existingConsultation = await tx.invoiceLineItem.findFirst({
+            where: {
+              department: "CONSULTATION",
+              invoice: {
+                visitId: { in: visitIds },
+                status: { in: ["DRAFT", "PAID"] }
+              }
+            }
+          });
+          if (!existingConsultation) {
+            const doctor = await tx.user.findUnique({
+              where: { id: rx.doctorId },
+              select: { consultationFee: true, feeType: true }
+            });
+            if (doctor?.feeType === "POST" || !doctor?.feeType) {
+              await billingService.addCharge({
+                visitId: rx.visitId,
+                patientId: rx.patientId,
+                department: "CONSULTATION",
+                description: "Doctor Consultation Fee (Post)",
+                quantity: 1,
+                unitPrice: doctor?.consultationFee ?? 2500
+              }, tx);
+            }
+          }
+        }
+
+        return {
+          ...updated,
+          bookingReference: bookingRef
+        };
+      }, { maxWait: 20000, timeout: 20000 });
     });
     
+    // Broadcast via WebSockets to pharmacy and frontdesk
+    websocketService.broadcast("prescription_created", updatedRx);
+    websocketService.broadcast("prescription_updated", updatedRx);
+
     res.json(updatedRx);
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error updating prescription:", error);
-    res.status(500).json({ error: "Failed to update prescription" });
+    res.status(500).json({ error: "Failed to update prescription", details: error?.message });
   }
 };
