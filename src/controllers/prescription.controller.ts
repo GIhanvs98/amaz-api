@@ -612,7 +612,7 @@ export const deletePrescription = async (req: Request, res: Response): Promise<v
 export const updatePrescription = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { diagnosis, clinicalNotes } = req.body;
+    const { diagnosis, clinicalNotes, items } = req.body;
     
     // Check if it exists and what its status is
     const rx = await withRetry(() => (prisma as any).prescription.findUnique({
@@ -624,7 +624,7 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
       return;
     }
 
-    if ((req as any).roleName === 'DOCTOR' && rx.doctorId !== (req as any).user?.id) {
+    if ((req as any).roleName === 'DOCTOR' && rx.doctorId && rx.doctorId !== (req as any).user?.id) {
        res.status(403).json({ error: "Forbidden: You can only edit your own prescriptions" });
        return;
     }
@@ -633,34 +633,67 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
       res.status(400).json({ error: "Cannot edit a prescription that has already been dispensed." });
       return;
     }
-    
-    const { items } = req.body;
+
+    // Pre-resolve missing medicineIds if drugName matches catalog
+    const processedItems: any[] = [];
+    for (const item of (items || [])) {
+      if (!item) continue;
+      const drugName = item.drugName || item.name;
+      if (!drugName || !String(drugName).trim()) continue;
+
+      let medId = item.medicineId || null;
+      if (!medId) {
+        const med = await withRetry(() => (prisma as any).medicine.findFirst({
+          where: {
+            OR: [
+              { name: { equals: String(drugName).trim(), mode: 'insensitive' } },
+              { genericName: { equals: String(drugName).trim(), mode: 'insensitive' } }
+            ]
+          }
+        })) as any;
+        if (med) medId = med.id;
+      }
+
+      processedItems.push({
+        medicineId: medId,
+        drugName: String(drugName).trim(),
+        dosage: item.dosage || "",
+        frequency: item.frequency || "",
+        duration: item.duration || "",
+        instructions: item.instructions || "",
+        dispenseQty: item.dispenseQty ? parseInt(String(item.dispenseQty), 10) : 1
+      });
+    }
     
     const updatedRx = await withRetry(async () => {
       return await (prisma as any).$transaction(async (tx: any) => {
         // 1. Delete all existing items
         await tx.prescriptionItem.deleteMany({ where: { prescriptionId: id } });
         
-        // 2. Update the main prescription and recreate items
+        // 2. Update the main prescription and recreate items with stockBatch relations
         const updated = await tx.prescription.update({
           where: { id },
           data: {
-            diagnosis,
-            clinicalNotes,
+            diagnosis: diagnosis !== undefined ? diagnosis : rx.diagnosis,
+            clinicalNotes: clinicalNotes !== undefined ? clinicalNotes : rx.clinicalNotes,
             items: {
-              create: (items || []).map((item: any) => ({
-                medicineId: item.medicineId || null,
-                drugName: item.drugName,
-                dosage: item.dosage,
-                frequency: item.frequency,
-                duration: item.duration,
-                instructions: item.instructions,
-                dispenseQty: item.dispenseQty || 1
-              }))
+              create: processedItems
             }
           },
           include: {
-            items: true,
+            items: {
+              include: {
+                medicine: {
+                  include: {
+                    stockBatches: {
+                      where: { currentQuantity: { gt: 0 } },
+                      orderBy: { createdAt: 'asc' as const },
+                      take: 1,
+                    }
+                  }
+                }
+              }
+            },
             Patient: true
           }
         });
@@ -691,7 +724,7 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
               }
             }
           });
-          if (!existingConsultation) {
+          if (!existingConsultation && rx.doctorId) {
             const doctor = await tx.user.findUnique({
               where: { id: rx.doctorId },
               select: { consultationFee: true, feeType: true }
@@ -709,9 +742,29 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
           }
         }
 
+        const doctor = rx.doctorId ? await tx.user.findUnique({
+          where: { id: rx.doctorId },
+          select: { id: true, feeType: true, consultationFee: true, fullName: true }
+        }) : null;
+
+        const visitLrs = rx.visitId ? await tx.labRequest.findMany({
+          where: { visitId: rx.visitId },
+          include: { items: { include: { LabTest: true } } }
+        }) : [];
+        const labRequestsData = visitLrs.map((lr: any) => ({
+          id: lr.id,
+          status: lr.status,
+          requestedAt: lr.requestedAt,
+          tests: lr.items.map((item: any) => item.LabTest?.name || "Unknown Test")
+        }));
+
         return {
           ...updated,
-          bookingReference: bookingRef
+          patientName: updated.patientName || updated.Patient?.fullName || "Walk-in",
+          doctorName: updated.doctorName || doctor?.fullName || "Doctor",
+          bookingReference: bookingRef,
+          doctor,
+          labRequests: labRequestsData
         };
       }, { maxWait: 20000, timeout: 20000 });
     });
