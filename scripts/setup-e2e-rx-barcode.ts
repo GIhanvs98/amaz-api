@@ -1,3 +1,4 @@
+import process from "node:process";
 import { prisma } from "../src/lib/prisma.js";
 
 async function run() {
@@ -30,11 +31,10 @@ async function run() {
     medicine = await prisma.medicine.create({
       data: {
         name: "Amoxicillin 500mg",
-        code: "AMOX-500",
-        barcode: "8901234567890",
+        genericName: "Amoxicillin",
         category: "Antibiotics",
-        unitPrice: 45,
-        costPrice: 30,
+        unit: "capsule",
+        retailPrice: 45,
         stockBatches: {
           create: {
             batchNumber: "BAT-AMOX-01",
@@ -61,6 +61,8 @@ async function run() {
       }
     });
   }
+
+  if (!medicine) throw new Error("Medicine not found or created");
 
   // 4. Create consultation appointment with masterBarcode
   const appt = await prisma.appointment.create({
