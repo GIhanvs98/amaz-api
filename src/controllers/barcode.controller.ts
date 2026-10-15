@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
+import { calcDispenseQty } from "./prescription.controller.js";
 
 export const barcodeController = {
   resolveBarcode: async (req: Request, res: Response) => {
@@ -275,7 +276,13 @@ export const barcodeController = {
               appointment: consultAppt,
               allAppointments,
               invoice: mergedInvoice,
-              prescriptions,
+              prescriptions: prescriptions.map((p: any) => ({
+                ...p,
+                items: (p.items || []).map((i: any) => ({
+                  ...i,
+                  dispenseQty: calcDispenseQty(i)
+                }))
+              })),
               labRequests,
               extraServices: extraServiceItems,
               consultationPaid
@@ -316,7 +323,18 @@ export const barcodeController = {
             if (paidInvoice) consultationPaid = true;
           }
 
-          return res.json({ type: "PRESCRIPTION", data: { ...prescription, doctor, consultationPaid } });
+          return res.json({ 
+            type: "PRESCRIPTION", 
+            data: { 
+              ...prescription, 
+              items: (prescription.items || []).map((i: any) => ({
+                ...i,
+                dispenseQty: calcDispenseQty(i)
+              })),
+              doctor, 
+              consultationPaid 
+            } 
+          });
         }
       }
 

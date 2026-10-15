@@ -19,6 +19,57 @@ const withRetry = async <T>(operation: () => Promise<T>, retries = 3, delay = 10
   }
 };
 
+export const calcDispenseQty = (item: any): number => {
+  if (item.dispenseQty && Number(item.dispenseQty) > 1) {
+    return parseInt(String(item.dispenseQty), 10);
+  }
+
+  let timesPerDay = 1;
+  let tabletsPerTime = 1;
+
+  if (item.timesPerDay) {
+    const parsed = parseInt(String(item.timesPerDay), 10);
+    if (!isNaN(parsed) && parsed > 0) timesPerDay = parsed;
+  }
+  if (item.tabletsPerTime) {
+    const parsed = parseInt(String(item.tabletsPerTime), 10);
+    if (!isNaN(parsed) && parsed > 0) tabletsPerTime = parsed;
+  }
+
+  const freq = String(item.frequency || "").trim();
+  if (freq) {
+    if (freq.includes("x day")) {
+      const match = freq.match(/(\d+)\s*x\s*day(?:.*?\((\d+)\s*(?:tab|tablets?|caps?|pills?)\))?/i);
+      if (match) {
+        if (match[1]) timesPerDay = parseInt(match[1], 10) || timesPerDay;
+        if (match[2]) tabletsPerTime = parseInt(match[2], 10) || tabletsPerTime;
+      }
+    } else if (freq.includes("tablets") && freq.includes("times a day")) {
+      const parts = freq.split("tablets,");
+      tabletsPerTime = parseInt(parts[0]?.trim() || "1", 10) || tabletsPerTime;
+      timesPerDay = parseInt(parts[1]?.split("times a day")[0]?.trim() || "1", 10) || timesPerDay;
+    } else if (/^\d+$/.test(freq)) {
+      timesPerDay = parseInt(freq, 10) || timesPerDay;
+    } else if (/\b(qds|qid)\b|four times/i.test(freq)) {
+      timesPerDay = 4;
+    } else if (/\b(tds|tid)\b|three times/i.test(freq)) {
+      timesPerDay = 3;
+    } else if (/\b(bd|bid)\b|twice a day/i.test(freq)) {
+      timesPerDay = 2;
+    }
+  }
+
+  const durStr = String(item.duration || "1").trim();
+  const durMatch = durStr.match(/(\d+)/);
+  let durMultiplier = 1;
+  if (/month/i.test(durStr)) durMultiplier = 30;
+  else if (/week/i.test(durStr)) durMultiplier = 7;
+  const duration = (durMatch && durMatch[1] ? parseInt(durMatch[1], 10) : 1) * durMultiplier;
+
+  const calculated = timesPerDay * tabletsPerTime * duration;
+  return calculated > 0 ? calculated : (item.dispenseQty ? parseInt(String(item.dispenseQty), 10) : 1);
+};
+
 export const getPrescriptionById = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -70,7 +121,7 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
         frequency: i.frequency,
         duration: i.duration,
         instructions: i.instructions,
-        dispenseQty: i.dispenseQty,
+        dispenseQty: calcDispenseQty(i),
         medicineId: i.medicineId,
         medicine: i.medicine ? {
           id: i.medicine.id,
@@ -164,7 +215,7 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
                 frequency: item.frequency,
                 duration: item.duration,
                 instructions: item.instructions,
-                dispenseQty: item.dispenseQty || 1
+                dispenseQty: calcDispenseQty(item)
               })) : []
             }
           },
@@ -337,6 +388,10 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
 
       return {
         ...rx,
+        items: (rx.items || []).map((i: any) => ({
+          ...i,
+          dispenseQty: calcDispenseQty(i)
+        })),
         bookingReference: appt?.bookingReference || null,
         consultationPaid,
         invoiceStatus: fullInvoiceStatus,
@@ -556,6 +611,10 @@ export const getPrescriptionHistory = async (req: Request, res: Response): Promi
 
       return {
         ...rx,
+        items: (rx.items || []).map((i: any) => ({
+          ...i,
+          dispenseQty: calcDispenseQty(i)
+        })),
         invoiceStatus,
         labRequests: labRequestsData
       };
@@ -661,7 +720,7 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
         frequency: item.frequency || "",
         duration: item.duration || "",
         instructions: item.instructions || "",
-        dispenseQty: item.dispenseQty ? parseInt(String(item.dispenseQty), 10) : 1
+        dispenseQty: calcDispenseQty(item)
       });
     }
     
