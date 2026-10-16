@@ -229,11 +229,15 @@ export class PharmacyController {
           });
           if (rx) {
             for (const rxItem of rx.items) {
-              const soldItem = items.find((i: any) => i.id === rxItem.medicineId);
+              const soldItem = items.find((i: any) => 
+                (i.medicineId && i.medicineId === rxItem.medicineId) ||
+                (i.id && i.id === rxItem.medicineId)
+              );
               if (soldItem) {
+                const soldQty = Number(soldItem.quantity ?? soldItem.qty ?? rxItem.dispenseQty ?? 0);
                 await tx.prescriptionItem.update({
                   where: { id: rxItem.id },
-                  data: { dispenseQty: Number(soldItem.qty) },
+                  data: { dispenseQty: soldQty },
                 });
               }
             }

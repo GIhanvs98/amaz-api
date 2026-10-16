@@ -9,6 +9,7 @@ export class PharmacyService {
     if (searchTerm) {
       whereClause.OR = [
         { name: { contains: searchTerm, mode: 'insensitive' } },
+        { genericName: { contains: searchTerm, mode: 'insensitive' } },
         { barcode: { contains: searchTerm, mode: 'insensitive' } },
         { category: { contains: searchTerm, mode: 'insensitive' } },
       ];

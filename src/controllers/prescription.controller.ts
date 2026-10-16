@@ -300,14 +300,22 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
         createdAt: { gte: startOfDay, lte: endOfDay }
       },
       include: {
+        Patient: {
+          select: {
+            fullName: true,
+            phone: true,
+            dateOfBirth: true,
+            ageFallback: true,
+            gender: true
+          }
+        },
         items: {
           include: {
             medicine: {
               include: {
                 stockBatches: {
                   where: { currentQuantity: { gt: 0 } },
-                  orderBy: { createdAt: 'asc' as const },
-                  take: 1,
+                  orderBy: { expiryDate: 'asc' as const },
                 }
               }
             }
@@ -386,12 +394,32 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
 
       const doctor = rx.doctorId ? doctorMap.get(rx.doctorId) || null : null;
 
+      let patientAge = "N/A";
+      if (rx.Patient?.dateOfBirth) {
+        const diff = Date.now() - new Date(rx.Patient.dateOfBirth).getTime();
+        const ageDate = new Date(diff);
+        patientAge = Math.abs(ageDate.getUTCFullYear() - 1970).toString();
+      } else if (rx.Patient?.ageFallback) {
+        patientAge = rx.Patient.ageFallback.toString();
+      }
+
       return {
         ...rx,
-        items: (rx.items || []).map((i: any) => ({
-          ...i,
-          dispenseQty: calcDispenseQty(i)
-        })),
+        patientName: rx.Patient?.fullName || rx.patientName || "Walk-in Patient",
+        patientPhone: rx.Patient?.phone || "N/A",
+        patientAge,
+        items: (rx.items || []).map((i: any) => {
+          const dispenseQty = calcDispenseQty(i);
+          const batches = i.medicine?.stockBatches || [];
+          const totalStock = batches.reduce((sum: number, b: any) => sum + (b.currentQuantity || 0), 0);
+          const unitPrice = batches[0]?.unitPrice ?? 0;
+          return {
+            ...i,
+            dispenseQty,
+            totalStock,
+            unitPrice
+          };
+        }),
         bookingReference: appt?.bookingReference || null,
         consultationPaid,
         invoiceStatus: fullInvoiceStatus,

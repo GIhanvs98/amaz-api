@@ -206,10 +206,30 @@ export class BillingService {
         include: { lineItems: true, payments: true }
       });
     } else if (query.visitId) {
-      return prisma.invoice.findFirst({
+      let inv = await prisma.invoice.findFirst({
         where: { visitId: query.visitId, status: "DRAFT" },
         include: { lineItems: true, payments: true }
       });
+
+      if (!inv) {
+        const appt = await prisma.appointment.findUnique({
+          where: { id: query.visitId },
+          select: { bookingReference: true }
+        });
+        if (appt?.bookingReference) {
+          const siblingAppts = await prisma.appointment.findMany({
+            where: { bookingReference: appt.bookingReference },
+            select: { id: true }
+          });
+          const siblingIds = siblingAppts.map((a: any) => a.id);
+          inv = await prisma.invoice.findFirst({
+            where: { visitId: { in: siblingIds }, status: "DRAFT" },
+            include: { lineItems: true, payments: true }
+          });
+        }
+      }
+
+      return inv;
     }
     throw new Error("Must provide invoiceId or visitId");
   }
