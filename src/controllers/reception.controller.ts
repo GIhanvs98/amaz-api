@@ -8,7 +8,6 @@ import { SMSService } from "../services/sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
 import { generateIdentityKey } from "../utils/identity.util.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
-import { expirePastTokens } from "../services/token-lifecycle.service.js";
 
 export const openShift = async (req: Request, res: Response) => {
   try {
@@ -1422,22 +1421,6 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
         expectedCash,
         actualCash: Number(declaredCash),
         variance
-      }
-    });
-
-    // Run lifecycle cleanup for any past uncompleted tokens
-    await expirePastTokens();
-
-    // Clear not arrived tokens up to end of today
-    const { endOfDay } = getTimezoneBoundaries();
-
-    await prisma.appointment.updateMany({
-      where: {
-        appointmentDate: { lte: endOfDay },
-        status: { in: ["BOOKED", "WAITING", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
-      },
-      data: {
-        status: "NO_SHOW"
       }
     });
 
