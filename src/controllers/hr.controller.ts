@@ -899,11 +899,28 @@ export const assignEmployeeComponent = async (req: Request, res: Response) => {
 export const removeEmployeeComponent = async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
-    await prisma.employeeComponent.delete({
-      where: { id }
-    });
-    
-    res.json({ success: true, message: "Component assignment removed" });
+    const userId = req.params.userId as string | undefined;
+
+    try {
+      await prisma.employeeComponent.delete({
+        where: { id }
+      });
+      return res.json({ success: true, message: "Component assignment removed" });
+    } catch {
+      if (userId) {
+        const profile = await prisma.employeeProfile.findUnique({ where: { userId } });
+        if (profile) {
+          await prisma.employeeComponent.deleteMany({
+            where: {
+              employeeProfileId: profile.id,
+              componentId: id
+            }
+          });
+          return res.json({ success: true, message: "Component assignment removed" });
+        }
+      }
+      return res.status(404).json({ success: false, error: "Component assignment not found" });
+    }
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

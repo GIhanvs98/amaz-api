@@ -2,9 +2,16 @@ import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 
 // GET /api/hr/allowance-rules
-export const getAllowanceRules = async (_req: Request, res: Response) => {
+export const getAllowanceRules = async (req: Request, res: Response) => {
   try {
+    const { includeInactive } = req.query;
+    const where: any = {};
+    if (includeInactive !== "true") {
+      where.isActive = true;
+    }
+
     const components = await prisma.salaryComponent.findMany({
+      where,
       orderBy: { name: "asc" },
       include: {
         _count: {
@@ -102,12 +109,25 @@ export const updateAllowanceRule = async (req: Request, res: Response) => {
 export const deleteAllowanceRule = async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
-    // Soft delete or set isActive to false
-    await prisma.salaryComponent.update({
-      where: { id },
-      data: { isActive: false },
+    
+    // Clean up any employee assignments for this component
+    await prisma.employeeComponent.deleteMany({
+      where: { componentId: id },
     });
-    res.json({ success: true, message: "Allowance rule deactivated" });
+
+    try {
+      await prisma.salaryComponent.delete({
+        where: { id },
+      });
+      return res.json({ success: true, message: "Allowance rule deleted successfully" });
+    } catch {
+      // Soft-delete if constrained by other records
+      await prisma.salaryComponent.update({
+        where: { id },
+        data: { isActive: false },
+      });
+      return res.json({ success: true, message: "Allowance rule deactivated" });
+    }
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
