@@ -840,6 +840,7 @@ model DoctorDailySheet {
   approvedAt         DateTime?
   paymentMethod      String?                 // BANK_TRANSFER, CASH, CHEQUE, SPLIT
   paymentReference   String?
+  paymentSlipUrl     String?                 // S3 URL or path to uploaded payment slip
   paidAt             DateTime?
   receiptNumber      String?                 @unique
   remarks            String?
