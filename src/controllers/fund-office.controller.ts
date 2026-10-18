@@ -81,6 +81,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
       consultationFee: number;
       hospitalShare: number;
       doctorShare: number;
+      collectionMethod: string;
       time?: Date;
       remarks?: string;
     }[] = [];
@@ -91,6 +92,9 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
         const itemFee = parseFloat(item.consultationFee) || effectiveFee;
         const hospitalShare = Math.round(itemFee * (effectiveCommissionRate / 100) * 100) / 100;
         const doctorShare = Math.round((itemFee - hospitalShare) * 100) / 100;
+        const rawMethod = (item.collectionMethod || "CASH").toUpperCase();
+        const isCardOrBank = rawMethod.includes("CARD") || rawMethod.includes("BANK") || rawMethod.includes("TRANSFER") || rawMethod.includes("VISA") || rawMethod.includes("MASTER") || rawMethod.includes("QR") || rawMethod.includes("ONLINE");
+        const collectionMethod = isCardOrBank ? "CARD" : "CASH";
         return {
           patientName: item.patientName || "Walk-in Patient",
           patientId: item.patientId || null,
@@ -99,6 +103,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
           consultationFee: itemFee,
           hospitalShare,
           doctorShare,
+          collectionMethod,
           time: item.time ? new Date(item.time) : new Date(),
           remarks: item.remarks || null
         };
@@ -128,7 +133,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
           visitId: { in: visitIds },
           status: "PAID"
         },
-        include: { lineItems: true }
+        include: { lineItems: true, payments: true }
       });
 
       if (appointments.length > 0) {
@@ -143,6 +148,11 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
             consultLi?.total || inv?.totalAmount || apt.Payment?.amount || effectiveFee;
           const hospitalShare = Math.round(itemFee * (effectiveCommissionRate / 100) * 100) / 100;
           const doctorShare = Math.round((itemFee - hospitalShare) * 100) / 100;
+
+          const pMethod = (inv?.payments?.[0]?.method || apt.Payment?.method || "CASH").toUpperCase();
+          const isCardOrBank = pMethod.includes("CARD") || pMethod.includes("BANK") || pMethod.includes("TRANSFER") || pMethod.includes("VISA") || pMethod.includes("MASTER") || pMethod.includes("QR") || pMethod.includes("ONLINE");
+          const collectionMethod = isCardOrBank ? "CARD" : "CASH";
+
           return {
             patientName: apt.Patient?.fullName || "Patient",
             patientId: apt.patientId,
@@ -151,12 +161,12 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
             consultationFee: itemFee,
             hospitalShare,
             doctorShare,
+            collectionMethod,
             time: apt.completedAt || apt.appointmentDate || apt.createdAt,
             remarks: apt.bookingType || "Appointment"
           };
         });
-      }
- else {
+      } else {
         // Create an initial placeholder entry if totalPatients was given as a single count
         const count = parseInt(req.body.totalPatients, 10) || 0;
         for (let i = 1; i <= count; i++) {
@@ -168,6 +178,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
             consultationFee: itemFee,
             hospitalShare,
             doctorShare,
+            collectionMethod: "CASH",
             time: start,
             remarks: "Batch record"
           });
@@ -180,6 +191,11 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
     const hospitalCommission = Math.round(totalRevenue * (effectiveCommissionRate / 100) * 100) / 100;
     const adjustments = parseFloat(otherAdjustments) || 0;
     const netDoctorPayment = Math.round((totalRevenue - hospitalCommission - adjustments) * 100) / 100;
+
+    const cashRevenue = itemsToSave.filter(it => it.collectionMethod === "CASH").reduce((s, it) => s + it.consultationFee, 0);
+    const cardRevenue = itemsToSave.filter(it => it.collectionMethod !== "CASH").reduce((s, it) => s + it.consultationFee, 0);
+    const cashDoctorShare = itemsToSave.filter(it => it.collectionMethod === "CASH").reduce((s, it) => s + it.doctorShare, 0);
+    const bankDoctorShare = itemsToSave.filter(it => it.collectionMethod !== "CASH").reduce((s, it) => s + it.doctorShare, 0);
 
     const result = await prisma.$transaction(async (tx) => {
       // Check existing sheet for doctor & date
@@ -202,6 +218,10 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
             hospitalCommission,
             otherAdjustments: adjustments,
             netDoctorPayment,
+            cashRevenue,
+            cardRevenue,
+            cashDoctorShare,
+            bankDoctorShare,
             remarks,
             patientItems: {
               create: itemsToSave
@@ -222,6 +242,10 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
             hospitalCommission,
             otherAdjustments: adjustments,
             netDoctorPayment,
+            cashRevenue,
+            cardRevenue,
+            cashDoctorShare,
+            bankDoctorShare,
             status: "DRAFT",
             remarks,
             patientItems: {
@@ -416,7 +440,8 @@ export const markDailySheetPaid = async (req: Request, res: Response) => {
         paymentMethod,
         paymentReference,
         paidAt: paidAt ? new Date(paidAt) : new Date(),
-        paidById: authUser?.id || null,
+        disbursedById: authUser?.id || null,
+        disbursedByRole: "SUPERADMIN",
         receiptNumber
       },
       include: { doctor: true, patientItems: true }
@@ -615,7 +640,7 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
     // Find any invoice paid for this appointment
     const invoice = await prisma.invoice.findFirst({
       where: { visitId: apt.id, status: "PAID" },
-      include: { lineItems: true }
+      include: { lineItems: true, payments: true }
     });
 
     let consultationFee = doctor.consultationFee ?? 3000;
@@ -634,6 +659,15 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
 
     const hospitalShare = Math.round(consultationFee * (commissionRate / 100) * 100) / 100;
     const doctorShare = Math.round((consultationFee - hospitalShare) * 100) / 100;
+
+    // Detect payment method (Cash vs Card/Bank)
+    const aptWithPayment = await prisma.appointment.findUnique({
+      where: { id: apt.id },
+      include: { Payment: true }
+    });
+    const pMethod = (invoice?.payments?.[0]?.method || aptWithPayment?.Payment?.method || "CASH").toUpperCase();
+    const isCardOrBank = pMethod.includes("CARD") || pMethod.includes("BANK") || pMethod.includes("TRANSFER") || pMethod.includes("VISA") || pMethod.includes("MASTER") || pMethod.includes("QR") || pMethod.includes("ONLINE");
+    const collectionMethod = isCardOrBank ? "CARD" : "CASH";
 
     // Normalize clinic date
     const aptDate = apt.completedAt || apt.appointmentDate || apt.createdAt || new Date();
@@ -685,6 +719,7 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
           consultationFee,
           hospitalShare,
           doctorShare,
+          collectionMethod,
           time: apt.completedAt || new Date(),
           remarks: "Consultation Completed"
         }
@@ -700,6 +735,7 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
           consultationFee,
           hospitalShare,
           doctorShare,
+          collectionMethod,
           time: apt.completedAt || new Date(),
           remarks: "Consultation Completed"
         }
@@ -716,13 +752,22 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
     const totalHospitalCommission = Math.round(totalRevenue * (sheet.commissionRate / 100) * 100) / 100;
     const netDoctorPayment = Math.max(0, totalRevenue - totalHospitalCommission - sheet.otherAdjustments);
 
+    const cashRevenue = allItems.filter(it => (it.collectionMethod || "CASH") === "CASH").reduce((s, it) => s + it.consultationFee, 0);
+    const cardRevenue = allItems.filter(it => (it.collectionMethod || "CASH") !== "CASH").reduce((s, it) => s + it.consultationFee, 0);
+    const cashDoctorShare = allItems.filter(it => (it.collectionMethod || "CASH") === "CASH").reduce((s, it) => s + it.doctorShare, 0);
+    const bankDoctorShare = allItems.filter(it => (it.collectionMethod || "CASH") !== "CASH").reduce((s, it) => s + it.doctorShare, 0);
+
     await prisma.doctorDailySheet.update({
       where: { id: sheet.id },
       data: {
         totalPatients,
         totalRevenue,
         hospitalCommission: totalHospitalCommission,
-        netDoctorPayment
+        netDoctorPayment,
+        cashRevenue,
+        cardRevenue,
+        cashDoctorShare,
+        bankDoctorShare
       }
     });
   } catch (err) {
@@ -829,6 +874,281 @@ export const getDoctorEarningsSummary = async (req: Request, res: Response) => {
         patientItems: dailySheet?.patientItems || []
       }
     });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// POST /api/fund-office/daily-sheets/:id/disburse
+export const disburseDoctorShare = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const authUser = (req as any).user;
+    const userRole = (authUser?.Role?.name || authUser?.role || "FRONTDESK").toUpperCase();
+    const isFrontDesk = userRole.includes("FRONT") || userRole.includes("RECEPTION") || userRole.includes("CASHIER");
+    const isSuperAdmin = userRole.includes("ADMIN") || userRole.includes("SUPERADMIN") || userRole.includes("FUND");
+
+    const {
+      disbursementType, // "CASH", "BANK_TRANSFER", "SPLIT"
+      cashAmount = 0,
+      bankAmount = 0,
+      paymentReference,
+      bankDetails,
+      remarks
+    } = req.body;
+
+    const sheet = await prisma.doctorDailySheet.findUnique({
+      where: { id },
+      include: { doctor: true, patientItems: true }
+    });
+
+    if (!sheet) {
+      return res.status(404).json({ success: false, error: "Daily sheet not found" });
+    }
+
+    const numCash = parseFloat(cashAmount) || 0;
+    const numBank = parseFloat(bankAmount) || 0;
+
+    // RULE 1: Front Desk Cash Safety Check
+    // Doctor share collected in Cash can be issued as Cash.
+    // Front Desk cannot pay more cash than cashDoctorShare minus already disbursed cash.
+    const remainingCashShare = Math.max(0, sheet.cashDoctorShare - sheet.cashDisbursed);
+    if (numCash > 0 && isFrontDesk && !isSuperAdmin) {
+      if (numCash > remainingCashShare + 0.01) {
+        return res.status(400).json({
+          success: false,
+          error: `Cannot disburse LKR ${numCash.toLocaleString()} in cash. Maximum available cash doctor share for this sheet is LKR ${remainingCashShare.toLocaleString()} (from cash patient receipts). Card/online receipts must be issued as Bank Transfer.`
+        });
+      }
+    }
+
+    // RULE 2: If Bank Transfer is being disbursed, ensure reference or bank details
+    if (numBank > 0 && !paymentReference) {
+      return res.status(400).json({
+        success: false,
+        error: "Payment Reference / Transaction ID is required for bank transfer disbursements"
+      });
+    }
+
+    // Update doctor's bank details if provided
+    if (bankDetails && (bankDetails.bankAccountNumber || bankDetails.bankName)) {
+      await prisma.user.update({
+        where: { id: sheet.doctorId },
+        data: {
+          bankName: bankDetails.bankName || sheet.doctor.bankName,
+          bankBranch: bankDetails.bankBranch || sheet.doctor.bankBranch,
+          bankAccountNumber: bankDetails.bankAccountNumber || sheet.doctor.bankAccountNumber,
+          bankAccountName: bankDetails.bankAccountName || sheet.doctor.bankAccountName
+        }
+      });
+    }
+
+    const newCashDisbursed = sheet.cashDisbursed + numCash;
+    const newBankDisbursed = sheet.bankDisbursed + numBank;
+    const totalDisbursed = newCashDisbursed + newBankDisbursed;
+
+    // Determine status: if total disbursed >= netDoctorPayment, mark as PAID
+    const isFullyPaid = totalDisbursed >= (sheet.netDoctorPayment - 0.01);
+    const newStatus = isFullyPaid ? "PAID" : sheet.status;
+
+    // Generate receipt number
+    const receiptNumber = sheet.receiptNumber || await generateReceiptNumber();
+    const roleName = isSuperAdmin ? "SUPERADMIN" : isFrontDesk ? "FRONTDESK" : "CASHIER";
+
+    const updated = await prisma.doctorDailySheet.update({
+      where: { id },
+      data: {
+        cashDisbursed: newCashDisbursed,
+        bankDisbursed: newBankDisbursed,
+        disbursedByRole: roleName,
+        disbursedById: authUser?.id || null,
+        bankDetails: bankDetails || sheet.bankDetails || {
+          bankName: sheet.doctor.bankName,
+          bankBranch: sheet.doctor.bankBranch,
+          bankAccountNumber: sheet.doctor.bankAccountNumber,
+          bankAccountName: sheet.doctor.bankAccountName
+        },
+        paymentMethod: disbursementType || (numCash > 0 && numBank > 0 ? "SPLIT" : numCash > 0 ? "CASH" : "BANK_TRANSFER"),
+        paymentReference: paymentReference || sheet.paymentReference || (numCash > 0 ? `CASH-VOUCHER-${Date.now().toString().slice(-6)}` : null),
+        paidAt: new Date(),
+        receiptNumber,
+        status: newStatus,
+        remarks: remarks ? (sheet.remarks ? `${sheet.remarks} | ${remarks}` : remarks) : sheet.remarks
+      },
+      include: { doctor: true, patientItems: true }
+    });
+
+    // Activity Log
+    if (authUser?.id) {
+      await prisma.activityLog.create({
+        data: {
+          entityType: "DoctorDailySheet",
+          entityId: id,
+          action: "DOCTOR_SHARE_DISBURSED",
+          description: `Disbursed by ${roleName} (${authUser.fullName || authUser.id}): Cash: LKR ${numCash}, Bank: LKR ${numBank} to ${sheet.doctor.fullName} (Receipt #${receiptNumber})`,
+          userId: authUser.id
+        }
+      }).catch(err => console.error(err));
+    }
+
+    res.json({
+      success: true,
+      data: updated,
+      message: `Doctor share successfully disbursed (${roleName}). Receipt: ${receiptNumber}`
+    });
+  } catch (error: any) {
+    console.error("disburseDoctorShare error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// GET /api/fund-office/doctors/:id/bank-details
+export const getDoctorBankDetails = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const doctor = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        fullName: true,
+        specialty: true,
+        bankName: true,
+        bankBranch: true,
+        bankAccountNumber: true,
+        bankAccountName: true
+      }
+    });
+
+    if (!doctor) return res.status(404).json({ success: false, error: "Doctor not found" });
+    res.json({ success: true, data: doctor });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// PUT /api/fund-office/doctors/:id/bank-details
+export const updateDoctorBankDetails = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const { bankName, bankBranch, bankAccountNumber, bankAccountName } = req.body;
+
+    const updated = await prisma.user.update({
+      where: { id },
+      data: {
+        bankName,
+        bankBranch,
+        bankAccountNumber,
+        bankAccountName
+      },
+      select: {
+        id: true,
+        fullName: true,
+        specialty: true,
+        bankName: true,
+        bankBranch: true,
+        bankAccountNumber: true,
+        bankAccountName: true
+      }
+    });
+
+    res.json({ success: true, data: updated, message: "Doctor bank details updated successfully" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// GET /api/fund-office/frontdesk/doctor-shares
+export const getFrontdeskDoctorShares = async (req: Request, res: Response) => {
+  try {
+    const { date, doctorId } = req.query;
+    const targetDate = date ? String(date) : new Date().toISOString().split("T")[0]!;
+    const { start, end } = getDayRange(targetDate);
+
+    const where: any = {
+      date: { gte: start, lte: end }
+    };
+    if (doctorId && doctorId !== "ALL") {
+      where.doctorId = String(doctorId);
+    }
+
+    const sheets = await prisma.doctorDailySheet.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      include: {
+        doctor: {
+          select: {
+            id: true,
+            fullName: true,
+            specialty: true,
+            bankName: true,
+            bankBranch: true,
+            bankAccountNumber: true,
+            bankAccountName: true,
+            Role: { select: { name: true } }
+          }
+        },
+        patientItems: {
+          orderBy: { time: "asc" }
+        }
+      }
+    });
+
+    res.json({ success: true, data: sheets });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// GET /api/fund-office/payment-history
+export const getUnifiedPaymentHistory = async (req: Request, res: Response) => {
+  try {
+    const { doctorId, paymentMethod, disbursedByRole, startDate, endDate, limit = 100 } = req.query;
+
+    const where: any = {
+      OR: [
+        { status: "PAID" },
+        { cashDisbursed: { gt: 0 } },
+        { bankDisbursed: { gt: 0 } }
+      ]
+    };
+
+    if (doctorId && doctorId !== "ALL") {
+      where.doctorId = String(doctorId);
+    }
+    if (paymentMethod && paymentMethod !== "ALL") {
+      where.paymentMethod = String(paymentMethod);
+    }
+    if (disbursedByRole && disbursedByRole !== "ALL") {
+      where.disbursedByRole = String(disbursedByRole);
+    }
+    if (startDate && endDate) {
+      where.paidAt = {
+        gte: new Date(String(startDate)),
+        lte: new Date(String(endDate))
+      };
+    }
+
+    const history = await prisma.doctorDailySheet.findMany({
+      where,
+      orderBy: { paidAt: "desc" },
+      take: parseInt(String(limit), 10) || 100,
+      include: {
+        doctor: {
+          select: {
+            id: true,
+            fullName: true,
+            specialty: true,
+            bankName: true,
+            bankBranch: true,
+            bankAccountNumber: true,
+            bankAccountName: true
+          }
+        },
+        patientItems: true
+      }
+    });
+
+    res.json({ success: true, data: history });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

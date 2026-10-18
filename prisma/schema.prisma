@@ -394,6 +394,10 @@ model User {
   consultationFee  Float?              @default(2500)
   feeType          String              @default("POST") // UPFRONT or POST
   commissionRate   Float?              @default(20) // % Hospital Commission
+  bankName         String?             // e.g. "Commercial Bank of Ceylon"
+  bankBranch       String?             // e.g. "Tissamaharama"
+  bankAccountNumber String?            // Account Number
+  bankAccountName  String?             // Account Holder Name
   departmentId     String?
   basicSalary      Float?
   isActive         Boolean             @default(true)
@@ -820,12 +824,21 @@ model DoctorDailySheet {
   hospitalCommission Float                   @default(0)
   otherAdjustments   Float                   @default(0)
   netDoctorPayment   Float                   @default(0)
+  cashRevenue        Float                   @default(0) // Total collected via Cash
+  cardRevenue        Float                   @default(0) // Total collected via Card/Bank
+  cashDoctorShare    Float                   @default(0) // Eligible for Cash payout at desk
+  bankDoctorShare    Float                   @default(0) // Eligible for Bank Transfer
+  cashDisbursed      Float                   @default(0) // Actual amount disbursed in Cash
+  bankDisbursed      Float                   @default(0) // Actual amount disbursed via Bank
+  disbursedByRole    String?                 // "FRONTDESK" | "SUPERADMIN" | "CASHIER"
+  disbursedById      String?
+  bankDetails        Json?                   // Snapshot of bank transfer details
   status             String                  @default("DRAFT") // DRAFT, VERIFIED, APPROVED, PAID, CANCELLED
   verifiedById       String?
   verifiedAt         DateTime?
   approvedById       String?
   approvedAt         DateTime?
-  paymentMethod      String?                 // BANK_TRANSFER, CASH, CHEQUE
+  paymentMethod      String?                 // BANK_TRANSFER, CASH, CHEQUE, SPLIT
   paymentReference   String?
   paidAt             DateTime?
   receiptNumber      String?                 @unique
@@ -841,18 +854,19 @@ model DoctorDailySheet {
 }
 
 model DoctorDailyPatientItem {
-  id              String           @id @default(uuid())
-  dailySheetId    String
-  patientName     String
-  patientId       String?
-  appointmentId   String?
-  tokenNumber     String?
-  consultationFee Float            @default(0)
-  hospitalShare   Float            @default(0)
-  doctorShare     Float            @default(0)
-  time            DateTime?        @default(now())
-  remarks         String?
-  dailySheet      DoctorDailySheet @relation(fields: [dailySheetId], references: [id], onDelete: Cascade)
+  id               String           @id @default(uuid())
+  dailySheetId     String
+  patientName      String
+  patientId        String?
+  appointmentId    String?
+  tokenNumber      String?
+  consultationFee  Float            @default(0)
+  hospitalShare    Float            @default(0)
+  doctorShare      Float            @default(0)
+  collectionMethod String?          @default("CASH") // CASH, CARD, BANK, QR
+  time             DateTime?        @default(now())
+  remarks          String?
+  dailySheet       DoctorDailySheet @relation(fields: [dailySheetId], references: [id], onDelete: Cascade)
 
   @@index([dailySheetId])
 }

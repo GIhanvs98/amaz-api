@@ -45,12 +45,12 @@ async function verifyJohnShare() {
     }
   }
 
-  if (sheets.length === 0 || sheets[0].netDoctorPayment <= 0) {
+  if (sheets.length === 0 || !sheets[0] || sheets[0].netDoctorPayment <= 0) {
     throw new Error("Dr. John's doctor share is not appearing properly!");
   }
 
   console.log("\n================================================================================");
-  console.log("[PASS] DR. JOHN'S SHARE IS RECORDED & DISPLAYED PROPERLY (LKR " + sheets[0].netDoctorPayment.toLocaleString() + ")!");
+  console.log("[PASS] DR. JOHN'S SHARE IS RECORDED & DISPLAYED PROPERLY (LKR " + sheets[0]!.netDoctorPayment.toLocaleString() + ")!");
   console.log("================================================================================");
 }
 
