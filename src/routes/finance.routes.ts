@@ -1,6 +1,7 @@
 import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from 'express';
 import { financeController } from "../controllers/finance.controller.js";
+import { getDoctorStatements, generateDoctorStatements, updateDoctorStatementStatus } from "../controllers/doctor-statement.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
@@ -10,6 +11,11 @@ router.use(verifyToken, requireRole(['SUPERADMIN', 'ADMIN', 'FINANCE', 'MANAGER'
 router.get('/dashboard', cacheMiddleware(300), financeController.getDashboardData.bind(financeController));
 router.get('/settlements', financeController.getSettlements.bind(financeController));
 router.get('/shifts', financeController.getShifts.bind(financeController));
+
+// Doctor Payment Statements
+router.get('/doctor-statements', getDoctorStatements);
+router.post('/doctor-statements/generate', generateDoctorStatements);
+router.patch('/doctor-statements/:id/status', updateDoctorStatementStatus);
 
 router.post('/expenses', financeController.addExpense.bind(financeController));
 router.get('/expenses', financeController.getExpenses.bind(financeController));
