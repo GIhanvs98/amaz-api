@@ -104,6 +104,67 @@ async function main() {
     doctors.push(doc);
   }
 
+  // --- SALARY COMPONENTS & ROLE PAYROLL TEMPLATES ---
+  console.log('Seeding salary components & payroll templates...');
+  const defaultComponents = [
+    { code: 'BASIC', name: 'Basic Salary', category: 'EARNING', type: 'BASIC', calculationMethod: 'FIXED', defaultAmount: 45000, applicableRoles: 'ALL' },
+    { code: 'NIGHT_SHIFT_ALLOWANCE', name: 'Night Shift Allowance', category: 'EARNING', type: 'ALLOWANCE', calculationMethod: 'FIXED', defaultAmount: 3000, applicableRoles: 'Nurse' },
+    { code: 'TRANSPORT_ALLOWANCE', name: 'Transport Allowance', category: 'EARNING', type: 'ALLOWANCE', calculationMethod: 'FIXED', defaultAmount: 2000, applicableRoles: 'ALL' },
+    { code: 'MEAL_ALLOWANCE', name: 'Meal Allowance', category: 'EARNING', type: 'ALLOWANCE', calculationMethod: 'FIXED', defaultAmount: 2500, applicableRoles: 'ALL' },
+    { code: 'ATTENDANCE_BONUS', name: 'Attendance Bonus', category: 'EARNING', type: 'BONUS', calculationMethod: 'FIXED', defaultAmount: 1000, applicableRoles: 'ALL' },
+    { code: 'EPF_EMPLOYEE', name: 'EPF Employee (8%)', category: 'DEDUCTION', type: 'STATUTORY', calculationMethod: 'PERCENTAGE', defaultAmount: 8, applicableRoles: 'ALL' },
+  ];
+
+  for (const comp of defaultComponents) {
+    await prisma.salaryComponent.upsert({
+      where: { code: comp.code },
+      update: comp,
+      create: comp,
+    });
+  }
+
+  const roleTemplates = [
+    { role: 'Nurse', workingHoursPerDay: 8, perHourRate: 350, otRate: 500, allowedLeavesPerMonth: 2, fullSalaryPayDate: 28 },
+    { role: 'Receptionist', workingHoursPerDay: 8, perHourRate: 300, otRate: 450, allowedLeavesPerMonth: 2, fullSalaryPayDate: 28 },
+    { role: 'LabTech', workingHoursPerDay: 8, perHourRate: 400, otRate: 600, allowedLeavesPerMonth: 2, fullSalaryPayDate: 28 },
+    { role: 'Cashier', workingHoursPerDay: 8, perHourRate: 300, otRate: 450, allowedLeavesPerMonth: 2, fullSalaryPayDate: 28 },
+    { role: 'Doctor', workingHoursPerDay: 6, perHourRate: 1000, otRate: 1500, allowedLeavesPerMonth: 2, fullSalaryPayDate: 28 },
+  ];
+
+  for (const t of roleTemplates) {
+    await prisma.rolePayrollTemplate.upsert({
+      where: { role: t.role },
+      update: t,
+      create: t,
+    });
+  }
+
+  // Also create employee profile and compensation for Nancy Nurse
+  const nurseUser = await prisma.user.findUnique({ where: { email: 'nurse@amaz.com' } });
+  if (nurseUser) {
+    const profile = await prisma.employeeProfile.upsert({
+      where: { userId: nurseUser.id },
+      update: {},
+      create: {
+        userId: nurseUser.id,
+        employmentType: 'FULL_TIME',
+        salaryBasis: 'MONTHLY',
+        joiningDate: new Date('2025-01-01'),
+        paymentMethod: 'BANK_TRANSFER',
+        bankDetails: { bank: 'Bank of Ceylon', accountNo: '1234567890', branch: 'Colombo Central' },
+      }
+    });
+
+    await prisma.compensationVersion.create({
+      data: {
+        employeeProfileId: profile.id,
+        baseSalary: 45000,
+        effectiveFrom: new Date('2025-01-01'),
+        isActive: true,
+      }
+    });
+  }
+
   console.log('Seed completed successfully!');
 }
 main()

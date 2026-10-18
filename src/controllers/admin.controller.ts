@@ -72,8 +72,11 @@ export const getStaff = async (req: Request, res: Response) => {
     const formattedStaff = staff.map(s => ({
       id: s.id,
       name: s.fullName,
+      fullName: s.fullName,
       email: s.email,
       role: s.Role.name,
+      Role: s.Role,
+      Department: s.Department,
       status: s.isActive ? "ACTIVE" : "INACTIVE",
       roomId: s.roomId,
       roomNumber: s.room?.roomNumber || null,

@@ -11,6 +11,7 @@ router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN']));
 router.get("/metrics", cacheMiddleware(300), getAdminMetrics);
 
 router.get("/staff", cacheMiddleware(300), getStaff);
+router.get("/users", cacheMiddleware(300), getStaff);
 router.post("/staff", createStaff);
 router.put("/staff/:id", updateStaff);
 router.delete("/staff/:id", deleteStaff);

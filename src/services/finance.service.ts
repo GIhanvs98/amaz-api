@@ -175,9 +175,13 @@ export class FinanceService {
     // 1. Get all COMPLETED appointments in the date range
     const appointments = await prisma.appointment.findMany({
       where: {
-        completedAt: { gte: start, lte: end },
         status: 'COMPLETED',
-        doctorId: { not: null }
+        doctorId: { not: null },
+        OR: [
+          { completedAt: { gte: start, lte: end } },
+          { appointmentDate: { gte: start, lte: end } },
+          { createdAt: { gte: start, lte: end } }
+        ]
       },
       include: {
         User: true

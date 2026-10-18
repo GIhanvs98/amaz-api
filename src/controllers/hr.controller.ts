@@ -254,6 +254,7 @@ export const generatePayroll = async (req: Request, res: Response) => {
       });
 
       const roleTemplates = await tx.rolePayrollTemplate.findMany();
+      const activeGlobalComponents = await tx.salaryComponent.findMany({ where: { isActive: true } });
       const attendances = await tx.staffAttendance.findMany({
         where: { date: { gte: start, lte: end } }
       });
@@ -261,58 +262,59 @@ export const generatePayroll = async (req: Request, res: Response) => {
         where: { status: 'APPROVED', startDate: { lte: end }, endDate: { gte: start } }
       });
 
+      // Retrieve ONLY APPROVED Overtime Records for this period
+      const approvedOvertimes = await tx.overtimeRecord.findMany({
+        where: {
+          status: 'APPROVED',
+          date: { gte: start, lte: end }
+        }
+      });
+
       for (const profile of profiles) {
         const template = roleTemplates.find(t => t.role === profile.user.Role.name);
         const workHours = template?.workingHoursPerDay || 8;
-        const otRate = template?.otRate || 0;
         const perHourRate = template?.perHourRate || 0;
         const allowedLeaves = template?.allowedLeavesPerMonth || 0;
 
         const myAttendance = attendances.filter(a => a.userId === profile.userId);
-        
+        const myApprovedOTs = approvedOvertimes.filter(o => o.userId === profile.userId);
+
+        let basicSalary = 0;
+        let totalOtPayment = 0;
+        let totalAllowances = 0;
+        let totalBonuses = 0;
         let totalEarnings = 0;
         let totalDeductions = 0;
         let totalEmployerCost = 0;
         let epfBase = 0;
-        const lineItems = [];
+        const lineItems: any[] = [];
 
+        // 1. BASIC SALARY CALCULATION
         if (profile.salaryBasis === 'HOURLY') {
-          // HOURLY CALCULATION
           let totalWorkedHours = 0;
-          let totalOTHours = 0;
-          
           for (const a of myAttendance) {
             if ((a.status === 'PRESENT' || a.status === 'LATE') && a.checkIn && a.checkOut) {
               const hours = (a.checkOut.getTime() - a.checkIn.getTime()) / (1000 * 60 * 60);
-              if (hours > workHours) {
-                totalWorkedHours += workHours;
-                totalOTHours += (hours - workHours);
-              } else {
-                totalWorkedHours += hours;
-              }
+              totalWorkedHours += Math.min(hours, workHours);
             }
           }
-
-          const baseWages = totalWorkedHours * perHourRate;
-          if (baseWages > 0) {
-            lineItems.push({ category: "BASIC", description: `Hourly Wages (${totalWorkedHours.toFixed(1)} hrs)`, amount: baseWages });
-            totalEarnings += baseWages;
-            epfBase += baseWages;
-          }
-
-          const otWages = totalOTHours * otRate;
-          if (otWages > 0) {
-            lineItems.push({ category: "EARNING", description: `Overtime Pay (${totalOTHours.toFixed(1)} hrs)`, amount: otWages });
-            totalEarnings += otWages;
-            epfBase += otWages;
+          basicSalary = Math.round(totalWorkedHours * perHourRate * 100) / 100;
+          if (basicSalary > 0) {
+            lineItems.push({
+              category: "BASIC",
+              description: `Hourly Base Wages (${totalWorkedHours.toFixed(1)} hrs @ LKR ${perHourRate})`,
+              amount: basicSalary
+            });
+            totalEarnings += basicSalary;
+            epfBase += basicSalary;
           }
         } else {
           // MONTHLY CALCULATION
-          const fullBaseSalary = profile.compensations[0]?.baseSalary || 0;
-          let payableDays = 30; 
+          const fullBaseSalary = profile.compensations[0]?.baseSalary || profile.user.basicSalary || 0;
+          let payableDays = 30;
           const joinDate = new Date(profile.joiningDate);
           const termDate = profile.terminationDate ? new Date(profile.terminationDate) : null;
-          
+
           if (joinDate > start && joinDate <= end) {
             payableDays = 30 - joinDate.getDate() + 1;
           }
@@ -320,78 +322,120 @@ export const generatePayroll = async (req: Request, res: Response) => {
             payableDays = termDate.getDate();
           }
           payableDays = Math.min(30, Math.max(0, payableDays));
-          
-          const baseSalary = fullBaseSalary > 0 ? (fullBaseSalary / 30) * payableDays : 0;
-          if (baseSalary > 0) {
-            lineItems.push({ category: "BASIC", description: payableDays < 30 ? `Prorated Base Salary (${payableDays} days)` : "Monthly Base Salary", amount: baseSalary });
-            totalEarnings += baseSalary;
-            epfBase += baseSalary;
+
+          basicSalary = fullBaseSalary > 0 ? Math.round(((fullBaseSalary / 30) * payableDays) * 100) / 100 : 0;
+          if (basicSalary > 0) {
+            lineItems.push({
+              category: "BASIC",
+              description: payableDays < 30 ? `Prorated Base Salary (${payableDays} days)` : "Monthly Basic Salary",
+              amount: basicSalary
+            });
+            totalEarnings += basicSalary;
+            epfBase += basicSalary;
           }
 
-          // LOP (Loss of Pay)
+          // Loss of Pay (LOP) for unexcused absences
           const absentCount = myAttendance.filter(a => a.status === 'ABSENT').length;
           const unapprovedAbsences = Math.max(0, absentCount - allowedLeaves);
-          if (unapprovedAbsences > 0) {
-            const lop = (fullBaseSalary / 30) * unapprovedAbsences;
-            lineItems.push({ category: "DEDUCTION", description: `Loss of Pay (${unapprovedAbsences} days)`, amount: lop });
+          if (unapprovedAbsences > 0 && fullBaseSalary > 0) {
+            const lop = Math.round(((fullBaseSalary / 30) * unapprovedAbsences) * 100) / 100;
+            lineItems.push({
+              category: "DEDUCTION",
+              description: `Loss of Pay (${unapprovedAbsences} days)`,
+              amount: lop
+            });
             totalDeductions += lop;
-            epfBase -= lop;
-          }
-
-          // OT Calculation
-          let totalOTHours = 0;
-          for (const a of myAttendance) {
-            if ((a.status === 'PRESENT' || a.status === 'LATE') && a.checkIn && a.checkOut) {
-              const hours = (a.checkOut.getTime() - a.checkIn.getTime()) / (1000 * 60 * 60);
-              if (hours > workHours) totalOTHours += (hours - workHours);
-            }
-          }
-          const otWages = totalOTHours * otRate;
-          if (otWages > 0) {
-            lineItems.push({ category: "EARNING", description: `Overtime Pay (${totalOTHours.toFixed(1)} hrs)`, amount: otWages });
-            totalEarnings += otWages;
-            epfBase += otWages;
+            epfBase = Math.max(0, epfBase - lop);
           }
         }
 
-        // Add static custom components
-        for (const ec of profile.components) {
-          const val = ec.value || 0; 
-          let calculatedVal = val;
-          
-          if (ec.component.calculationMethod === "PERCENTAGE") {
-            // Percentages base off basic salary
-            const baseForPerc = profile.salaryBasis === 'HOURLY' ? 0 : (profile.compensations[0]?.baseSalary || 0);
-            calculatedVal = baseForPerc * (val / 100);
-          }
-
-          if (ec.component.category === "EARNING") {
-            totalEarnings += calculatedVal;
-            if (ec.component.isEpfEligible) epfBase += calculatedVal;
-          } else if (ec.component.category === "DEDUCTION") {
-            totalDeductions += calculatedVal;
-          } else if (ec.component.category === "EMPLOYER_CONTRIBUTION") {
-            totalEmployerCost += calculatedVal;
-          }
-
+        // 2. APPROVED OVERTIME PAYMENTS
+        for (const ot of myApprovedOTs) {
+          totalOtPayment += ot.totalPayment;
           lineItems.push({
-            category: ec.component.category,
-            description: ec.component.name,
-            amount: calculatedVal
+            category: "OVERTIME",
+            description: `OT (${ot.shiftType}): ${ot.hours} hrs @ LKR ${ot.rate}/hr`,
+            amount: ot.totalPayment
+          });
+        }
+        totalEarnings += totalOtPayment;
+ 
+        // 3. ALLOWANCES, BONUSES & DEDUCTIONS
+        // Combines both:
+        // A) Designation-based components (matching employee Role or 'ALL')
+        // B) Specific employee-based assignments (direct assignments to this employee profile)
+        const employeeRoleName = (profile.user?.Role?.name || "").toUpperCase();
+        const componentsToApply = new Map<string, { component: any; value: number }>();
+
+        // A) Apply Designation-based rules matching employee's role or 'ALL'
+        for (const gc of activeGlobalComponents) {
+          if (gc.type === "BASIC" || gc.type === "OVERTIME") continue;
+
+          const applicableRoles = (gc.applicableRoles || "ALL")
+            .split(",")
+            .map(r => r.trim().toUpperCase());
+
+          const isRoleApplicable = applicableRoles.includes("ALL") || applicableRoles.includes(employeeRoleName);
+
+          if (isRoleApplicable) {
+            componentsToApply.set(gc.id, {
+              component: gc,
+              value: gc.defaultAmount || 0
+            });
+          }
+        }
+
+        // B) Apply Employee-specific assignments (overrides default or adds specific component)
+        for (const ec of profile.components) {
+          if (!ec.component.isActive) continue;
+          const assignedVal = (ec.value !== null && ec.value !== undefined) ? ec.value : (ec.component.defaultAmount || 0);
+          componentsToApply.set(ec.componentId, {
+            component: ec.component,
+            value: assignedVal
           });
         }
 
-        // Statutory Calculations (EPF 8%, Employer EPF 12%, ETF 3%)
+        // C) Calculate line items
+        for (const { component: comp, value } of componentsToApply.values()) {
+          let calculatedVal = value;
+          if (comp.calculationMethod === "PERCENTAGE") {
+            calculatedVal = Math.round((basicSalary * (value / 100)) * 100) / 100;
+          }
+
+          if (calculatedVal <= 0) continue;
+
+          const compType = (comp.type || "").toUpperCase();
+          const compCat = (comp.category || "").toUpperCase();
+
+          if (compType === "BONUS") {
+            totalBonuses += calculatedVal;
+            totalEarnings += calculatedVal;
+            lineItems.push({ category: "BONUS", description: comp.name, amount: calculatedVal });
+          } else if (compType === "ALLOWANCE" || compCat === "EARNING") {
+            totalAllowances += calculatedVal;
+            totalEarnings += calculatedVal;
+            if (comp.isEpfEligible) epfBase += calculatedVal;
+            lineItems.push({ category: "ALLOWANCE", description: comp.name, amount: calculatedVal });
+          } else if (compType === "DEDUCTION" || compCat === "DEDUCTION") {
+            totalDeductions += calculatedVal;
+            lineItems.push({ category: "DEDUCTION", description: comp.name, amount: calculatedVal });
+          } else if (compCat === "EMPLOYER_CONTRIBUTION") {
+            totalEmployerCost += calculatedVal;
+            lineItems.push({ category: "EMPLOYER_CONTRIBUTION", description: comp.name, amount: calculatedVal });
+          }
+        }
+
+        // 4. STATUTORY CALCULATIONS (EPF 8% Employee, EPF 12% Employer, ETF 3% Employer)
         if (epfBase > 0) {
-          const epf8 = epfBase * 0.08;
-          const epf12 = epfBase * 0.12;
-          const etf3 = epfBase * 0.03;
+          const epf8 = Math.round((epfBase * 0.08) * 100) / 100;
+          const epf12 = Math.round((epfBase * 0.12) * 100) / 100;
+          const etf3 = Math.round((epfBase * 0.03) * 100) / 100;
 
           totalDeductions += epf8;
           totalEmployerCost += (epf12 + etf3);
 
           lineItems.push({
-            category: "DEDUCTION",
+            category: "STATUTORY",
             description: "Employee EPF (8%)",
             amount: epf8,
             isStatutory: true
@@ -410,17 +454,26 @@ export const generatePayroll = async (req: Request, res: Response) => {
           });
         }
 
-        const netSalary = totalEarnings - totalDeductions;
+        // 5. NET SALARY: Net Salary = Basic + OT + Allowances + Bonuses - Deductions
+        totalEarnings = Math.round(totalEarnings * 100) / 100;
+        totalDeductions = Math.round(totalDeductions * 100) / 100;
+        const netSalary = Math.round((totalEarnings - totalDeductions) * 100) / 100;
 
         await tx.payrollRecord.create({
           data: {
             payrollRunId: payrollRun.id,
             userId: profile.userId,
+            basicSalary,
+            totalOtPayment,
+            totalAllowances,
+            totalBonuses,
             totalEarnings,
             totalDeductions,
             employerCost: totalEmployerCost,
             netSalary,
             status: "DRAFT",
+            paymentMethod: profile.paymentMethod || "BANK_TRANSFER",
+            bankDetails: profile.bankDetails || undefined,
             lineItems: {
               create: lineItems.map(item => ({
                 category: item.category,
@@ -477,6 +530,160 @@ export const getPayrollRunById = async (req: Request, res: Response) => {
   }
 };
 
+// PATCH /api/hr/payroll/:id/status
+export const updatePayrollRunStatus = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const { status, paymentMethod, paymentReference, remarks } = req.body;
+    const authUser = (req as any).user;
+
+    const allowedStatuses = ["DRAFT", "PENDING_APPROVAL", "APPROVED", "PROCESSING", "PAID", "CANCELLED"];
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ success: false, error: `Invalid status. Allowed: ${allowedStatuses.join(", ")}` });
+    }
+
+    const run = await prisma.payrollRun.findUnique({
+      where: { id },
+      include: { records: true },
+    });
+    if (!run) return res.status(404).json({ success: false, error: "Payroll run not found" });
+
+    // Transition validation
+    if (run.status === "PAID" && status !== "PAID") {
+      return res.status(400).json({ success: false, error: "A paid payroll run cannot be reverted." });
+    }
+    if (run.status === "CANCELLED") {
+      return res.status(400).json({ success: false, error: "A cancelled payroll run cannot be updated." });
+    }
+
+    const dataToUpdate: any = {
+      status,
+      remarks: remarks !== undefined ? remarks : run.remarks,
+    };
+
+    if (status === "APPROVED") {
+      dataToUpdate.approvedBy = authUser?.id || "ADMIN";
+      dataToUpdate.approvedAt = new Date();
+    } else if (status === "PAID") {
+      dataToUpdate.paidAt = new Date();
+      dataToUpdate.paymentMethod = paymentMethod || "BANK_TRANSFER";
+      dataToUpdate.paymentReference = paymentReference || `PAY-${Date.now()}`;
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedRun = await tx.payrollRun.update({
+        where: { id },
+        data: dataToUpdate,
+      });
+
+      // Synchronize employee record statuses unless record is ON_HOLD
+      if (["APPROVED", "PROCESSING", "PAID", "CANCELLED"].includes(status)) {
+        await tx.payrollRecord.updateMany({
+          where: {
+            payrollRunId: id,
+            status: { not: "ON_HOLD" },
+          },
+          data: {
+            status,
+            ...(status === "PAID" && {
+              paidAt: new Date(),
+              paymentMethod: paymentMethod || "BANK_TRANSFER",
+              paymentReference: paymentReference || `PAY-${Date.now()}`,
+            }),
+          },
+        });
+      }
+
+      return updatedRun;
+    });
+
+    if (authUser?.id) {
+      await prisma.activityLog.create({
+        data: {
+          entityType: "PayrollRun",
+          entityId: id,
+          action: `PAYROLL_${status}`,
+          description: `Payroll run (${run.periodStart.toISOString()} - ${run.periodEnd.toISOString()}) transitioned to ${status}`,
+          userId: authUser.id,
+        },
+      }).catch(err => console.error(err));
+    }
+
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    console.error("Error updating payroll run status:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// PATCH /api/hr/payroll/records/:recordId/status
+export const updatePayrollRecordStatus = async (req: Request, res: Response) => {
+  try {
+    const recordId = req.params.recordId as string;
+    const { status, remarks } = req.body;
+    const authUser = (req as any).user;
+
+    const allowedRecordStatuses = ["DRAFT", "PENDING_APPROVAL", "APPROVED", "PROCESSING", "PAID", "ON_HOLD", "CANCELLED"];
+    if (!allowedRecordStatuses.includes(status)) {
+      return res.status(400).json({ success: false, error: `Invalid status. Allowed: ${allowedRecordStatuses.join(", ")}` });
+    }
+
+    const record = await prisma.payrollRecord.update({
+      where: { id: recordId },
+      data: { status },
+      include: { user: true },
+    });
+
+    if (authUser?.id) {
+      await prisma.activityLog.create({
+        data: {
+          entityType: "PayrollRecord",
+          entityId: recordId,
+          action: `PAYROLL_RECORD_${status}`,
+          description: `Salary record for ${record.user.fullName} set to ${status}. ${remarks || ""}`,
+          userId: authUser.id,
+        },
+      }).catch(err => console.error(err));
+    }
+
+    res.json({ success: true, data: record });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// GET /api/hr/my-payslips (for self-service staff)
+export const getMyPayslips = async (req: Request, res: Response) => {
+  try {
+    const authUser = (req as any).user;
+    if (!authUser?.id) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+    const records = await prisma.payrollRecord.findMany({
+      where: {
+        userId: authUser.id,
+        status: { in: ["APPROVED", "PROCESSING", "PAID"] }, // Don't expose Drafts to regular staff
+      },
+      include: {
+        run: true,
+        lineItems: true,
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            Role: { select: { name: true } },
+            Department: { select: { name: true } },
+          },
+        },
+      },
+      orderBy: { netSalary: "desc" },
+    });
+
+    res.json({ success: true, data: records });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export const getPayrollProfile = async (req: Request, res: Response) => {
   try {
     const userId = req.params.userId as string;
@@ -495,8 +702,9 @@ export const getPayrollProfile = async (req: Request, res: Response) => {
       }
     });
 
+    // Return 200 with data: null so frontend knows profile is empty instead of erroring
     if (!profile) {
-      return res.status(404).json({ success: false, error: "Payroll profile not found" });
+      return res.status(200).json({ success: true, data: null });
     }
 
     res.json({ success: true, data: profile });
@@ -510,32 +718,47 @@ export const updatePayrollProfile = async (req: Request, res: Response) => {
     const userId = req.params.userId as string;
     const { employmentType, salaryBasis, joiningDate, terminationDate, paymentMethod, bankDetails, baseSalary } = req.body;
 
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      return res.status(404).json({ success: false, error: "Staff user not found" });
+    }
+
+    const existingProfile = await prisma.employeeProfile.findUnique({ where: { userId } });
+
+    const safeJoiningDate = joiningDate && !isNaN(new Date(joiningDate).getTime())
+      ? new Date(joiningDate)
+      : (existingProfile?.joiningDate || new Date());
+
+    const safeEmploymentType = employmentType || existingProfile?.employmentType || "FULL_TIME";
+    const safeSalaryBasis = salaryBasis || existingProfile?.salaryBasis || "MONTHLY";
+    const safePaymentMethod = paymentMethod || existingProfile?.paymentMethod || "BANK_TRANSFER";
+
     // Start a transaction since we are touching profile and compensations
     const result = await prisma.$transaction(async (tx) => {
       // 1. Upsert Profile
       const profile = await tx.employeeProfile.upsert({
         where: { userId },
         update: {
-          employmentType,
-          salaryBasis,
-          joiningDate: new Date(joiningDate),
-          terminationDate: terminationDate ? new Date(terminationDate) : null,
-          paymentMethod,
-          bankDetails: bankDetails || null,
+          employmentType: safeEmploymentType,
+          salaryBasis: safeSalaryBasis,
+          joiningDate: safeJoiningDate,
+          terminationDate: terminationDate && !isNaN(new Date(terminationDate).getTime()) ? new Date(terminationDate) : null,
+          paymentMethod: safePaymentMethod,
+          bankDetails: bankDetails !== undefined ? bankDetails : undefined,
         },
         create: {
           userId,
-          employmentType,
-          salaryBasis,
-          joiningDate: new Date(joiningDate),
-          terminationDate: terminationDate ? new Date(terminationDate) : null,
-          paymentMethod,
+          employmentType: safeEmploymentType,
+          salaryBasis: safeSalaryBasis,
+          joiningDate: safeJoiningDate,
+          terminationDate: terminationDate && !isNaN(new Date(terminationDate).getTime()) ? new Date(terminationDate) : null,
+          paymentMethod: safePaymentMethod,
           bankDetails: bankDetails || null,
         }
       });
 
       // 2. Handle Base Salary if provided
-      if (baseSalary !== undefined) {
+      if (baseSalary !== undefined && baseSalary !== null && !isNaN(Number(baseSalary))) {
         // Check current active
         const currentComp = await tx.compensationVersion.findFirst({
           where: { employeeProfileId: profile.id, isActive: true },
@@ -572,6 +795,7 @@ export const updatePayrollProfile = async (req: Request, res: Response) => {
 
     res.json({ success: true, data: result });
   } catch (error: any) {
+    console.error("updatePayrollProfile error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -612,18 +836,59 @@ export const assignEmployeeComponent = async (req: Request, res: Response) => {
     const userId = req.params.userId as string;
     const { componentId, value, effectiveFrom } = req.body;
 
-    const profile = await prisma.employeeProfile.findUnique({ where: { userId } });
-    if (!profile) return res.status(404).json({ success: false, error: "Profile not found" });
+    // Find or create profile if not yet created
+    let profile = await prisma.employeeProfile.findUnique({ where: { userId } });
+    if (!profile) {
+      profile = await prisma.employeeProfile.create({
+        data: {
+          userId,
+          employmentType: "FULL_TIME",
+          salaryBasis: "MONTHLY",
+          joiningDate: new Date(),
+          paymentMethod: "BANK_TRANSFER"
+        }
+      });
+    }
 
-    const assignment = await prisma.employeeComponent.create({
-      data: {
+    const safeEffectiveFrom = effectiveFrom && !isNaN(new Date(effectiveFrom).getTime())
+      ? new Date(effectiveFrom)
+      : new Date();
+
+    const numericValue = (value !== undefined && value !== null && value !== "")
+      ? Number(value)
+      : null;
+
+    // Check if an assignment already exists for this component
+    const existing = await prisma.employeeComponent.findFirst({
+      where: {
         employeeProfileId: profile.id,
         componentId,
-        value: value !== undefined ? Number(value) : null,
-        effectiveFrom: new Date(effectiveFrom)
-      },
-      include: { component: true }
+        OR: [{ effectiveTo: null }, { effectiveTo: { gte: new Date() } }]
+      }
     });
+
+    let assignment;
+    if (existing) {
+      assignment = await prisma.employeeComponent.update({
+        where: { id: existing.id },
+        data: {
+          value: numericValue,
+          effectiveFrom: safeEffectiveFrom,
+          effectiveTo: null,
+        },
+        include: { component: true }
+      });
+    } else {
+      assignment = await prisma.employeeComponent.create({
+        data: {
+          employeeProfileId: profile.id,
+          componentId,
+          value: numericValue,
+          effectiveFrom: safeEffectiveFrom
+        },
+        include: { component: true }
+      });
+    }
     
     res.status(201).json({ success: true, data: assignment });
   } catch (error: any) {
@@ -634,12 +899,28 @@ export const assignEmployeeComponent = async (req: Request, res: Response) => {
 export const removeEmployeeComponent = async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
-    const assignment = await prisma.employeeComponent.update({
-      where: { id },
-      data: { effectiveTo: new Date() } // Soft delete/end effectivity
-    });
-    
-    res.json({ success: true, data: assignment });
+    const userId = req.params.userId as string | undefined;
+
+    try {
+      await prisma.employeeComponent.delete({
+        where: { id }
+      });
+      return res.json({ success: true, message: "Component assignment removed" });
+    } catch {
+      if (userId) {
+        const profile = await prisma.employeeProfile.findUnique({ where: { userId } });
+        if (profile) {
+          await prisma.employeeComponent.deleteMany({
+            where: {
+              employeeProfileId: profile.id,
+              componentId: id
+            }
+          });
+          return res.json({ success: true, message: "Component assignment removed" });
+        }
+      }
+      return res.status(404).json({ success: false, error: "Component assignment not found" });
+    }
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
