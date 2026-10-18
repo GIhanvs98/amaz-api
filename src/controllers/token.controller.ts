@@ -70,14 +70,56 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
         },
       });
 
-      if (tokensToday >= maxWalkInCapacity) {
+      const existingTokens = await tx.appointment.findMany({
+        where: {
+          sessionId: session.id,
+          appointmentDate: { gte: startOfDay, lte: endOfDay }
+        },
+        select: { id: true, tokenNumber: true, status: true }
+      });
+
+      const docPrefix = doctor.fullName.substring(0, 3).toUpperCase();
+      const usedInts = new Set<number>();
+      const existingByNum = new Map<number, any>();
+      existingTokens.forEach(t => {
+        const match = t.tokenNumber.match(/\d+/);
+        if (match) {
+          const num = parseInt(match[0], 10);
+          usedInts.add(num);
+          existingByNum.set(num, t);
+        }
+      });
+
+      let nextSeq = 1;
+      while (usedInts.has(nextSeq)) {
+        const row = existingByNum.get(nextSeq);
+        if (row && (row.status === "CANCELLED" || row.status === "NO_SHOW")) {
+          return tx.appointment.update({
+            where: { id: row.id },
+            data: {
+              patientId,
+              doctorId,
+              status: "CHECKED_IN",
+              calledAt: null,
+              completedAt: null,
+              cancelledAt: null,
+              checkedInAt: new Date(),
+              bookedAt: new Date()
+            },
+            include: {
+              Patient: true,
+              User: { select: { fullName: true } }
+            }
+          });
+        }
+        nextSeq++;
+      }
+
+      if (usedInts.size >= maxWalkInCapacity) {
         throw new Error("Doctor's walk-in capacity reached for this date");
       }
 
-      // Generate token number: First 3 letters of doctor's name + sequence
-      const docPrefix = doctor.fullName.substring(0, 3).toUpperCase();
-      const sequence = (tokensToday + 1).toString().padStart(3, "0");
-      const tokenNumber = `${docPrefix}-${sequence}`;
+      const tokenNumber = `${docPrefix}-${nextSeq.toString().padStart(2, "0")}`;
 
       return tx.appointment.create({
         data: {

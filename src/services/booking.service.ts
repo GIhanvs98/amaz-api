@@ -276,24 +276,76 @@ export class BookingService {
         });
       }
 
-      let nextTokenNumberStr = "";
-      if (selectedTokenNumber) {
-        nextTokenNumberStr = selectedTokenNumber.toString().padStart(3, "0");
-      } else {
-        const existingTokens = await tx.appointment.findMany({
-          where: { sessionId: session.id, appointmentDate: { gte: startOfDay, lte: endOfDay } },
-          select: { tokenNumber: true }
-        });
-        const bookedNums = new Set(existingTokens.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
-        let nextAvailable = 1;
-        while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
-          nextAvailable++;
+      const existingTokens = await tx.appointment.findMany({
+        where: { sessionId: session.id, appointmentDate: { gte: startOfDay, lte: endOfDay } },
+        select: { id: true, tokenNumber: true, status: true }
+      });
+
+      const existingByNum = new Map<number, any>();
+      const bookedNums = new Set<number>();
+      existingTokens.forEach(t => {
+        const num = parseInt(t.tokenNumber.replace(/\D/g, ''), 10);
+        if (!isNaN(num)) {
+          bookedNums.add(num);
+          existingByNum.set(num, t);
         }
-        if (nextAvailable > session.tokenCapacity) {
+      });
+
+      let chosenNum = 1;
+      if (selectedTokenNumber) {
+        chosenNum = Number(selectedTokenNumber);
+        const existingRow = existingByNum.get(chosenNum);
+        if (existingRow) {
+          const isInactive = existingRow.status === "CANCELLED" || existingRow.status === "NO_SHOW";
+          if (!isInactive) {
+            throw new Error(`Token ${selectedTokenNumber} is already booked for this session`);
+          }
+          // Recycle inactive slot
+          return await tx.appointment.update({
+            where: { id: existingRow.id },
+            data: {
+              patientId: patient.id,
+              doctorId: doctorId,
+              status: "BOOKED",
+              bookingType: "PHONE",
+              calledAt: null,
+              completedAt: null,
+              cancelledAt: null,
+              checkedInAt: null,
+              bookedAt: new Date()
+            },
+            include: { User: true }
+          });
+        }
+      } else {
+        while (bookedNums.has(chosenNum) && chosenNum <= session.tokenCapacity) {
+          const row = existingByNum.get(chosenNum);
+          if (row && (row.status === "CANCELLED" || row.status === "NO_SHOW")) {
+            // Recycle inactive slot
+            return await tx.appointment.update({
+              where: { id: row.id },
+              data: {
+                patientId: patient.id,
+                doctorId: doctorId,
+                status: "BOOKED",
+                bookingType: "PHONE",
+                calledAt: null,
+                completedAt: null,
+                cancelledAt: null,
+                checkedInAt: null,
+                bookedAt: new Date()
+              },
+              include: { User: true }
+            });
+          }
+          chosenNum++;
+        }
+        if (chosenNum > session.tokenCapacity) {
           throw new Error("No slots available for this date");
         }
-        nextTokenNumberStr = nextAvailable.toString().padStart(3, "0");
       }
+
+      const nextTokenNumberStr = chosenNum.toString().padStart(2, "0");
 
       return await tx.appointment.create({
         data: {
@@ -303,7 +355,7 @@ export class BookingService {
           appointmentDate: startOfDay,
           sessionId: session.id,
           status: "BOOKED",
-          bookingType: "PHONE" // Always set explicitly for phone bookings
+          bookingType: "PHONE"
         },
         include: {
           User: true

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import process from "node:process";
 import { prisma } from "../src/lib/prisma.js";
 

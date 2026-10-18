@@ -517,79 +517,123 @@ export const generateToken = async (req: Request, res: Response) => {
         return prefix ? `${prefix}-${padded}` : padded;
       };
 
+      // 1. Fetch all existing appointments for this session/date regardless of status
+      const existingAppts = await prisma.appointment.findMany({
+        where: {
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          ...(sessionId ? { sessionId } : {
+            department: dept,
+            ...(roomId ? { roomId } : { doctorId: docId || null })
+          })
+        },
+        select: { id: true, tokenNumber: true, status: true }
+      });
+
+      const existingByToken = new Map<string, any>();
+      const usedInts = new Set<number>();
+      existingAppts.forEach(a => {
+        existingByToken.set(a.tokenNumber, a);
+        const match = a.tokenNumber.match(/\d+/);
+        if (match) {
+          usedInts.add(parseInt(match[0], 10));
+        }
+      });
+
       if (requestedTokenNumber) {
         const tokenDisplay = formatTokenNumber(requestedTokenNumber);
-        const exists = await prisma.appointment.findFirst({
-          where: {
-            appointmentDate: { gte: startOfDay, lte: endOfDay },
-            department: dept,
-            ...(roomId ? { roomId } : { doctorId: docId || null }),
-            tokenNumber: tokenDisplay,
-            status: { notIn: ["CANCELLED", "NO_SHOW"] }
-          }
-        });
+        const existingRow = existingByToken.get(tokenDisplay);
 
-        if (exists) {
-          throw new Error(`Token ${requestedTokenNumber} for ${dept} is already booked.`);
+        if (existingRow) {
+          const isInactive = existingRow.status === "CANCELLED" || existingRow.status === "NO_SHOW";
+          if (!isInactive) {
+            throw new Error(`Token ${requestedTokenNumber} for ${dept} is already booked.`);
+          }
+
+          // Safely recycle the inactive slot without violating unique constraint
+          token = await prisma.appointment.update({
+            where: { id: existingRow.id },
+            data: {
+              patientId: patient!.id,
+              doctorId: docId || null,
+              sessionId: sessionId,
+              roomId: roomId || null,
+              department: dept,
+              status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+              bookingType: bookingType || "WALK_IN",
+              bookingReference: sharedRefNo,
+              calledAt: null,
+              completedAt: null,
+              cancelledAt: null,
+              checkedInAt: null,
+              bookedAt: new Date()
+            }
+          });
+          return token;
         }
 
-        token = await prisma.appointment.create({
-          data: {
-            tokenNumber: tokenDisplay,
-            patientId: patient!.id,
-            doctorId: docId || null,
-            sessionId: sessionId,
-            roomId: roomId || null,
-            department: dept,
-            status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-            bookingType: bookingType || "WALK_IN",
-            appointmentDate: startOfDay,
-            bookingReference: sharedRefNo
+        try {
+          token = await prisma.appointment.create({
+            data: {
+              tokenNumber: tokenDisplay,
+              patientId: patient!.id,
+              doctorId: docId || null,
+              sessionId: sessionId,
+              roomId: roomId || null,
+              department: dept,
+              status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+              bookingType: bookingType || "WALK_IN",
+              appointmentDate: startOfDay,
+              bookingReference: sharedRefNo
+            }
+          });
+          return token;
+        } catch (err: any) {
+          if (err.code === "P2002" || err.message?.includes("Unique constraint failed")) {
+            throw new Error(`Token ${requestedTokenNumber} for ${dept} was just reserved by another booking.`);
           }
-        });
-        return token;
+          throw err;
+        }
+      }
+
+      // Auto-assign: Find the next smallest positive integer not in usedInts
+      let nextTokenInt = 1;
+      while (usedInts.has(nextTokenInt)) {
+        nextTokenInt++;
       }
 
       let attempts = 0;
-      const lastToken = await prisma.appointment.findFirst({
-        where: {
-          appointmentDate: { gte: startOfDay, lte: endOfDay },
-          department: dept,
-          ...(roomId ? { roomId } : { doctorId: docId || null }),
-          status: { notIn: ["CANCELLED", "NO_SHOW"] }
-        },
-        orderBy: { createdAt: 'desc' }
-      });
-
-      let nextTokenInt = 1;
-      if (lastToken) {
-        const digits = lastToken.tokenNumber.match(/\d+/);
-        if (digits) {
-          nextTokenInt = parseInt(digits[0], 10) + 1;
-        }
-      } else {
-        const count = await prisma.appointment.count({
-          where: {
-            appointmentDate: { gte: startOfDay, lte: endOfDay },
-            department: dept,
-            ...(roomId ? { roomId } : { doctorId: docId || null })
-          }
-        });
-        nextTokenInt = count + 1;
-      }
-
-      while (!token && attempts < 20) {
+      while (!token && attempts < 50) {
         const tokenDisplay = formatTokenNumber(nextTokenInt);
-        const exists = await prisma.appointment.findFirst({
-          where: {
-            appointmentDate: { gte: startOfDay, lte: endOfDay },
-            department: dept,
-            ...(roomId ? { roomId } : { doctorId: docId || null }),
-            tokenNumber: tokenDisplay
-          }
-        });
+        const existingRow = existingByToken.get(tokenDisplay);
 
-        if (exists) {
+        if (existingRow) {
+          const isInactive = existingRow.status === "CANCELLED" || existingRow.status === "NO_SHOW";
+          if (isInactive) {
+            try {
+              token = await prisma.appointment.update({
+                where: { id: existingRow.id },
+                data: {
+                  patientId: patient!.id,
+                  doctorId: docId || null,
+                  sessionId: sessionId,
+                  roomId: roomId || null,
+                  department: dept,
+                  status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+                  bookingType: bookingType || "WALK_IN",
+                  bookingReference: sharedRefNo,
+                  calledAt: null,
+                  completedAt: null,
+                  cancelledAt: null,
+                  checkedInAt: null,
+                  bookedAt: new Date()
+                }
+              });
+              break;
+            } catch {
+              // Retry on race
+            }
+          }
+          usedInts.add(nextTokenInt);
           nextTokenInt++;
           attempts++;
           continue;
@@ -611,8 +655,13 @@ export const generateToken = async (req: Request, res: Response) => {
             }
           });
         } catch (e: any) {
-          nextTokenInt++;
-          attempts++;
+          if (e.code === "P2002" || e.message?.includes("Unique constraint failed")) {
+            usedInts.add(nextTokenInt);
+            nextTokenInt++;
+            attempts++;
+          } else {
+            throw e;
+          }
         }
       }
       
@@ -1312,7 +1361,11 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       orderBy: { createdAt: "desc" },
       take: 100,
       include: {
-        lineItems: true
+        lineItems: true,
+        payments: {
+          where: { status: "COMPLETED" },
+          select: { method: true, amount: true, appointmentId: true }
+        }
       }
     });
 
@@ -1329,58 +1382,176 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       orderBy: { createdAt: "desc" },
       take: 100,
       include: {
-        User: { select: { fullName: true } },
+        User: { include: { room: true } },
         Patient: true
       }
     });
 
-    const timelineItems: any[] = [];
+    const allPatientIds = Array.from(new Set([
+      ...invoices.map(i => i.patientId).filter(Boolean),
+      ...appointments.map(a => a.patientId).filter(Boolean)
+    ])) as string[];
 
-    invoices.forEach(inv => {
-      timelineItems.push({
-        type: "INVOICE",
-        id: inv.id,
-        createdAt: inv.createdAt,
-        patientId: inv.patientId,
-        totalAmount: inv.totalAmount,
-        status: inv.status,
-        lineItems: inv.lineItems,
-        visitId: inv.visitId
-      });
-    });
+    const patientsList = allPatientIds.length > 0 ? await prisma.patient.findMany({
+      where: { id: { in: allPatientIds } }
+    }) : [];
+    const patientsMap = new Map<string, any>(patientsList.map(p => [p.id, p]));
 
+    const apptById = new Map<string, any>();
+    const apptByBookingRef = new Map<string, any>();
     appointments.forEach(apt => {
-      timelineItems.push({
-        type: "TOKEN",
-        id: apt.id,
-        createdAt: apt.createdAt,
-        patientId: apt.patientId,
-        tokenNumber: apt.tokenNumber,
-        department: apt.department,
-        status: apt.status,
-        doctorName: apt.User?.fullName,
-        bookingReference: apt.bookingReference
-      });
+      apptById.set(apt.id, apt);
+      if (apt.bookingReference) {
+        apptByBookingRef.set(apt.bookingReference, apt);
+      }
     });
 
-    timelineItems.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const linkedApptIds = new Set<string>();
+    const unifiedItems: any[] = [];
 
-    const allPatientIds = Array.from(new Set(timelineItems.map(i => i.patientId).filter(id => id !== null))) as string[];
-    const patientsMap = new Map();
-    if (allPatientIds.length > 0) {
-      const pats = await prisma.patient.findMany({
-        where: { id: { in: allPatientIds } }
-      });
-      pats.forEach(p => patientsMap.set(p.id, p));
-    }
+    // Process all invoices and link matching tokens
+    invoices.forEach(inv => {
+      let matchedAppt = null;
+      if (inv.visitId) {
+        matchedAppt = apptById.get(inv.visitId) || apptByBookingRef.get(inv.visitId);
+      }
+      if (!matchedAppt && inv.payments) {
+        for (const p of inv.payments) {
+          if (p.appointmentId && apptById.has(p.appointmentId)) {
+            matchedAppt = apptById.get(p.appointmentId);
+            break;
+          }
+        }
+      }
 
-    const data = timelineItems.map(item => ({
-      ...item,
-      Patient: item.patientId ? patientsMap.get(item.patientId) || null : null
-    }));
+      const paymentMethod = inv.payments?.[0]?.method || "CASH";
+      const patient = (inv.patientId ? patientsMap.get(inv.patientId) : null) || matchedAppt?.Patient || null;
 
-    // Limit to 100 overall
-    res.json({ success: true, data: data.slice(0, 100) });
+      if (matchedAppt) {
+        linkedApptIds.add(matchedAppt.id);
+        unifiedItems.push({
+          type: "VISIT",
+          id: inv.id,
+          createdAt: inv.createdAt,
+          patientId: inv.patientId || matchedAppt.patientId,
+          Patient: patient,
+          tokenNumber: matchedAppt.tokenNumber,
+          department: matchedAppt.department,
+          doctorName: matchedAppt.User?.fullName,
+          roomNumber: matchedAppt.User?.room?.roomNumber,
+          bookingReference: matchedAppt.bookingReference,
+          appointmentStatus: matchedAppt.status,
+          appointmentId: matchedAppt.id,
+          invoiceId: inv.id,
+          totalAmount: inv.totalAmount,
+          invoiceStatus: inv.status,
+          paymentMethod,
+          lineItems: inv.lineItems,
+          token: {
+            id: matchedAppt.id,
+            refNo: matchedAppt.bookingReference,
+            tokenNumber: matchedAppt.tokenNumber,
+            department: matchedAppt.department,
+            status: matchedAppt.status,
+            doctorName: matchedAppt.User?.fullName,
+            roomNumber: matchedAppt.User?.room?.roomNumber,
+            patientName: patient?.fullName || "Walk-in Patient",
+            appointmentDate: matchedAppt.createdAt
+          },
+          invoice: {
+            receiptId: inv.id,
+            date: inv.createdAt,
+            total: inv.totalAmount,
+            subtotal: inv.subtotal,
+            status: inv.status,
+            paymentMethod,
+            items: (inv.lineItems || []).map((li: any) => ({
+              name: li.description,
+              qty: li.quantity,
+              price: li.unitPrice,
+              total: li.total
+            }))
+          }
+        });
+      } else {
+        // Direct bill (e.g. Pharmacy OTC sale)
+        unifiedItems.push({
+          type: "INVOICE",
+          id: inv.id,
+          createdAt: inv.createdAt,
+          patientId: inv.patientId,
+          Patient: patient,
+          tokenNumber: null,
+          department: "PHARMACY",
+          doctorName: null,
+          roomNumber: null,
+          bookingReference: null,
+          appointmentStatus: null,
+          appointmentId: null,
+          invoiceId: inv.id,
+          totalAmount: inv.totalAmount,
+          invoiceStatus: inv.status,
+          paymentMethod,
+          lineItems: inv.lineItems,
+          token: null,
+          invoice: {
+            receiptId: inv.id,
+            date: inv.createdAt,
+            total: inv.totalAmount,
+            subtotal: inv.subtotal,
+            status: inv.status,
+            paymentMethod,
+            items: (inv.lineItems || []).map((li: any) => ({
+              name: li.description,
+              qty: li.quantity,
+              price: li.unitPrice,
+              total: li.total
+            }))
+          }
+        });
+      }
+    });
+
+    // Add unlinked appointments (e.g. phone bookings, post-pay tokens without invoice yet)
+    appointments.forEach(apt => {
+      if (!linkedApptIds.has(apt.id)) {
+        unifiedItems.push({
+          type: "TOKEN",
+          id: apt.id,
+          createdAt: apt.createdAt,
+          patientId: apt.patientId,
+          Patient: apt.Patient,
+          tokenNumber: apt.tokenNumber,
+          department: apt.department,
+          doctorName: apt.User?.fullName,
+          roomNumber: apt.User?.room?.roomNumber,
+          bookingReference: apt.bookingReference,
+          appointmentStatus: apt.status,
+          appointmentId: apt.id,
+          invoiceId: null,
+          totalAmount: null,
+          invoiceStatus: null,
+          paymentMethod: null,
+          lineItems: [],
+          token: {
+            id: apt.id,
+            refNo: apt.bookingReference,
+            tokenNumber: apt.tokenNumber,
+            department: apt.department,
+            status: apt.status,
+            doctorName: apt.User?.fullName,
+            roomNumber: apt.User?.room?.roomNumber,
+            patientName: apt.Patient?.fullName || "Walk-in Patient",
+            appointmentDate: apt.createdAt
+          },
+          invoice: null
+        });
+      }
+    });
+
+    unifiedItems.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    res.json({ success: true, data: unifiedItems.slice(0, 100) });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1398,9 +1569,15 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
 
     if (!shift) return res.status(400).json({ error: "No open shift found." });
     
-    const payments = await prisma.payment.findMany({
-      where: { shiftId: shift.id, status: "COMPLETED" }
-    });
+    const [payments, refunds] = await Promise.all([
+      prisma.payment.findMany({
+        where: { shiftId: shift.id, status: "COMPLETED" }
+      }),
+      prisma.refund.findMany({
+        where: { shiftId: shift.id, status: "COMPLETED" },
+        include: { payment: true }
+      })
+    ]);
 
     let systemCashTotal = 0;
     let systemCardTotal = 0;
@@ -1410,7 +1587,15 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
       if (payment.method === "CARD" || payment.method === "BANK" || payment.method === "QR") systemCardTotal += payment.amount;
     });
 
-    const expectedCash = shift.openingFloat + systemCashTotal;
+    let cashRefundsTotal = 0;
+    refunds.forEach(refund => {
+      if (refund.payment?.method === "CASH") {
+        cashRefundsTotal += refund.amount;
+      }
+    });
+
+    const totalSales = systemCashTotal + systemCardTotal;
+    const expectedCash = shift.openingFloat + systemCashTotal - cashRefundsTotal;
     const variance = Number(declaredCash) - expectedCash;
 
     await prisma.cashRegisterShift.update({
@@ -1425,9 +1610,12 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
     });
 
     const summary = {
-      totalInvoices: payments.length, // approximation
+      totalInvoices: payments.length,
+      startingFloat: shift.openingFloat,
       systemCashTotal,
       systemCardTotal,
+      totalSales,
+      cashRefundsTotal,
       declaredCash: Number(declaredCash),
       expectedCash,
       variance

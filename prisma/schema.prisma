@@ -25,6 +25,9 @@ model Medicine {
   prescriptionItems PrescriptionItem[]
   purchaseItems     PurchaseOrderItem[]
   stockBatches      StockBatch[]
+
+  @@index([isActive, name])
+  @@index([category])
 }
 
 model Department {
@@ -81,7 +84,7 @@ model StockBatch {
 
   @@unique([medicineId, batchNumber])
   @@index([expiryDate])
-  @@index([medicineId, currentQuantity])
+  @@index([medicineId, currentQuantity, expiryDate])
 }
 
 model PurchaseOrder {
@@ -127,6 +130,8 @@ model Invoice {
   @@index([status])
   @@index([createdAt])
   @@index([visitId])
+  @@index([patientId])
+  @@index([visitId, status])
 }
 
 model InvoiceLineItem {
@@ -156,6 +161,11 @@ model Payment {
   shift          CashRegisterShift? @relation(fields: [shiftId], references: [id])
   Appointment    Appointment?       @relation(fields: [appointmentId], references: [id])
   refunds        Refund[]
+
+  @@index([shiftId, status])
+  @@index([invoiceId])
+  @@index([createdAt])
+  @@index([status])
 }
 
 model Refund {
@@ -168,6 +178,9 @@ model Refund {
   createdAt DateTime           @default(now())
   shift     CashRegisterShift? @relation(fields: [shiftId], references: [id])
   payment   Payment            @relation(fields: [paymentId], references: [id])
+
+  @@index([shiftId, status])
+  @@index([paymentId])
 }
 
 model LabTest {
@@ -379,6 +392,9 @@ model Appointment {
   @@index([status])
   @@index([bookingReference])
   @@index([patientId])
+  @@index([sessionId, appointmentDate])
+  @@index([department, appointmentDate, status])
+  @@index([createdAt])
 }
 
 model User {

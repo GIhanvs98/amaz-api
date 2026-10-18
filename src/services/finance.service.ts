@@ -607,23 +607,55 @@ export class FinanceService {
         take: limit,
         orderBy: { openedAt: "desc" },
         include: {
-          user: { select: { fullName: true } }
+          user: { select: { fullName: true } },
+          payments: {
+            where: { status: "COMPLETED" },
+            select: { amount: true, method: true }
+          },
+          refunds: {
+            where: { status: "COMPLETED" },
+            select: { amount: true, payment: { select: { method: true } } }
+          }
         }
       }),
       prisma.cashRegisterShift.count()
     ]);
     return {
-      data: shifts.map(s => ({
-        id: s.id,
-        cashier: s.user?.fullName || "Unknown",
-        openedAt: s.openedAt,
-        closedAt: s.closedAt,
-        startingFloat: s.openingFloat,
-        expectedCash: s.expectedCash,
-        actualCash: s.actualCash,
-        variance: s.variance,
-        status: s.status
-      })),
+      data: shifts.map(s => {
+        let cashTotal = 0;
+        let cardTotal = 0;
+        (s.payments || []).forEach(p => {
+          if (p.method === "CASH") cashTotal += p.amount;
+          else if (p.method === "CARD" || p.method === "BANK" || p.method === "QR") cardTotal += p.amount;
+        });
+
+        let cashRefunds = 0;
+        (s.refunds || []).forEach(r => {
+          if (r.payment?.method === "CASH") cashRefunds += r.amount;
+        });
+
+        const totalSales = cashTotal + cardTotal;
+        const calculatedExpectedCash = Math.round((s.openingFloat + cashTotal - cashRefunds) * 100) / 100;
+        const expectedCash = s.status === "CLOSED" && s.expectedCash > 0 ? s.expectedCash : calculatedExpectedCash;
+        const actualCash = s.actualCash;
+        const variance = actualCash !== null ? Math.round((actualCash - expectedCash) * 100) / 100 : null;
+
+        return {
+          id: s.id,
+          cashier: s.user?.fullName || "Unknown",
+          openedAt: s.openedAt,
+          closedAt: s.closedAt,
+          startingFloat: s.openingFloat,
+          cashTotal,
+          cardTotal,
+          totalSales,
+          cashRefunds,
+          expectedCash,
+          actualCash,
+          variance,
+          status: s.status
+        };
+      }),
       pagination: {
         total,
         page,

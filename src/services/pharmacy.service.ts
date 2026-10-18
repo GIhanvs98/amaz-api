@@ -1,5 +1,6 @@
 import { prisma, withRetry } from "../lib/prisma.js";
 import { BillingService } from "./billing.service.js";
+import { clearCache } from "../middlewares/cache.middleware.js";
 
 const billingService = new BillingService();
 
@@ -20,10 +21,27 @@ export class PharmacyService {
     const [data, total] = await Promise.all([
       withRetry(() => prisma.medicine.findMany({
         where: whereClause,
-        include: {
+        select: {
+          id: true,
+          name: true,
+          genericName: true,
+          category: true,
+          itemType: true,
+          form: true,
+          unit: true,
+          retailPrice: true,
+          barcode: true,
+          isActive: true,
           stockBatches: {
             where: { currentQuantity: { gt: 0 } },
             orderBy: { expiryDate: 'asc' },
+            select: {
+              id: true,
+              batchNumber: true,
+              expiryDate: true,
+              currentQuantity: true,
+              unitPrice: true,
+            }
           },
         },
         skip,
@@ -81,19 +99,24 @@ export class PharmacyService {
         });
       }
 
+      clearCache("pharmacy/medicines").catch(() => {});
+      clearCache("pharmacy/metrics").catch(() => {});
       return medicine;
     }));
   }
 
   // --- INVENTORY MANAGEMENT ---
   async addStockBatch(data: { medicineId: string; batchNumber: string; expiryDate?: Date; initialQuantity: number; unitPrice: number }) {
-    return withRetry(() => prisma.stockBatch.create({
+    const result = await withRetry(() => prisma.stockBatch.create({
       data: {
         ...data,
         expiryDate: data.expiryDate || null,
         currentQuantity: data.initialQuantity,
       },
     }));
+    clearCache("pharmacy/medicines").catch(() => {});
+    clearCache("pharmacy/metrics").catch(() => {});
+    return result;
   }
 
   // --- DISPENSING ENGINE (FIFO LOGIC) ---
@@ -175,8 +198,15 @@ export class PharmacyService {
       };
     };
 
-    if (existingTx) return executeLogic(existingTx);
-    return withRetry(() => prisma.$transaction(executeLogic));
+    let result;
+    if (existingTx) {
+      result = await executeLogic(existingTx);
+    } else {
+      result = await withRetry(() => prisma.$transaction(executeLogic));
+    }
+    clearCache("pharmacy/medicines").catch(() => {});
+    clearCache("pharmacy/metrics").catch(() => {});
+    return result;
   }
 
   // --- ALERTS ---
@@ -347,10 +377,13 @@ export class PharmacyService {
       }
     }
     
-    return withRetry(() => prisma.medicine.update({
+    const result = await withRetry(() => prisma.medicine.update({
       where: { id },
       data
     }));
+    clearCache("pharmacy/medicines").catch(() => {});
+    clearCache("pharmacy/metrics").catch(() => {});
+    return result;
   }
 
   async deleteMedicine(id: string) {
@@ -362,7 +395,10 @@ export class PharmacyService {
       throw new Error("Cannot delete medicine with active stock. Deplete or adjust stock first.");
     }
     // Soft delete
-    return prisma.medicine.update({ where: { id }, data: { isActive: false } });
+    const result = await prisma.medicine.update({ where: { id }, data: { isActive: false } });
+    clearCache("pharmacy/medicines").catch(() => {});
+    clearCache("pharmacy/metrics").catch(() => {});
+    return result;
   }
 }
 

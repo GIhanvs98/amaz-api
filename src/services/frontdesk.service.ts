@@ -403,40 +403,70 @@ export class FrontdeskService {
 
     let apt;
     let retries = 0;
-    while (retries < 3) {
+    while (retries < 5) {
       try {
         // Find next available token across ALL bookings for the session (Phone + Walk-in)
         const existing = await prisma.appointment.findMany({
-          where: { sessionId, appointmentDate: startOfDay },
-          orderBy: { tokenNumber: 'desc' }
+          where: { sessionId, appointmentDate: { gte: startOfDay, lte: endOfDay } }
         });
         
-        let nextTokenNumberStr = "";
-        const bookedNums = new Set(existing.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
+        const existingByNum = new Map<number, any>();
+        const bookedNums = new Set<number>();
+        existing.forEach(t => {
+          const num = parseInt(t.tokenNumber.replace(/\D/g, ''), 10);
+          if (!isNaN(num)) {
+            bookedNums.add(num);
+            existingByNum.set(num, t);
+          }
+        });
+
         let nextAvailable = 1;
         while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
+          const row = existingByNum.get(nextAvailable);
+          if (row && (row.status === "CANCELLED" || row.status === "NO_SHOW")) {
+            // Can recycle this slot
+            break;
+          }
           nextAvailable++;
         }
         
         if (nextAvailable > session.tokenCapacity) {
           throw new Error("No slots available for this date");
         }
-        nextTokenNumberStr = nextAvailable.toString().padStart(2, "0");
+        const nextTokenNumberStr = nextAvailable.toString().padStart(2, "0");
 
-        apt = await prisma.appointment.create({
-          data: {
-            doctorId,
-            patientId: patient.id,
-            sessionId,
-            tokenNumber: nextTokenNumberStr,
-            appointmentDate: startOfDay,
-            status: 'BOOKED', // Walk-ins start as BOOKED until they pay at Cashier
-            bookingType: 'WALK_IN'
-          }
-        });
+        const existingSlot = existingByNum.get(nextAvailable);
+        if (existingSlot && (existingSlot.status === "CANCELLED" || existingSlot.status === "NO_SHOW")) {
+          apt = await prisma.appointment.update({
+            where: { id: existingSlot.id },
+            data: {
+              doctorId,
+              patientId: patient.id,
+              status: 'BOOKED',
+              bookingType: 'WALK_IN',
+              calledAt: null,
+              completedAt: null,
+              cancelledAt: null,
+              checkedInAt: null,
+              bookedAt: new Date()
+            }
+          });
+        } else {
+          apt = await prisma.appointment.create({
+            data: {
+              doctorId,
+              patientId: patient.id,
+              sessionId,
+              tokenNumber: nextTokenNumberStr,
+              appointmentDate: startOfDay,
+              status: 'BOOKED', // Walk-ins start as BOOKED until they pay at Cashier
+              bookingType: 'WALK_IN'
+            }
+          });
+        }
         break; // Success, exit loop
       } catch (error: any) {
-        if (error.code === 'P2002' && retries < 2) {
+        if ((error.code === 'P2002' || error.message?.includes("Unique constraint failed")) && retries < 4) {
           retries++;
           continue; // Retry on token collision
         }

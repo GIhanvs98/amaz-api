@@ -1,7 +1,10 @@
+import "dotenv/config";
 import process from "node:process";
 import { prisma } from "../src/lib/prisma.js";
+import { clearCache } from "../src/middlewares/cache.middleware.js";
 
 async function run() {
+  await clearCache("pharmacy/medicines");
   const masterBarcode = process.argv[2] || `99${Math.floor(10000000 + Math.random() * 90000000)}`;
 
   // 1. Create a dedicated test patient for this barcode cycle
@@ -48,13 +51,20 @@ async function run() {
       },
       include: { stockBatches: true }
     });
-  } else if (!medicine.stockBatches || medicine.stockBatches.length === 0) {
+  }
+  // Ensure all stock batches for this medicine have ample stock for testing
+  await prisma.stockBatch.updateMany({
+    where: { medicineId: medicine.id },
+    data: { currentQuantity: 500 }
+  });
+  const batchCount = await prisma.stockBatch.count({ where: { medicineId: medicine.id } });
+  if (batchCount === 0) {
     await prisma.stockBatch.create({
       data: {
         medicineId: medicine.id,
         batchNumber: "BAT-AMOX-01",
-        currentQuantity: 100,
-        initialQuantity: 100,
+        currentQuantity: 500,
+        initialQuantity: 500,
         unitPrice: 45,
         costPrice: 30,
         expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)

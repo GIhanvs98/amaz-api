@@ -3,6 +3,7 @@ import { pharmacyService } from "../services/pharmacy.service.js";
 import { billingService } from '../services/billing.service.js';
 import { websocketService } from '../services/websocket.service.js';
 import { prisma } from '../lib/prisma.js';
+import { clearCache } from '../middlewares/cache.middleware.js';
 
 export class PharmacyController {
   async getMedicines(req: Request, res: Response) {
@@ -249,12 +250,22 @@ export class PharmacyController {
         }
 
         // 4. Pay the invoice immediately (POS = instant payment)
+        const user = (req as any).user;
+        let shiftId: string | undefined = undefined;
+        if (user?.id) {
+          const openShift = await tx.cashRegisterShift.findFirst({
+            where: { openedBy: user.id, status: "OPEN" }
+          });
+          shiftId = openShift?.id;
+        }
+
         await tx.payment.create({
           data: {
             invoiceId: invoice.id,
             amount: finalCost,
             method: paymentMethod,
             status: 'COMPLETED',
+            ...(shiftId ? { shiftId } : {})
           },
         });
 
@@ -281,6 +292,9 @@ export class PharmacyController {
         totalAmount: result.invoice.totalAmount,
         paymentMethod,
       });
+
+      clearCache("pharmacy/medicines").catch(() => {});
+      clearCache("pharmacy/metrics").catch(() => {});
 
       res.json({ success: true, invoice: result.invoice });
     } catch (error: any) {
