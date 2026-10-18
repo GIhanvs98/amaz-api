@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { SMSService } from "../services/sms.service.js";
+import { NotificationService } from "../services/notification.service.js";
 import { S3Service } from "../services/s3.service.js";
 import jwt from "jsonwebtoken";
 
@@ -19,9 +20,11 @@ export const requestOTP = async (req: Request, res: Response) => {
     });
     if (patients.length === 0) return res.status(404).json({ error: "No records found for this phone number." });
 
-    // Generate test OTP (default 123456 for test bypass)
-    const otp = "123456";
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 mins
+    // Generate 6-digit OTP
+    const otp = process.env.NODE_ENV === "production"
+      ? Math.floor(100000 + Math.random() * 900000).toString()
+      : "123456";
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
     await prisma.patientOTP.upsert({
       where: { phone },
@@ -29,13 +32,21 @@ export const requestOTP = async (req: Request, res: Response) => {
       create: { phone, code: otp, expiresAt }
     });
 
-    // SMS is best-effort during testing
-    SMSService.sendSMS(phone, `Your AMAZ Hospital patient portal OTP is ${otp}.`).catch(() => {});
+    // Dispatch templated SMS via gateway
+    NotificationService.sendTemplatedSMS(
+      patients[0]?.id || "PORTAL",
+      phone,
+      "PATIENT_PORTAL_OTP",
+      { otp }
+    ).catch((err) => {
+      console.error("Failed to send portal OTP SMS:", err);
+      SMSService.sendSMS(phone, `AMAZ Hospital: Your verification code is ${otp}. Valid for 5 minutes. Do not share this OTP with anyone.`).catch(() => {});
+    });
 
     res.json({ 
       success: true, 
-      message: "OTP sent (Bypassed for testing. Code: 123456)",
-      otp: "123456",
+      message: "OTP sent successfully",
+      otp: process.env.NODE_ENV === "production" ? undefined : otp,
       patients: patients.length > 1 ? patients : undefined
     });
   } catch (error: any) {

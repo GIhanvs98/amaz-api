@@ -8,9 +8,34 @@ const app = express();
 
 app.use(helmet());
 
+const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    "https://amazhospital.lk",
+    "https://www.amazhospital.lk",
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:3002",
+    "http://192.168.1.101:3000",
+    "http://192.168.1.101:3001",
+].filter(Boolean) as string[];
+
 app.use(
     cors({
-        origin: [process.env.FRONTEND_URL ?? "http://localhost:3000", "http://localhost:3001", "http://192.168.1.101:3000", "http://192.168.1.101:3001", "http://localhost:3002"],
+        origin: (origin, callback) => {
+            if (!origin) return callback(null, true);
+            const normalizedOrigin = origin.replace(/\/$/, "");
+            const isAllowed =
+                allowedOrigins.some((o) => o.replace(/\/$/, "") === normalizedOrigin) ||
+                origin.endsWith(".up.railway.app") ||
+                origin.endsWith(".amazhospital.lk");
+
+            if (isAllowed) {
+                callback(null, true);
+            } else {
+                console.warn(`[CORS Blocked] Origin not allowed: ${origin}`);
+                callback(new Error(`CORS origin not allowed: ${origin}`));
+            }
+        },
         credentials: true,
     }),
 );

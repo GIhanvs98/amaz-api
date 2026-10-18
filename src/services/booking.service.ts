@@ -370,9 +370,10 @@ export class BookingService {
             'APPOINTMENT_BOOKED',
             {
               patientName: fullName,
-              doctorName: token.User?.fullName || 'General Physician',
-              appointmentDate: startOfDay.toLocaleDateString(),
-              tokenNumber: token.tokenNumber,
+              doctorName: (token.User?.fullName || 'General Physician').replace(/^Dr\.?\s*/i, ""),
+              appointmentDate: startOfDay.toLocaleDateString('en-GB'),
+              tokenNumber: String(token.tokenNumber),
+              bookingRef: token.bookingReference || String(token.tokenNumber),
               hospitalName: "AMAZ Hospital"
             }
           );

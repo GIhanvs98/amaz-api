@@ -52,17 +52,27 @@ export class NotificationService {
         if (templateName === 'APPOINTMENT_BOOKED') {
           template = {
             id: 'temp', name: 'APPOINTMENT_BOOKED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'Dear {{patientName}}, your appointment with {{doctorName}} is confirmed for {{appointmentDate}}. Your token is {{tokenNumber}}. - {{hospitalName}}'
+            content: 'AMAZ Hospital: Token #{{tokenNumber}} confirmed for {{patientName}} with Dr. {{doctorName}} on {{appointmentDate}}. Ref: {{bookingRef}}. Inquiries: 0112345678'
           };
         } else if (templateName === 'DOCTOR_ARRIVED') {
           template = {
             id: 'temp', name: 'DOCTOR_ARRIVED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'Your doctor has arrived. Please proceed to AMAZ Hospital for your appointment. Token: {{tokenNumber}}.'
+            content: 'AMAZ Hospital: Dr. {{doctorName}} has arrived at Room {{roomNumber}}. Token: #{{tokenNumber}}. Please proceed to the consultation area.'
+          };
+        } else if (templateName === 'LAB_REPORT_READY') {
+          template = {
+            id: 'temp', name: 'LAB_REPORT_READY', isActive: true, createdAt: new Date(), updatedAt: new Date(),
+            content: 'AMAZ Hospital: Lab report for {{patientName}} ({{testProfile}}) is ready. View report: {{reportLink}} Ref: {{referenceNo}}'
+          };
+        } else if (templateName === 'PATIENT_PORTAL_OTP') {
+          template = {
+            id: 'temp', name: 'PATIENT_PORTAL_OTP', isActive: true, createdAt: new Date(), updatedAt: new Date(),
+            content: 'AMAZ Hospital: Your verification code is {{otp}}. Valid for 5 minutes. Do not share this OTP with anyone.'
           };
         } else if (templateName === 'SESSION_CANCELLED') {
           template = {
             id: 'temp', name: 'SESSION_CANCELLED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'Dear {{patientName}}, your appointment with {{doctorName}} on {{date}} has been cancelled. Reason: {{reason}}. We apologize for the inconvenience. - {{hospitalName}}'
+            content: 'AMAZ Hospital: Appointment with Dr. {{doctorName}} on {{date}} is cancelled ({{reason}}). Inquiries: 0112345678'
           };
         } else {
           console.warn(`SMS Template ${templateName} not found in DB and no fallback available.`);
@@ -116,12 +126,31 @@ export class NotificationService {
     });
   }
 
-  static async triggerDoctorArrived(doctorId: string, sessionDate: Date) {
+  static async triggerDoctorArrived(doctorId: string, sessionDate: Date, roomNumberParam?: string) {
     return withRetry(async () => {
       const startOfDay = new Date(sessionDate);
       startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date(sessionDate);
       endOfDay.setHours(23, 59, 59, 999);
+
+      // Fetch doctor details and room
+      const doctor = await prisma.user.findUnique({
+        where: { id: doctorId },
+        select: { fullName: true }
+      });
+      const doctorName = (doctor?.fullName || "Consultant").replace(/^Dr\.?\s*/i, "");
+
+      let roomNumber = roomNumberParam || "";
+      if (!roomNumber) {
+        const attendance = await prisma.doctorAttendance.findFirst({
+          where: {
+            doctorId,
+            date: { gte: startOfDay, lte: endOfDay }
+          },
+          include: { room: true }
+        });
+        roomNumber = attendance?.room?.roomNumber || "Consultation Room";
+      }
 
       // Find all appointments that have been BOOKED but not yet arrived/completed/cancelled
       const appointments = await prisma.appointment.findMany({
@@ -141,8 +170,10 @@ export class NotificationService {
             apt.Patient.phone,
             'DOCTOR_ARRIVED',
             {
-              patientName: apt.Patient.fullName,
-              tokenNumber: apt.tokenNumber
+              patientName: apt.Patient.fullName || "Patient",
+              doctorName,
+              roomNumber,
+              tokenNumber: String(apt.tokenNumber)
             }
           );
         }

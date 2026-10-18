@@ -123,7 +123,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       { expiresIn: "1d" }
     );
 
-    const isProd = process.env.NODE_ENV === "production";
+    const isProd = process.env.NODE_ENV === "production" || Boolean(process.env.FRONTEND_URL?.startsWith("https"));
     res.cookie("token", token, {
       httpOnly: true,
       secure: isProd,
@@ -140,8 +140,8 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         email: user.email,
         role: user.Role?.name || "Unknown",
         permissions: user.Role?.RolePermission?.filter((rp: any) => 
-          rp.Permission.action === "READ" || rp.Permission.action === "ALL"
-        ).map((rp: any) => rp.Permission.resource) || [],
+          rp.Permission && (rp.Permission.action === "READ" || rp.Permission.action === "ALL")
+        ).map((rp: any) => rp.Permission?.resource) || [],
       },
     });
   } catch (error) {
@@ -152,7 +152,9 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
 export const refresh = async (req: Request, res: Response): Promise<void> => {
   try {
-    const token = req.cookies?.token;
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.split(" ")[1] : null;
+    const token = req.cookies?.token || bearerToken;
     if (!token) {
       res.status(401).json({ error: "No session token found" });
       return;
@@ -188,8 +190,8 @@ export const refresh = async (req: Request, res: Response): Promise<void> => {
         email: user.email,
         role: user.Role?.name || "Unknown",
         permissions: user.Role?.RolePermission?.filter((rp: any) => 
-          rp.Permission.action === "READ" || rp.Permission.action === "ALL"
-        ).map((rp: any) => rp.Permission.resource) || [],
+          rp.Permission && (rp.Permission.action === "READ" || rp.Permission.action === "ALL")
+        ).map((rp: any) => rp.Permission?.resource) || [],
       }
     });
   } catch (error) {

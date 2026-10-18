@@ -902,9 +902,10 @@ export const generateToken = async (req: Request, res: Response) => {
         'APPOINTMENT_BOOKED',
         {
           patientName: patient.fullName,
-          doctorName: generatedTokens.map(t => t.doctorName).join(", "),
-          appointmentDate: new Date().toLocaleDateString(),
+          doctorName: (generatedTokens.map(t => t.doctorName).filter(Boolean).join(", ") || "Consultant").replace(/^Dr\.?\s*/i, ""),
+          appointmentDate: new Date().toLocaleDateString('en-GB'),
           tokenNumber: generatedTokens.map(t => t.tokenNumber).join(", "),
+          bookingRef: generatedTokens[0]?.refNo || (typeof sharedRefNo !== 'undefined' ? sharedRefNo : 'N/A'),
           hospitalName: "AMAZ Hospital"
         }
       ).catch(console.error);
