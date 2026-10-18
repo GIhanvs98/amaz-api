@@ -73,6 +73,7 @@ export const updateAllowanceRule = async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
     const {
+      code,
       name,
       category,
       type,
@@ -87,6 +88,7 @@ export const updateAllowanceRule = async (req: Request, res: Response) => {
     const updated = await prisma.salaryComponent.update({
       where: { id },
       data: {
+        ...(code !== undefined && { code }),
         ...(name !== undefined && { name }),
         ...(category !== undefined && { category }),
         ...(type !== undefined && { type }),
