@@ -590,17 +590,24 @@ export class LabService {
   /**
    * Update biomarkers for a specific test
    */
-  async updateBiomarkers(testId: string, biomarkers: { name: string; category?: string; unit?: string; referenceRange?: string; orderIndex: number }[]) {
+  async updateBiomarkers(testId: string, biomarkers: { name: string; category?: string | null; unit?: string | null; referenceRange?: string | null; orderIndex?: number }[]) {
     return withRetry(() => prisma.$transaction(async (tx) => {
-      // Delete existing
+      // 1. Delete existing
       await tx.labTestBiomarker.deleteMany({ where: { labTestId: testId } });
       
-      // Create new
-      if (biomarkers.length > 0) {
+      // 2. Filter valid rows with a non-empty name
+      const validBiomarkers = (biomarkers || []).filter(b => b && typeof b.name === 'string' && b.name.trim() !== "");
+
+      // 3. Create new clean rows (ensuring uniform column set without mismatched ids)
+      if (validBiomarkers.length > 0) {
         await tx.labTestBiomarker.createMany({
-          data: biomarkers.map(b => ({
-            ...b,
-            labTestId: testId
+          data: validBiomarkers.map((b, idx) => ({
+            labTestId: testId,
+            name: b.name.trim(),
+            category: b.category && b.category !== 'NONE' && b.category.trim() !== '' ? b.category.trim() : null,
+            unit: b.unit && b.unit.trim() !== '' ? b.unit.trim() : null,
+            referenceRange: b.referenceRange && b.referenceRange.trim() !== '' ? b.referenceRange.trim() : null,
+            orderIndex: typeof b.orderIndex === 'number' ? b.orderIndex : idx + 1
           }))
         });
       }

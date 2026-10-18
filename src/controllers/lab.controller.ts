@@ -159,6 +159,8 @@ export class LabController {
   async updateBiomarkers(req: Request, res: Response) {
     try {
       const biomarkers = await labService.updateBiomarkers(req.params.testId as string, req.body.biomarkers);
+      await clearCache('*lab/catalog*');
+      await clearCache('*biomarkers*');
       res.json({ success: true, data: biomarkers });
     } catch (error: any) {
       res.status(400).json({ success: false, error: error.message });
