@@ -4,23 +4,45 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 export class S3Service {
   private static _s3Client: S3Client | null = null;
 
+  public static get endpoint(): string {
+    return (
+      process.env.AWS_ENDPOINT ||
+      process.env.AWS_ENDPOINT_URL ||
+      process.env.AWS_ENDPOINT_URL_S3 ||
+      process.env.AWS_S3_ENDPOINT ||
+      "https://t3.storageapi.dev"
+    ).replace(/\/$/, "");
+  }
+
+  public static get region(): string {
+    return process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "auto";
+  }
+
+  public static get bucketName(): string {
+    return (
+      process.env.AWS_S3_BUCKET ||
+      process.env.AWS_S3_BUCKET_NAME ||
+      process.env.BUCKET ||
+      process.env.AWS_BUCKET ||
+      process.env.TIGRIS_BUCKET ||
+      "integrated-cabinet-540hot"
+    );
+  }
+
   private static get s3Client(): S3Client {
     if (!this._s3Client) {
+      const endpoint = this.endpoint;
       this._s3Client = new S3Client({
-        region: process.env.AWS_REGION || "auto",
-        endpoint: process.env.AWS_ENDPOINT,
+        region: this.region,
+        ...(endpoint ? { endpoint } : {}),
         forcePathStyle: true,
         credentials: {
-          accessKeyId: process.env.AWS_ACCESS_KEY_ID || "",
-          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID || process.env.TIGRIS_ACCESS_KEY_ID || "",
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || process.env.TIGRIS_SECRET_ACCESS_KEY || "",
         },
       });
     }
     return this._s3Client;
-  }
-
-  private static get bucketName(): string {
-    return process.env.AWS_S3_BUCKET || "amaz-hospital-lab-reports";
   }
 
   /**
@@ -30,7 +52,7 @@ export class S3Service {
    * @returns an object containing the upload URL and the final file URL
    */
   public static async generateUploadUrl(filename: string, contentType: string) {
-    if (!process.env.AWS_ACCESS_KEY_ID) {
+    if (!process.env.AWS_ACCESS_KEY_ID && !process.env.TIGRIS_ACCESS_KEY_ID) {
       console.warn("AWS credentials missing. S3 upload URL generation will fail or use mock values.");
     }
 
@@ -44,10 +66,7 @@ export class S3Service {
       // URL expires in 15 minutes (900 seconds)
       const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 900 });
       
-      const endpoint = process.env.AWS_ENDPOINT 
-        ? process.env.AWS_ENDPOINT.replace(/\/$/, '') 
-        : `https://s3.${process.env.AWS_REGION || "us-east-1"}.amazonaws.com`;
-      const fileUrl = `${endpoint}/${this.bucketName}/${filename}`;
+      const fileUrl = `${this.endpoint}/${this.bucketName}/${filename}`;
       
       return { uploadUrl, fileUrl };
     } catch (error) {
@@ -64,7 +83,7 @@ export class S3Service {
    * @returns standard file URL
    */
   public static async uploadBuffer(buffer: Buffer, key: string, contentType: string = 'application/pdf'): Promise<string> {
-    if (!process.env.AWS_ACCESS_KEY_ID) {
+    if (!process.env.AWS_ACCESS_KEY_ID && !process.env.TIGRIS_ACCESS_KEY_ID) {
       console.warn("AWS credentials missing. S3 upload will fail or use mock values.");
     }
 
@@ -77,10 +96,7 @@ export class S3Service {
 
     try {
       await this.s3Client.send(command);
-      const endpoint = process.env.AWS_ENDPOINT 
-        ? process.env.AWS_ENDPOINT.replace(/\/$/, '') 
-        : `https://s3.${process.env.AWS_REGION || "us-east-1"}.amazonaws.com`;
-      return `${endpoint}/${this.bucketName}/${key}`;
+      return `${this.endpoint}/${this.bucketName}/${key}`;
     } catch (error) {
       console.error("Error uploading buffer to S3:", error);
       throw error;
@@ -88,19 +104,24 @@ export class S3Service {
   }
 
   /**
-   * Checks whether a URL or path refers to an S3 object (including AWS, storageapi.dev, or R2).
+   * Checks whether a URL or path refers to an S3 object (including AWS, storageapi.dev, Tigris, or R2).
    */
   public static isS3Url(urlOrKey: string | null | undefined): boolean {
     if (!urlOrKey) return false;
     if (urlOrKey.startsWith('lab-reports/')) return true;
-    if (urlOrKey.includes('storageapi.dev') || urlOrKey.includes('amazonaws.com')) return true;
-    if (process.env.AWS_ENDPOINT) {
+    if (
+      urlOrKey.includes('storageapi.dev') ||
+      urlOrKey.includes('amazonaws.com') ||
+      urlOrKey.includes('tigris.dev')
+    ) return true;
+
+    if (this.endpoint) {
       try {
-        const endpointHost = new URL(process.env.AWS_ENDPOINT).hostname;
+        const endpointHost = new URL(this.endpoint).hostname;
         if (urlOrKey.includes(endpointHost)) return true;
       } catch (e) {}
     }
-    if (process.env.AWS_S3_BUCKET && urlOrKey.includes(process.env.AWS_S3_BUCKET)) return true;
+    if (this.bucketName && urlOrKey.includes(this.bucketName)) return true;
     return false;
   }
 
@@ -109,7 +130,7 @@ export class S3Service {
    * @param filename the stored filename (key) or full URL in S3
    */
   public static async generateDownloadUrl(filename: string) {
-    if (!process.env.AWS_ACCESS_KEY_ID || !filename) {
+    if ((!process.env.AWS_ACCESS_KEY_ID && !process.env.TIGRIS_ACCESS_KEY_ID) || !filename) {
        return null;
     }
     
