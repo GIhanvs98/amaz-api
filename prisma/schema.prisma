@@ -409,8 +409,10 @@ model User {
   LeaveRequest     LeaveRequest[]
   ReviewedLeaves   LeaveRequest[]      @relation("LeaveReviewer")
   PayrollRecords   PayrollRecord[]
-  OvertimeRecords  OvertimeRecord[]
-  EmployeeProfile  EmployeeProfile?
+  OvertimeRecords        OvertimeRecord[]
+  ApprovedOvertimes      OvertimeRecord[]        @relation("OTApprover")
+  DoctorPaymentStatements DoctorPaymentStatement[]
+  EmployeeProfile        EmployeeProfile?
 }
 
 model DoctorSchedule {
@@ -623,7 +625,10 @@ model SalaryComponent {
   code              String              @unique
   name              String
   category          String // EARNING, DEDUCTION, STATUTORY, EMPLOYER_CONTRIBUTION
+  type              String              @default("ALLOWANCE") // BASIC, ALLOWANCE, BONUS, DEDUCTION, STATUTORY, OVERTIME
   calculationMethod String // FIXED, PERCENTAGE, HOURLY_MULTIPLIER, FORMULA
+  defaultAmount     Float?              @default(0)
+  applicableRoles   String? // Comma-separated or 'ALL'
   isTaxable         Boolean             @default(true)
   isEpfEligible     Boolean             @default(true)
   isActive          Boolean             @default(true)
@@ -635,36 +640,50 @@ model EmployeeComponent {
   employeeProfileId String
   componentId       String
   value             Float? // Override or fixed assignment amount
-  effectiveFrom     DateTime
+  effectiveFrom     DateTime        @default(now())
   effectiveTo       DateTime?
   profile           EmployeeProfile @relation(fields: [employeeProfileId], references: [id])
   component         SalaryComponent @relation(fields: [componentId], references: [id])
 }
 
 model PayrollRun {
-  id          String          @id @default(uuid())
-  type        String // MONTHLY, OFF_CYCLE
-  periodStart DateTime
-  periodEnd   DateTime
-  payDate     DateTime
-  status      String          @default("DRAFT") // DRAFT, PENDING_APPROVAL, APPROVED, PAID
-  approvedBy  String? // Super Admin ID
-  createdAt   DateTime        @default(now())
-  records     PayrollRecord[]
+  id               String          @id @default(uuid())
+  type             String          @default("MONTHLY") // MONTHLY, OFF_CYCLE
+  periodStart      DateTime
+  periodEnd        DateTime
+  payDate          DateTime
+  status           String          @default("DRAFT") // DRAFT, PENDING_APPROVAL, APPROVED, PROCESSING, PAID, CANCELLED
+  approvedBy       String? // Super Admin ID
+  approvedAt       DateTime?
+  paidAt           DateTime?
+  paymentMethod    String? // BANK_TRANSFER, CASH, CHEQUE
+  paymentReference String?
+  remarks          String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @default(now()) @updatedAt
+  records          PayrollRecord[]
 }
 
 model PayrollRecord {
-  id              String            @id @default(uuid())
-  payrollRunId    String
-  userId          String
-  totalEarnings   Float             @default(0)
-  totalDeductions Float             @default(0)
-  employerCost    Float             @default(0)
-  netSalary       Float             @default(0)
-  status          String            @default("DRAFT")
-  run             PayrollRun        @relation(fields: [payrollRunId], references: [id])
-  user            User              @relation(fields: [userId], references: [id])
-  lineItems       PayrollLineItem[]
+  id               String            @id @default(uuid())
+  payrollRunId     String
+  userId           String
+  basicSalary      Float             @default(0)
+  totalOtPayment   Float             @default(0)
+  totalAllowances  Float             @default(0)
+  totalBonuses     Float             @default(0)
+  totalEarnings    Float             @default(0)
+  totalDeductions  Float             @default(0)
+  employerCost     Float             @default(0)
+  netSalary        Float             @default(0)
+  status           String            @default("DRAFT") // DRAFT, PENDING_APPROVAL, APPROVED, PROCESSING, PAID, ON_HOLD, CANCELLED
+  paymentMethod    String?
+  paymentReference String?
+  paidAt           DateTime?
+  bankDetails      Json?
+  run              PayrollRun        @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  user             User              @relation(fields: [userId], references: [id])
+  lineItems        PayrollLineItem[]
 
   @@unique([payrollRunId, userId])
 }
@@ -672,21 +691,62 @@ model PayrollRecord {
 model PayrollLineItem {
   id              String        @id @default(uuid())
   payrollRecordId String
-  category        String // EARNING, DEDUCTION, EMPLOYER_CONTRIBUTION
-  description     String // e.g., "Basic Salary", "EPF 8%"
+  category        String // BASIC, ALLOWANCE, BONUS, DEDUCTION, OVERTIME, STATUTORY, EMPLOYER_CONTRIBUTION
+  description     String // e.g., "Basic Salary", "EPF 8%", "Night Shift Allowance"
   amount          Float
   isStatutory     Boolean       @default(false)
   record          PayrollRecord @relation(fields: [payrollRecordId], references: [id], onDelete: Cascade)
 }
 
 model OvertimeRecord {
-  id     String   @id @default(uuid())
-  userId String
-  date   DateTime
-  hours  Float
-  rate   Float
-  status String   @default("PENDING") // PENDING, APPROVED, REJECTED
-  user   User     @relation(fields: [userId], references: [id])
+  id           String    @id @default(uuid())
+  userId       String
+  date         DateTime
+  shiftType    String    @default("NORMAL") // NORMAL, NIGHT, WEEKEND, HOLIDAY, SPECIAL
+  startTime    DateTime?
+  endTime      DateTime?
+  hours        Float
+  rate         Float
+  totalPayment Float     @default(0)
+  status       String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  approvedById String?
+  approvedAt   DateTime?
+  remarks      String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  user         User      @relation(fields: [userId], references: [id])
+  approvedBy   User?     @relation("OTApprover", fields: [approvedById], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([date])
+}
+
+model DoctorPaymentStatement {
+  id                 String    @id @default(uuid())
+  doctorId           String
+  periodStart        DateTime
+  periodEnd          DateTime
+  totalConsultations Int       @default(0)
+  totalRevenue       Float     @default(0)
+  commissionRate     Float     @default(15) // e.g. 15% hospital commission
+  hospitalCommission Float     @default(0)
+  otherAdjustments   Float     @default(0)
+  netDoctorPayment   Float     @default(0)
+  status             String    @default("DRAFT") // DRAFT, APPROVED, PAID, CANCELLED
+  paymentMethod      String? // BANK_TRANSFER, CASH, CHEQUE
+  paymentReference   String?
+  paidAt             DateTime?
+  approvedBy         String?
+  approvedAt         DateTime?
+  remarks            String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @default(now()) @updatedAt
+  doctor             User      @relation(fields: [doctorId], references: [id])
+
+  @@index([doctorId])
+  @@index([status])
+  @@index([periodStart, periodEnd])
 }
 
 model StatutoryRule {
