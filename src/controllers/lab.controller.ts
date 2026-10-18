@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { labService } from '../services/lab.service.js';
 import { S3Service } from '../services/s3.service.js';
+import { clearCache } from '../middlewares/cache.middleware.js';
 
 export class LabController {
   async getUploadUrl(req: Request, res: Response) {
@@ -33,9 +34,30 @@ export class LabController {
   async addTestToCatalog(req: Request, res: Response) {
     try {
       const test = await labService.addTestToCatalog(req.body);
+      await clearCache('*lab/catalog*');
       res.status(201).json(test);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
+    }
+  }
+
+  async updateTestInCatalog(req: Request, res: Response) {
+    try {
+      const test = await labService.updateTestInCatalog(req.params.testId as string, req.body);
+      await clearCache('*lab/catalog*');
+      res.json(test);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+
+  async deleteTestFromCatalog(req: Request, res: Response) {
+    try {
+      await labService.deleteTestFromCatalog(req.params.testId as string);
+      await clearCache('*lab/catalog*');
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
   }
 
@@ -72,7 +94,8 @@ export class LabController {
 
   async getPendingRequests(req: Request, res: Response) {
     try {
-      const requests = await labService.getPendingRequests();
+      const doctorId = req.query.doctorId as string | undefined;
+      const requests = await labService.getPendingRequests(doctorId);
       res.json(requests);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -81,7 +104,8 @@ export class LabController {
 
   async getPublishedReports(req: Request, res: Response) {
     try {
-      const reports = await labService.getPublishedReports();
+      const doctorId = req.query.doctorId as string | undefined;
+      const reports = await labService.getPublishedReports(doctorId);
       res.json(reports);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -115,10 +139,114 @@ export class LabController {
 
   async getQueueTokens(req: Request, res: Response) {
     try {
-      const tokens = await labService.getQueueTokens();
+      const { roomId } = req.query;
+      const tokens = await labService.getQueueTokens(roomId as string | undefined);
       res.json({ success: true, data: tokens });
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async getBiomarkers(req: Request, res: Response) {
+    try {
+      const biomarkers = await labService.getBiomarkers(req.params.testId as string);
+      res.json({ success: true, data: biomarkers });
+    } catch (error: any) {
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async updateBiomarkers(req: Request, res: Response) {
+    try {
+      const biomarkers = await labService.updateBiomarkers(req.params.testId as string, req.body.biomarkers);
+      res.json({ success: true, data: biomarkers });
+    } catch (error: any) {
+      res.status(400).json({ success: false, error: error.message });
+    }
+  }
+
+  async getRequestByToken(req: Request, res: Response) {
+    try {
+      const appointment = await labService.getRequestByToken(req.params.token as string);
+      res.json({ success: true, data: appointment });
+    } catch (error: any) {
+      res.status(404).json({ success: false, error: error.message });
+    }
+  }
+
+  async getReportByRef(req: Request, res: Response) {
+    try {
+      const report = await labService.getReportByRef(req.params.referenceNo as string);
+      res.json({ success: true, data: report });
+    } catch (error: any) {
+      res.status(404).json({ success: false, error: error.message });
+    }
+  }
+
+  async publishReport(req: Request, res: Response) {
+    try {
+      const requestId = req.params.requestId as string;
+      const { results, reportUrl, referenceNo, testProfile } = req.body;
+
+      if (!results || !Array.isArray(results)) {
+        return res.status(400).json({ error: 'Results array is required' });
+      }
+
+      const refNo = (referenceNo as string) || requestId.slice(0, 8).toUpperCase();
+
+      const result = await labService.publishReport(
+        requestId,
+        results,
+        (reportUrl as string) || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reports/${refNo}`,
+        refNo,
+        (testProfile as string) || 'Lab Report'
+      );
+
+      res.json(result);
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  }
+  async uploadReportPdf(req: Request, res: Response) {
+    try {
+      const requestId = req.params.requestId as string;
+      const file = req.file;
+
+      if (!file || !file.buffer) {
+        return res.status(400).json({ error: "PDF file is required" });
+      }
+
+      // Generate unique S3 object key inside the bucket
+      const safeFilename = file.originalname ? file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_') : 'report.pdf';
+      const s3Key = `lab-reports/${requestId}-${Date.now()}-${safeFilename}`;
+
+      // Upload buffer directly to configured S3 bucket
+      const reportUrl = await S3Service.uploadBuffer(
+        file.buffer,
+        s3Key,
+        file.mimetype || 'application/pdf'
+      );
+
+      const refNo = (req.body?.referenceNo as string) || requestId.slice(0, 8).toUpperCase();
+      const testProfile = (req.body?.testProfile as string) || 'Outsourced Lab Report';
+
+      // Mark the request as COMPLETED and persist the S3 report URL
+      const result = await labService.publishReport(
+        requestId,
+        [], // no manual results
+        reportUrl,
+        refNo,
+        testProfile
+      );
+
+      // Invalidate relevant caches
+      await clearCache('*lab/reports*');
+      await clearCache('*lab/metrics*');
+
+      res.json(result);
+    } catch (error: any) {
+      console.error("uploadReportPdf error:", error);
+      res.status(400).json({ error: error.message });
     }
   }
 }

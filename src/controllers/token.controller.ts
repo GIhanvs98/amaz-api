@@ -1,11 +1,11 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
+import { websocketService } from "../services/websocket.service.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 
 export const generateToken = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { patientId, doctorId } = req.body;
+    const { patientId, doctorId, appointmentDate } = req.body;
 
     if (!patientId || !doctorId) {
       res.status(400).json({ error: "Please provide patientId and doctorId" });
@@ -17,42 +17,84 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
       include: { Role: true },
     });
 
-    if (!doctor || doctor.Role?.name !== "DOCTOR") {
+    if (!doctor || doctor.Role?.name !== "Doctor") {
       res.status(400).json({ error: "Invalid doctor selected" });
       return;
     }
 
-    // Get today's appointments for this doctor to determine the sequence number
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Determine target date and timezone boundaries
+    const targetDate = appointmentDate ? new Date(appointmentDate) : new Date();
+    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+    const dayOfWeek = startOfDay.getDay();
 
-    const tokensToday = await prisma.appointment.count({
+    // Check if the doctor has an active schedule for the target day
+    const activeSessions = await prisma.doctorScheduleSession.findMany({
       where: {
-        doctorId,
-        appointmentDate: {
-          gte: today,
+        schedule: {
+          doctorId: doctorId,
+          validFrom: { lte: endOfDay },
+          OR: [
+            { validUntil: null },
+            { validUntil: { gte: startOfDay } }
+          ]
         },
-      },
+        dayOfWeek: dayOfWeek,
+        isActive: true,
+      }
     });
 
-    // Generate token number: First 3 letters of doctor's name + sequence
-    const docPrefix = doctor.fullName.substring(0, 3).toUpperCase();
-    const sequence = (tokensToday + 1).toString().padStart(3, "0");
-    const tokenNumber = `${docPrefix}-${sequence}`;
+    if (activeSessions.length === 0) {
+      res.status(400).json({ error: "Doctor is not scheduled for this date" });
+      return;
+    }
 
-    const appointment = await prisma.appointment.create({
-      data: {
-        tokenNumber,
-        patientId,
-        doctorId,
-        status: "CHECKED_IN", // Mapping "waiting_for_counsiling_payment" or similar
-      },
-      include: {
-        Patient: true,
-        User: {
-          select: { fullName: true }
-        }
+    const session = activeSessions[0];
+    if (!session) {
+      res.status(400).json({ error: "Doctor session is not available" });
+      return;
+    }
+    const maxWalkInCapacity = Math.floor(session.tokenCapacity * ((session.walkInPercentage || 100) / 100));
+
+    // Wrap in a transaction with a row-level lock to prevent concurrent token generation race conditions
+    const appointment = await prisma.$transaction(async (tx) => {
+      // Lock the doctor's row for update to serialize concurrent token requests for the same doctor
+      await tx.$executeRaw`SELECT id FROM "User" WHERE id = ${doctorId} FOR UPDATE`;
+
+      const tokensToday = await tx.appointment.count({
+        where: {
+          doctorId,
+          appointmentDate: {
+            gte: startOfDay,
+            lte: endOfDay,
+          },
+        },
+      });
+
+      if (tokensToday >= maxWalkInCapacity) {
+        throw new Error("Doctor's walk-in capacity reached for this date");
       }
+
+      // Generate token number: First 3 letters of doctor's name + sequence
+      const docPrefix = doctor.fullName.substring(0, 3).toUpperCase();
+      const sequence = (tokensToday + 1).toString().padStart(3, "0");
+      const tokenNumber = `${docPrefix}-${sequence}`;
+
+      return tx.appointment.create({
+        data: {
+          tokenNumber,
+          patientId,
+          doctorId,
+          sessionId: session.id,
+          appointmentDate: startOfDay,
+          status: "CHECKED_IN",
+        },
+        include: {
+          Patient: true,
+          User: {
+            select: { fullName: true }
+          }
+        }
+      });
     });
 
     // Map to frontend expected format
@@ -61,8 +103,12 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
       patient: appointment.Patient,
       doctor: appointment.User
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error generating token:", error);
+    if (error.message === "Doctor's walk-in capacity reached for today") {
+      res.status(400).json({ error: error.message });
+      return;
+    }
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -75,16 +121,15 @@ export const getDoctorQueue = async (req: Request, res: Response): Promise<void>
       res.status(400).json({ error: "doctorId query parameter is required" });
       return;
     }
-    
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
 
+    const { startOfDay, endOfDay } = getTimezoneBoundaries();
+
+    // Query ONLY tokens scheduled for today
     const appointments = await prisma.appointment.findMany({
       where: {
         doctorId: doctorId as string,
-        appointmentDate: {
-          gte: today
-        },
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: { in: ['BOOKED', 'WAITING', 'WAITING_FOR_LAB_TEST', 'IN_PROGRESS'] }
       },
       include: {
         Patient: true,
@@ -116,17 +161,17 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    // Find the most recent appointment for this patient and doctor today
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const ALLOWED_STATUSES = ['BOOKED', 'CHECKED_IN', 'WAITING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'NO_SHOW', 'WAITING_FOR_LAB_TEST'];
+    if (!ALLOWED_STATUSES.includes(status)) {
+      res.status(400).json({ error: `Invalid status '${status}'. Must be one of: ${ALLOWED_STATUSES.join(', ')}` });
+      return;
+    }
 
     const appointment = await prisma.appointment.findFirst({
       where: {
         patientId: patientId,
         doctorId: doctorId,
-        appointmentDate: {
-          gte: today
-        }
+        status: { in: ['BOOKED', 'WAITING', 'WAITING_FOR_LAB_TEST', 'IN_PROGRESS'] }
       },
       orderBy: {
         createdAt: 'desc'
@@ -134,14 +179,20 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
     });
 
     if (!appointment) {
-      res.status(404).json({ error: "No active token found for this patient and doctor today." });
+      res.status(404).json({ error: "No active token found for this patient and doctor." });
       return;
     }
 
     const updatedApp = await prisma.appointment.update({
       where: { id: appointment.id },
-      data: { status }
+      data: { status },
+      include: {
+        User: true,
+        Patient: true
+      }
     });
+
+    websocketService.broadcast("TOKEN_STATUS_UPDATED", updatedApp);
 
     res.status(200).json(updatedApp);
   } catch (error) {
@@ -152,14 +203,14 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
 
 export const getPendingPrescriptions = async (req: Request, res: Response): Promise<void> => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const { startOfDay, endOfDay } = getTimezoneBoundaries();
 
     const appointments = await prisma.appointment.findMany({
       where: {
         status: "prescription_issued",
         appointmentDate: {
-          gte: today
+          gte: startOfDay,
+          lte: endOfDay
         }
       },
       include: {

@@ -1,10 +1,15 @@
+import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
-import { getDoctors, getAvailability, getAvailableDates, bookPhoneToken, markArrived, getTodayAppointments } from "../controllers/booking.controller.js";
+import { getDoctors, getAvailability, getDepartmentAvailability, getAvailableDates, bookPhoneToken, markArrived, getTodayAppointments } from "../controllers/booking.controller.js";
+import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
+router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST']));
+
 router.get("/doctors", getDoctors);
 router.get("/availability", getAvailability);
+router.get("/department-availability", getDepartmentAvailability);
 router.get("/available-dates", getAvailableDates);
 router.get("/appointments", getTodayAppointments);
 router.post("/phone", bookPhoneToken);

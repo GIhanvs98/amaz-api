@@ -13,15 +13,45 @@ model Medicine {
   name              String
   genericName       String?
   category          String
-  form              String
+  itemType          String              @default("MEDICINE") // MEDICINE, CONSUMABLE, EQUIPMENT
+  form              String?
   unit              String
   reorderLevel      Int                 @default(50)
+  retailPrice       Float               @default(0)
+  isActive          Boolean             @default(true)
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   barcode           String?             @unique
   prescriptionItems PrescriptionItem[]
   purchaseItems     PurchaseOrderItem[]
   stockBatches      StockBatch[]
+}
+
+model Department {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  Users       User[] // Doctors assigned to this department
+}
+
+model Room {
+  id                String             @id @default(uuid())
+  roomNumber        String             @unique
+  department        String // e.g., "CONSULTATION", "LAB", "EXTRA_SERVICE", "GENERAL"
+  status            String             @default("AVAILABLE") // "AVAILABLE", "OCCUPIED", "MAINTENANCE"
+  description       String?
+  isActive          Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  Users             User[]
+  DoctorAttendances DoctorAttendance[]
+  LabTests          LabTest[]
+  ExtraServices     ExtraService[]
+  ScheduleSessions  DoctorScheduleSession[]
+  Appointments      Appointment[]
 }
 
 model Supplier {
@@ -37,16 +67,21 @@ model Supplier {
 }
 
 model StockBatch {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   medicineId      String
   batchNumber     String
-  expiryDate      DateTime
+  expiryDate      DateTime?
   initialQuantity Int
   currentQuantity Int
   unitPrice       Float
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  medicine        Medicine @relation(fields: [medicineId], references: [id])
+  costPrice       Float     @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  medicine        Medicine  @relation(fields: [medicineId], references: [id])
+
+  @@unique([medicineId, batchNumber])
+  @@index([expiryDate])
+  @@index([medicineId, currentQuantity])
 }
 
 model PurchaseOrder {
@@ -74,16 +109,24 @@ model PurchaseOrderItem {
 }
 
 model Invoice {
-  id          String            @id @default(uuid())
-  visitId     String?
-  patientId   String?
-  status      String            @default("DRAFT")
-  subtotal    Float             @default(0)
-  totalAmount Float             @default(0)
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-  lineItems   InvoiceLineItem[]
-  payments    Payment[]
+  id             String            @id @default(uuid())
+  visitId        String?
+  patientId      String?
+  status         String            @default("DRAFT")
+  subtotal       Float             @default(0)
+  discountAmount Float             @default(0)
+  discountType   String?
+  discountValue  Float?
+  discountReason String?
+  totalAmount    Float             @default(0)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  lineItems      InvoiceLineItem[]
+  payments       Payment[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([visitId])
 }
 
 model InvoiceLineItem {
@@ -100,76 +143,103 @@ model InvoiceLineItem {
 }
 
 model Payment {
-  id             String   @id @default(uuid())
+  id             String             @id @default(uuid())
   invoiceId      String
   amount         Float
   method         String
-  status         String   @default("COMPLETED")
+  status         String             @default("COMPLETED")
   transactionRef String?
-  createdAt      DateTime @default(now())
-  appointmentId  String?  @unique
-  invoice        Invoice  @relation(fields: [invoiceId], references: [id])
-  Appointment    Appointment? @relation(fields: [appointmentId], references: [id])
+  shiftId        String?
+  createdAt      DateTime           @default(now())
+  appointmentId  String?            @unique
+  invoice        Invoice            @relation(fields: [invoiceId], references: [id])
+  shift          CashRegisterShift? @relation(fields: [shiftId], references: [id])
+  Appointment    Appointment?       @relation(fields: [appointmentId], references: [id])
+  refunds        Refund[]
 }
 
 model Refund {
-  id        String   @id @default(uuid())
+  id        String             @id @default(uuid())
   paymentId String
   amount    Float
   reason    String
-  status    String   @default("COMPLETED")
-  createdAt DateTime @default(now())
+  status    String             @default("COMPLETED")
+  shiftId   String?
+  createdAt DateTime           @default(now())
+  shift     CashRegisterShift? @relation(fields: [shiftId], references: [id])
+  payment   Payment            @relation(fields: [paymentId], references: [id])
 }
 
 model LabTest {
-  id          String   @id @default(uuid())
-  name        String
-  code        String   @unique
-  price       Float
-  category    String?
-  sampleType  String?
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(uuid())
+  name       String
+  code       String   @unique
+  price      Float
+  category   String?
+  sampleType String?
+  roomId     String?
+  room       Room?    @relation(fields: [roomId], references: [id])
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  items       LabRequestItem[]
+  items      LabRequestItem[]
+  biomarkers LabTestBiomarker[]
+}
+
+model LabTestBiomarker {
+  id             String  @id @default(uuid())
+  labTestId      String
+  name           String
+  category       String?
+  unit           String?
+  referenceRange String?
+  orderIndex     Int     @default(0)
+
+  LabTest LabTest @relation(fields: [labTestId], references: [id], onDelete: Cascade)
 }
 
 model LabRequest {
   id          String   @id @default(uuid())
   patientId   String
   doctorId    String?
-  status      String         @default("PENDING")
-  requestedAt DateTime       @default(now())
-  priority    String         @default("ROUTINE")
+  status      String   @default("PENDING")
+  requestedAt DateTime @default(now())
+  priority    String   @default("ROUTINE")
   reportUrl   String?
   visitId     String?
 
-  Patient     Patient  @relation(fields: [patientId], references: [id])
-  Visit       Appointment? @relation(fields: [visitId], references: [id])
-  items       LabRequestItem[]
-  results     LabResult[]
+  Patient Patient          @relation(fields: [patientId], references: [id])
+  Visit   Appointment?     @relation(fields: [visitId], references: [id])
+  items   LabRequestItem[]
+  results LabResult[]
+
+  @@index([patientId])
+  @@index([status])
+  @@index([visitId])
 }
 
 model LabRequestItem {
-  id            String     @id @default(uuid())
-  labRequestId  String
-  labTestId     String
-  price         Float
+  id           String @id @default(uuid())
+  labRequestId String
+  labTestId    String
+  price        Float
 
-  LabRequest    LabRequest @relation(fields: [labRequestId], references: [id])
-  LabTest       LabTest    @relation(fields: [labTestId], references: [id])
+  LabRequest LabRequest @relation(fields: [labRequestId], references: [id])
+  LabTest    LabTest    @relation(fields: [labTestId], references: [id])
 }
 
 model LabResult {
-  id           String     @id @default(uuid())
-  requestId    String
-  biomarker    String
-  value        String
-  isOutOfRange Boolean    @default(false)
-  notes        String?
-  recordedAt   DateTime   @default(now())
-  request      LabRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  id             String     @id @default(uuid())
+  requestId      String
+  biomarker      String
+  value          String
+  flag           String? // H, L, N
+  referenceRange String?
+  isOutOfRange   Boolean    @default(false)
+  notes          String?
+  recordedAt     DateTime   @default(now())
+  request        LabRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 }
 
 model Expense {
@@ -197,6 +267,10 @@ model Prescription {
   updatedAt     DateTime           @updatedAt
   items         PrescriptionItem[]
   Patient       Patient            @relation(fields: [patientId], references: [id])
+
+  @@index([patientId])
+  @@index([status])
+  @@index([visitId])
 }
 
 model PrescriptionItem {
@@ -215,24 +289,30 @@ model PrescriptionItem {
 }
 
 model Patient {
-  id               String   @id @default(uuid())
-  patientId        String?  @unique @default(cuid()) // Unique MRN, using cuid as temporary default before migration
+  id               String    @id @default(uuid())
+  patientId        String?   @unique @default(cuid()) // Unique MRN, using cuid as temporary default before migration
+  identityKey      String?   @unique // Deterministic composite: normalized(name) + normalized(phone)
   fullName         String
-  phone            String   @unique
+  phone            String
   dateOfBirth      DateTime?
-  ageFallback      Int?     // For quick registration without DOB
+  ageFallback      Int? // For quick registration without DOB
   gender           String?
   nic              String?
   address          String?
   emergencyContact String?
   bloodGroup       String?
   notes            String?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  LabRequests      LabRequest[]
-  Prescription     Prescription[]
-  Appointment      Appointment[]
+  LabRequests  LabRequest[]
+  Prescription Prescription[]
+  Appointment  Appointment[]
+
+  @@index([phone])
+  @@index([fullName])
+  @@index([phone, fullName])
 }
 
 model Permission {
@@ -264,74 +344,98 @@ model RolePermission {
   Permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
   Role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
-
   @@unique([roleId, permissionId])
 }
 
 model Appointment {
-  id                String   @id @default(uuid())
-  tokenNumber       String
-  patientId         String
-  doctorId          String?
-  sessionId         String?
-  department        String   @default("CONSULTATION")
-  appointmentDate   DateTime @default(now())
-  status            String   @default("BOOKED") // BOOKED, CHECKED_IN, IN_PROGRESS, COMPLETED, CANCELLED, NO_SHOW
-  bookingType       String   @default("WALK_IN") // WALK_IN, PHONE
-  bookingReference  String?  @unique
-  bookedAt          DateTime @default(now())
-  checkedInAt       DateTime?
-  calledAt          DateTime?
-  completedAt       DateTime?
-  cancelledAt       DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  Payment           Payment?
-  User              User?    @relation(fields: [doctorId], references: [id])
-  Patient           Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
-  Session           DoctorScheduleSession? @relation(fields: [sessionId], references: [id])
-  LabRequests       LabRequest[]
+  id               String                 @id @default(uuid())
+  tokenNumber      String
+  patientId        String
+  doctorId         String?
+  sessionId        String?
+  department       String                 @default("CONSULTATION")
+  appointmentDate  DateTime               @default(now())
+  status           String                 @default("BOOKED") // BOOKED, CHECKED_IN, IN_PROGRESS, COMPLETED, CANCELLED, NO_SHOW
+  bookingType      String                 @default("WALK_IN") // WALK_IN, PHONE
+  bookingReference String?
+  bookedAt         DateTime               @default(now())
+  checkedInAt      DateTime?
+  calledAt         DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  Payment          Payment?
+  User             User?                  @relation(fields: [doctorId], references: [id])
+  Patient          Patient                @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  Session          DoctorScheduleSession? @relation(fields: [sessionId], references: [id])
+  roomId           String?
+  room             Room?                  @relation(fields: [roomId], references: [id])
+  LabRequests      LabRequest[]
 
-  @@unique([doctorId, appointmentDate, tokenNumber])
+  @@unique([sessionId, appointmentDate, tokenNumber])
+  @@index([appointmentDate, doctorId])
+  @@index([appointmentDate, roomId])
+  @@index([status])
+  @@index([bookingReference])
+  @@index([patientId])
 }
 
 model User {
-  id             String   @id @default(uuid())
-  fullName       String
-  email          String   @unique
-  password       String
-  roleId         String
-  specialty      String?
-  roomNumber     String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  Appointment    Appointment[]
-  DoctorSchedule DoctorSchedule[]
+  id               String              @id @default(uuid())
+  fullName         String
+  email            String              @unique
+  password         String
+  roleId           String
+  specialty        String?
+  title            String?
+  roomId           String?
+  room             Room?               @relation(fields: [roomId], references: [id])
+  consultationFee  Float?              @default(2500)
+  feeType          String              @default("POST") // UPFRONT or POST
+  departmentId     String?
+  basicSalary      Float?
+  isActive         Boolean             @default(true)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  Appointment      Appointment[]
+  DoctorSchedule   DoctorSchedule[]
   DoctorAttendance DoctorAttendance[]
-  Role           Role     @relation(fields: [roleId], references: [id])
+  ActivityLog      ActivityLog[]
+  Role             Role                @relation(fields: [roleId], references: [id])
+  Department       Department?         @relation(fields: [departmentId], references: [id])
+  UserShift        CashRegisterShift[]
+  StaffAttendance  StaffAttendance[]
+  LeaveRequest     LeaveRequest[]
+  ReviewedLeaves   LeaveRequest[]      @relation("LeaveReviewer")
+  PayrollRecords   PayrollRecord[]
+  OvertimeRecords  OvertimeRecord[]
+  EmployeeProfile  EmployeeProfile?
 }
 
 model DoctorSchedule {
-  id           String                  @id @default(uuid())
-  doctorId     String
-  doctor       User                    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
-  validFrom    DateTime                @default(now())
-  validUntil   DateTime?
-  sessions     DoctorScheduleSession[]
-  exceptions   DoctorScheduleException[]
-  leaves       DoctorLeave[]
+  id         String                    @id @default(uuid())
+  doctorId   String
+  doctor     User                      @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  validFrom  DateTime                  @default(now())
+  validUntil DateTime?
+  sessions   DoctorScheduleSession[]
+  exceptions DoctorScheduleException[]
+  leaves     DoctorLeave[]
 }
 
 model DoctorScheduleSession {
   id               String         @id @default(uuid())
   scheduleId       String
   schedule         DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  dayOfWeek        Int            // 0=Sun, 1=Mon, etc.
-  sessionName      String         // e.g., "Morning", "Evening"
-  startTime        String         // "08:00"
-  endTime          String         // "12:00"
+  roomId           String?
+  room             Room?          @relation(fields: [roomId], references: [id])
+  dayOfWeek        Int // 0=Sun, 1=Mon, etc.
+  sessionName      String // e.g., "Morning", "Evening"
+  startTime        String // "08:00"
+  endTime          String // "12:00"
   tokenCapacity    Int            @default(40)
-  walkInPercentage Int            @default(100) // % allowed for walk-ins vs appointments
+  walkInPercentage Int            @default(70) // % allowed for walk-ins vs appointments
   isActive         Boolean        @default(true)
   Appointment      Appointment[]
 }
@@ -340,54 +444,304 @@ model DoctorScheduleException {
   id               String         @id @default(uuid())
   scheduleId       String
   schedule         DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  exceptionDate    DateTime       // Specific date of change
+  exceptionDate    DateTime // Specific date of change
   isUnavailable    Boolean        @default(false)
   newStartTime     String?
   newEndTime       String?
   newTokenCapacity Int?
+  reason           String?
 }
 
 model DoctorLeave {
-  id           String         @id @default(uuid())
-  scheduleId   String
-  schedule     DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  startDate    DateTime
-  endDate      DateTime
-  reason       String?
-  status       String         @default("APPROVED")
+  id         String         @id @default(uuid())
+  scheduleId String
+  schedule   DoctorSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  startDate  DateTime
+  endDate    DateTime
+  reason     String?
+  status     String         @default("APPROVED")
 }
 
 model SmsTemplate {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  content   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model NotificationJob {
+  id           String    @id @default(uuid())
+  patientId    String
+  phoneNumber  String
+  message      String
+  status       String    @default("PENDING") // PENDING, SENT, FAILED
+  errorReason  String?
+  scheduledFor DateTime?
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+}
+
+model DoctorAttendance {
+  id                String    @id @default(uuid())
+  doctorId          String
+  date              DateTime  @default(now())
+  status            String    @default("SCHEDULED") // SCHEDULED, ARRIVED, IN_CONSULTATION, ON_BREAK, LEFT
+  roomId            String?
+  room              Room?     @relation(fields: [roomId], references: [id])
+  expectedStartTime String?
+  expectedEndTime   String?
+  arrivedAt         DateTime?
+  leftAt            DateTime?
+  assignedNurseId   String?
+  doctor            User      @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  @@index([date])
+}
+
+model ActivityLog {
   id          String   @id @default(uuid())
-  name        String   @unique
-  content     String
+  entityType  String // e.g., "DoctorAttendance", "Appointment"
+  entityId    String
+  action      String // e.g., "MARKED_ARRIVED", "TOKEN_CALLED", "CREATED"
+  description String // e.g., "Token #03 marked No Show by Front Desk: Nimal"
+  userId      String // The user who performed the action
+  user        User     @relation(fields: [userId], references: [id])
+  createdAt   DateTime @default(now())
+}
+
+model ExtraService {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  price       Float
+  barcode     String   @unique
+  roomId      String?
+  room        Room?    @relation(fields: [roomId], references: [id])
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
 
-model NotificationJob {
-  id          String   @id @default(uuid())
-  patientId   String
-  phoneNumber String
-  message     String
-  status      String   @default("PENDING") // PENDING, SENT, FAILED
-  errorReason String?
-  scheduledFor DateTime?
-  sentAt      DateTime?
-  createdAt   DateTime @default(now())
+model SystemSetting {
+  key         String   @id
+  value       String
+  description String?
+  updatedAt   DateTime @updatedAt
 }
 
-model DoctorAttendance {
-  id          String   @id @default(uuid())
-  doctorId    String
-  date        DateTime @default(now())
-  status      String   @default("SCHEDULED") // SCHEDULED, ARRIVED, IN_CONSULTATION, ON_BREAK, LEFT
-  roomNumber  String?
-  expectedStartTime String?
-  expectedEndTime   String?
-  arrivedAt   DateTime?
-  leftAt      DateTime?
-  doctor      User     @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+model PatientOTP {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  code      String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
+model CashRegisterShift {
+  id           String    @id @default(uuid())
+  openedBy     String
+  openedAt     DateTime  @default(now())
+  closedAt     DateTime?
+  openingFloat Float     @default(0)
+  expectedCash Float     @default(0)
+  actualCash   Float?
+  variance     Float?
+  status       String    @default("OPEN") // OPEN, CLOSED
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User      @relation(fields: [openedBy], references: [id])
+  payments     Payment[]
+  refunds      Refund[]
+}
+
+model StaffAttendance {
+  id       String    @id @default(uuid())
+  userId   String
+  date     DateTime  @default(now())
+  checkIn  DateTime?
+  checkOut DateTime?
+  status   String    @default("PRESENT") // PRESENT, LATE, ABSENT
+  notes    String?
+  user     User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, date])
+}
+
+model LeaveRequest {
+  id              String    @id @default(uuid())
+  userId          String
+  type            String    // SICK, CASUAL, ANNUAL, MATERNITY
+  startDate       DateTime
+  endDate         DateTime
+  reason          String
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  rejectionReason String?
+  reviewedAt      DateTime?
+  reviewedById    String?
+  appliedAt       DateTime  @default(now())
+
+  user            User      @relation(fields: [userId], references: [id])
+  reviewer        User?     @relation("LeaveReviewer", fields: [reviewedById], references: [id])
+
+  @@index([userId])
+  @@index([status])
+}
+
+model EmployeeProfile {
+  id              String                @id @default(uuid())
+  userId          String                @unique
+  employmentType  String // FULL_TIME, CONTRACT, PART_TIME
+  salaryBasis     String // MONTHLY, DAILY, HOURLY, SHIFT, MIXED
+  joiningDate     DateTime
+  terminationDate DateTime?
+  paymentMethod   String // BANK_TRANSFER, CASH, CHEQUE
+  bankDetails     Json? // Bank, Branch, Account No
+  isActive        Boolean               @default(true)
+  user            User                  @relation(fields: [userId], references: [id])
+  compensations   CompensationVersion[]
+  components          EmployeeComponent[]
+  deviceMapping       DeviceUserMapping?
+  processedAttendance ProcessedAttendance[]
+}
+
+model CompensationVersion {
+  id                String          @id @default(uuid())
+  employeeProfileId String
+  baseSalary        Float // Applicable basic rate
+  effectiveFrom     DateTime
+  effectiveTo       DateTime?
+  isActive          Boolean         @default(true)
+  profile           EmployeeProfile @relation(fields: [employeeProfileId], references: [id])
+}
+
+model SalaryComponent {
+  id                String              @id @default(uuid())
+  code              String              @unique
+  name              String
+  category          String // EARNING, DEDUCTION, STATUTORY, EMPLOYER_CONTRIBUTION
+  calculationMethod String // FIXED, PERCENTAGE, HOURLY_MULTIPLIER, FORMULA
+  isTaxable         Boolean             @default(true)
+  isEpfEligible     Boolean             @default(true)
+  isActive          Boolean             @default(true)
+  assignments       EmployeeComponent[]
+}
+
+model EmployeeComponent {
+  id                String          @id @default(uuid())
+  employeeProfileId String
+  componentId       String
+  value             Float? // Override or fixed assignment amount
+  effectiveFrom     DateTime
+  effectiveTo       DateTime?
+  profile           EmployeeProfile @relation(fields: [employeeProfileId], references: [id])
+  component         SalaryComponent @relation(fields: [componentId], references: [id])
+}
+
+model PayrollRun {
+  id          String          @id @default(uuid())
+  type        String // MONTHLY, OFF_CYCLE
+  periodStart DateTime
+  periodEnd   DateTime
+  payDate     DateTime
+  status      String          @default("DRAFT") // DRAFT, PENDING_APPROVAL, APPROVED, PAID
+  approvedBy  String? // Super Admin ID
+  createdAt   DateTime        @default(now())
+  records     PayrollRecord[]
+}
+
+model PayrollRecord {
+  id              String            @id @default(uuid())
+  payrollRunId    String
+  userId          String
+  totalEarnings   Float             @default(0)
+  totalDeductions Float             @default(0)
+  employerCost    Float             @default(0)
+  netSalary       Float             @default(0)
+  status          String            @default("DRAFT")
+  run             PayrollRun        @relation(fields: [payrollRunId], references: [id])
+  user            User              @relation(fields: [userId], references: [id])
+  lineItems       PayrollLineItem[]
+
+  @@unique([payrollRunId, userId])
+}
+
+model PayrollLineItem {
+  id              String        @id @default(uuid())
+  payrollRecordId String
+  category        String // EARNING, DEDUCTION, EMPLOYER_CONTRIBUTION
+  description     String // e.g., "Basic Salary", "EPF 8%"
+  amount          Float
+  isStatutory     Boolean       @default(false)
+  record          PayrollRecord @relation(fields: [payrollRecordId], references: [id], onDelete: Cascade)
+}
+
+model OvertimeRecord {
+  id     String   @id @default(uuid())
+  userId String
+  date   DateTime
+  hours  Float
+  rate   Float
+  status String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  user   User     @relation(fields: [userId], references: [id])
+}
+
+model StatutoryRule {
+  id             String    @id @default(uuid())
+  code           String    @unique // e.g., EPF_EMPLOYEE, EPF_EMPLOYER
+  name           String
+  ratePercentage Float
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  isActive       Boolean   @default(true)
+}
+
+model RolePayrollTemplate {
+  id                    String   @id @default(uuid())
+  role                  String   @unique // e.g. "Doctor", "Nurse", "Receptionist"
+  workingHoursPerDay    Float    @default(8)
+  perHourRate           Float    @default(0)
+  otRate                Float    @default(0)
+  allowedLeavesPerMonth Int      @default(2)
+  advancePayDate        Int?     // e.g. 10
+  fullSalaryPayDate     Int?     // e.g. 30
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model BiometricDevice {
+  id           String   @id @default(uuid())
+  serialNumber String   @unique
+  ipAddress    String?
+  location     String
+  status       String   @default("OFFLINE") // ONLINE, OFFLINE
+  lastSeenAt   DateTime @default(now())
+}
+
+model DeviceUserMapping {
+  id             String          @id @default(uuid())
+  deviceUserId   String          // The ID stored on the physical scanner
+  employeeId     String          @unique // Links to our EmployeeProfile
+  employee       EmployeeProfile @relation(fields: [employeeId], references: [id])
+}
+
+model RawAttendanceLog {
+  id           String   @id @default(uuid())
+  deviceSerial String
+  payload      Json     // The raw WebSocket/API payload JSON
+  receivedAt   DateTime @default(now())
+  processed    Boolean  @default(false)
+}
+
+model ProcessedAttendance {
+  id         String          @id @default(uuid())
+  employeeId String
+  timestamp  DateTime
+  type       String          // CLOCK_IN, CLOCK_OUT
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id])
+  
+  @@unique([employeeId, timestamp]) // Prevent duplicate scans in the same second
+}

@@ -1,13 +1,18 @@
 import { Request, Response } from 'express';
-import { pharmacyService } from '../services/pharmacy.service';
+import { pharmacyService } from "../services/pharmacy.service.js";
 import { billingService } from '../services/billing.service.js';
 import { websocketService } from '../services/websocket.service.js';
+import { prisma } from '../lib/prisma.js';
 
 export class PharmacyController {
   async getMedicines(req: Request, res: Response) {
     try {
-      const { barcode } = req.query;
-      const medicines = await pharmacyService.getAllMedicines(barcode as string);
+      const { search, page, limit } = req.query;
+      const medicines = await pharmacyService.getAllMedicines(
+        search as string,
+        Number(page) || 1,
+        Number(limit) || 50
+      );
       res.json(medicines);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -25,25 +30,43 @@ export class PharmacyController {
 
   async addMedicine(req: Request, res: Response) {
     try {
-      const { name, barcode, genericName, category, form, unit, reorderLevel, baseStock, basePrice } = req.body;
-      if (!name || !category || !form || !unit) {
-        return res.status(400).json({ error: "Missing required fields: name, category, form, or unit." });
+      const { name, barcode, genericName, category, itemType, form, unit, reorderLevel, baseStock, basePrice, expiryDate } = req.body;
+      
+      if (!name || !category || !unit) {
+        return res.status(400).json({ error: "Missing required fields: name, category, or unit." });
       }
       
+      if (barcode && !/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
+      }
+      
+      const isMedical = !itemType || itemType === "MEDICINE";
+      if (isMedical && !form) {
+        return res.status(400).json({ error: "Medical items require a form (e.g., Tablet)." });
+      }
+
       const medicine = await pharmacyService.addMedicine({
         name,
         barcode,
-        genericName,
+        genericName: isMedical ? genericName : null,
         category,
-        form,
+        itemType,
+        form: isMedical ? form : null,
         unit,
         reorderLevel: reorderLevel ? Number(reorderLevel) : undefined,
         baseStock: baseStock ? Number(baseStock) : undefined,
-        basePrice: basePrice ? Number(basePrice) : undefined
+        basePrice: basePrice ? Number(basePrice) : undefined,
+        expiryDate: expiryDate ? new Date(expiryDate) : undefined
       });
       res.status(201).json(medicine);
     } catch (error: any) {
-      res.status(400).json({ error: error.message });
+      if (error.code === 'P2002') {
+        res.status(400).json({ error: "Barcode must be unique" });
+      } else if (error.code === 'ALREADY_EXISTS') {
+        res.status(409).json({ error: error.message, code: 'ALREADY_EXISTS', itemId: error.itemId });
+      } else {
+        res.status(500).json({ error: error.message });
+      }
     }
   }
 
@@ -51,7 +74,7 @@ export class PharmacyController {
     try {
       const { expiryDate, initialQuantity, unitPrice, medicineId, batchNumber, ...rest } = req.body;
       
-      if (!medicineId || !batchNumber || !expiryDate || initialQuantity === undefined || unitPrice === undefined) {
+      if (!medicineId || !batchNumber || initialQuantity === undefined || unitPrice === undefined) {
         return res.status(400).json({ error: "Missing required stock batch fields." });
       }
       
@@ -65,7 +88,7 @@ export class PharmacyController {
         batchNumber,
         initialQuantity: Number(initialQuantity),
         unitPrice: Number(unitPrice),
-        expiryDate: new Date(expiryDate),
+        expiryDate: expiryDate ? new Date(expiryDate) : undefined,
       });
       res.status(201).json(batch);
     } catch (error: any) {
@@ -76,28 +99,26 @@ export class PharmacyController {
   async dispense(req: Request, res: Response) {
     try {
       const { medicineId, quantity, visitId, patientId, description } = req.body;
-      const result = await pharmacyService.dispenseMedicine(medicineId, Number(quantity));
       
-      // Calculate total price and add charge if visitId or patientId is provided
-      if (visitId || patientId) {
-        let totalCost = 0;
-        result.batchesUsed.forEach((b: any) => {
-          totalCost += b.quantityDispensed * b.unitPrice;
-        });
-
-        if (totalCost > 0) {
-          await billingService.addCharge({
-            visitId,
-            patientId,
-            department: 'PHARMACY',
-            referenceId: medicineId,
-            description: description || 'Pharmacy Medication',
-            quantity: 1, // We aggregate the cost into 1 line item
-            unitPrice: totalCost
-          });
-        }
+      if (!medicineId || quantity === undefined) {
+        return res.status(400).json({ error: "Missing medicineId or quantity" });
+      }
+      
+      const qty = Number(quantity);
+      if (isNaN(qty) || qty <= 0) {
+        return res.status(400).json({ error: "Quantity must be a positive number" });
       }
 
+      const result = await pharmacyService.dispenseMedicine(
+        medicineId, 
+        qty,
+        {
+          visitId,
+          patientId,
+          description
+        }
+      );
+      
       res.json(result);
     } catch (error: any) {
       res.status(400).json({ error: error.message });
@@ -114,65 +135,154 @@ export class PharmacyController {
     }
   }
 
+  async updateMedicine(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { name, genericName, category, form, unit, reorderLevel, barcode } = req.body;
+
+      if (barcode && !/^\d{10}$/.test(barcode)) {
+        return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
+      }
+
+      const medicine = await pharmacyService.updateMedicine(id as string, { name, genericName, category, form, unit, reorderLevel: reorderLevel ? Number(reorderLevel) : undefined, barcode });
+      res.json(medicine);
+    } catch (error: any) {
+      if (error.code === 'P2002') {
+        return res.status(400).json({ error: "Barcode must be unique" });
+      } else if (error.code === 'ALREADY_EXISTS') {
+        return res.status(409).json({ error: error.message, code: 'ALREADY_EXISTS', itemId: error.itemId });
+      }
+      res.status(500).json({ error: error.message });
+    }
+  }
+
+  async deleteMedicine(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      await pharmacyService.deleteMedicine(id as string);
+      res.json({ success: true });
+    } catch (error: any) {
+      if (error.message?.includes('Cannot delete')) {
+        return res.status(400).json({ error: error.message });
+      }
+      res.status(500).json({ error: error.message });
+    }
+  }
+
   async sell(req: Request, res: Response) {
     try {
-      const { items, paymentMethod } = req.body;
-      
-      const invoice = await billingService.addCharge({
-        department: 'OTC',
-        description: 'Over The Counter Sales',
-        quantity: 1,
-        unitPrice: 0 // Invoice creation hook
-      });
+      const { items, paymentMethod, prescriptionId, visitId, patientId, discount } = req.body;
 
-      let totalCost = 0;
-      const chargeItems: { referenceId?: string; description: string; quantity: number; unitPrice: number; }[] = [];
+      if (!items || items.length === 0) {
+        return res.status(400).json({ error: 'No items provided' });
+      }
 
-      for (const item of items) {
-        // We still need to call dispenseMedicine to deduct inventory correctly
-        const result = await pharmacyService.dispenseMedicine(item.id, Number(item.qty));
-        
-        let itemCost = 0;
-        result.batchesUsed.forEach((b: any) => {
-          itemCost += b.quantityDispensed * b.unitPrice;
+      // Execute the entire sale atomically in a single transaction
+      const result = await prisma.$transaction(async (tx) => {
+        // 1. Validate and dispense all items, collecting charges
+        const charges: { department: string; referenceId?: string; description: string; quantity: number; unitPrice: number; medicineId?: string }[] = [];
+
+        for (const item of items) {
+          const qty = Number(item.qty);
+          // Delegate to pharmacyService to ensure row-level locks and FIFO logic are applied securely
+          const dispenseResult = await pharmacyService.dispenseMedicine(
+            item.id,
+            qty,
+            { skipBilling: true }, // We do our own bulk billing here
+            tx
+          );
+
+          charges.push({
+            department: 'PHARMACY',
+            referenceId: item.id,
+            description: item.name || 'Pharmacy Medication',
+            quantity: 1,
+            unitPrice: dispenseResult.totalCost,
+            medicineId: item.id,
+          });
+        }
+
+        const subtotal = charges.reduce((sum, c) => sum + c.unitPrice, 0);
+        const discountAmount = Math.max(0, Math.min(subtotal, Number(discount?.amount) || 0));
+        const finalCost = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
+
+        // 2. Create invoice + add all line items atomically (using bulk method)
+        const invoice = await billingService.addChargesBulk({
+          visitId,
+          patientId,
+          charges: charges.map(c => ({
+            department: c.department,
+            referenceId: c.referenceId,
+            description: c.description,
+            quantity: c.quantity,
+            unitPrice: c.unitPrice,
+          })),
+        }, tx);
+
+        if (!invoice) throw new Error('Failed to create pharmacy invoice');
+
+        // 3. Update prescription status if dispensed from a prescription
+        if (prescriptionId) {
+          const rx = await tx.prescription.findUnique({
+            where: { id: prescriptionId },
+            include: { items: true },
+          });
+          if (rx) {
+            for (const rxItem of rx.items) {
+              const soldItem = items.find((i: any) => 
+                (i.medicineId && i.medicineId === rxItem.medicineId) ||
+                (i.id && i.id === rxItem.medicineId)
+              );
+              if (soldItem) {
+                const soldQty = Number(soldItem.quantity ?? soldItem.qty ?? rxItem.dispenseQty ?? 0);
+                await tx.prescriptionItem.update({
+                  where: { id: rxItem.id },
+                  data: { dispenseQty: soldQty },
+                });
+              }
+            }
+            await tx.prescription.update({
+              where: { id: prescriptionId },
+              data: { status: 'DISPENSED' },
+            });
+          }
+        }
+
+        // 4. Pay the invoice immediately (POS = instant payment)
+        await tx.payment.create({
+          data: {
+            invoiceId: invoice.id,
+            amount: finalCost,
+            method: paymentMethod,
+            status: 'COMPLETED',
+          },
         });
 
-        if (itemCost > 0) {
-          totalCost += itemCost;
-          chargeItems.push({
-            referenceId: item.id,
-            description: item.name || 'OTC Medication',
-            quantity: 1,
-            unitPrice: itemCost
-          });
-        }
-      }
-      
-      // Insert line items individually since addChargesBulk does not exist
-      if (chargeItems.length > 0) {
-        for (const item of chargeItems) {
-          await billingService.addCharge({
-            invoiceId: invoice.id,
-            department: 'PHARMACY',
-            referenceId: item.referenceId,
-            description: item.description,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice
-          });
-        }
-      }
+        const finalInvoice = await tx.invoice.update({
+          where: { id: invoice.id },
+          data: { 
+            status: 'PAID',
+            subtotal,
+            discountAmount,
+            discountType: discount?.type || null,
+            discountValue: discount?.value !== undefined ? Number(discount.value) : null,
+            discountReason: discount?.reason || null,
+            totalAmount: finalCost
+          },
+          include: { lineItems: true, payments: true },
+        });
 
-      // Pay the invoice immediately since it's OTC POS
-      const finalInvoice = await billingService.payInvoice(invoice.id, totalCost, paymentMethod);
+        return { invoice: finalInvoice, totalCost: finalCost };
+      }, { maxWait: 20000, timeout: 20000 });
 
-      // Announce payment success via WebSockets
+      // Announce payment success via WebSockets (outside the tx — non-critical)
       websocketService.broadcast('pos_payment_success', {
-        invoiceId: finalInvoice.id,
-        totalAmount: finalInvoice.totalAmount,
-        paymentMethod
+        invoiceId: result.invoice.id,
+        totalAmount: result.invoice.totalAmount,
+        paymentMethod,
       });
 
-      res.json({ success: true, invoice: finalInvoice });
+      res.json({ success: true, invoice: result.invoice });
     } catch (error: any) {
       console.error(error);
       res.status(400).json({ error: error.message });

@@ -1,9 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
-const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
+import { prisma } from "../lib/prisma.js";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error("JWT_SECRET is not defined in environment variables");
 
 export interface AuthRequest extends Request {
   user?: {
@@ -14,7 +13,7 @@ export interface AuthRequest extends Request {
 }
 
 export const verifyToken = (req: AuthRequest, res: Response, next: NextFunction): void => {
-  const token = req.headers.authorization?.split(" ")[1];
+  const token = req.cookies?.token || req.headers.authorization?.split(" ")[1];
 
   if (!token) {
     res.status(401).json({ message: "No token provided, authorization denied" });
@@ -35,6 +34,11 @@ export const requirePermission = (action: string, resource: string) => {
     try {
       if (!req.user) {
         res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      if (!req.user.roleId) {
+        res.status(403).json({ message: "Forbidden: Role mapping missing" });
         return;
       }
 
@@ -76,3 +80,53 @@ export const requirePermission = (action: string, resource: string) => {
     }
   };
 };
+
+export const requireRole = (allowedRoles: string[]) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      if (!req.user.roleId) {
+        res.status(403).json({ message: "Forbidden: Role mapping missing" });
+        return;
+      }
+
+      let role = null;
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          role = await prisma.role.findUnique({
+            where: { id: req.user.roleId },
+            select: { name: true }
+          });
+
+          break;
+        } catch (e: any) {
+          retries--;
+          if (retries === 0) throw e;
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+
+      if (!role) {
+        res.status(403).json({ message: "Forbidden: Role not found" });
+        return;
+      }
+      const userRole = role.name.toUpperCase();
+      if (userRole !== 'SUPERADMIN' && !allowedRoles.includes(userRole) && !allowedRoles.includes('ALL')) {
+        res.status(403).json({ message: `Forbidden: Requires one of [${allowedRoles.join(', ')}]` });
+        return;
+      }
+      
+      (req as any).roleName = role.name.toUpperCase();
+      next();
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: "Internal server error during role check" });
+    }
+  };
+};
+

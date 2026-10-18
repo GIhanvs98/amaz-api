@@ -5,6 +5,131 @@ import { randomUUID } from "crypto";
 import { BookingService } from "../services/booking.service.js";
 import { websocketService } from "../services/websocket.service.js";
 import { SMSService } from "../services/sms.service.js";
+import { generateMRN } from "../utils/mrn.util.js";
+import { generateIdentityKey } from "../utils/identity.util.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+import { expirePastTokens } from "../services/token-lifecycle.service.js";
+
+export const openShift = async (req: Request, res: Response) => {
+  try {
+    const { startingFloat } = req.body;
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    // Close any existing open shifts for this user
+    await prisma.cashRegisterShift.updateMany({
+      where: { openedBy: user.id, status: "OPEN" },
+      data: { status: "CLOSED", closedAt: new Date() }
+    });
+
+    const shift = await prisma.cashRegisterShift.create({
+      data: {
+        openedBy: user.id,
+        openingFloat: Number(startingFloat) || 0,
+        status: "OPEN"
+      }
+    });
+
+    res.json({ success: true, data: shift });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+
+async function getOpenShiftId(userId: string, tx?: any): Promise<string | undefined> {
+  const p = tx || prisma;
+  const shift = await p.cashRegisterShift.findFirst({
+    where: { openedBy: userId, status: "OPEN" }
+  });
+  return shift?.id;
+}
+
+export const getCurrentShift = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    // Fetch user with Role to determine if this is a clinical Nurse
+    const dbUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      include: { Role: true }
+    });
+
+    const roleName = dbUser?.Role?.name?.toLowerCase() || "";
+
+    if (roleName === "nurse") {
+      // Nurse shifts are strictly linked to daily biometric/attendance clock-in, not cash registers
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const attendance = await prisma.staffAttendance.findUnique({
+        where: {
+          userId_date: {
+            userId: user.id,
+            date: today
+          }
+        }
+      });
+
+      const isClockedIn = !!(attendance?.checkIn && !attendance?.checkOut);
+
+      if (isClockedIn) {
+        return res.json({
+          success: true,
+          data: {
+            id: attendance!.id,
+            isOpen: true,
+            isAttendanceShift: true,
+            startedAt: attendance!.checkIn,
+            startingFloat: 0,
+            cashierName: dbUser?.fullName || "Nurse",
+            attendanceStatus: attendance!.status || "PRESENT"
+          }
+        });
+      } else {
+        return res.json({
+          success: true,
+          data: {
+            id: null,
+            isOpen: false,
+            isAttendanceShift: true,
+            startedAt: null,
+            startingFloat: 0,
+            cashierName: dbUser?.fullName || "Nurse",
+            clockedOutAt: attendance?.checkOut || null
+          }
+        });
+      }
+    }
+
+    // Standard cash register shift for cashier/receptionist
+    const shift = await prisma.cashRegisterShift.findFirst({
+      where: { openedBy: user.id, status: "OPEN" },
+      include: {
+        user: { select: { fullName: true } }
+      }
+    });
+
+    if (!shift) {
+      return res.json({ success: true, data: null });
+    }
+
+    res.json({ 
+      success: true, 
+      data: {
+        id: shift.id,
+        isOpen: true,
+        isAttendanceShift: false,
+        startedAt: shift.openedAt,
+        startingFloat: shift.openingFloat,
+        cashierName: shift.user?.fullName || "Unknown",
+      } 
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
 
 export const getPatients = async (req: Request, res: Response) => {
   try {
@@ -17,17 +142,23 @@ export const getPatients = async (req: Request, res: Response) => {
       return res.json({ success: true, data: recentPatients });
     }
     
+    const searchTerm = (q as string).trim();
     const patients = await prisma.patient.findMany({
       where: {
-        phone: {
-          contains: q as string
-        }
+        isActive: true,
+        OR: [
+          { phone: { contains: searchTerm } },
+          { fullName: { contains: searchTerm, mode: 'insensitive' } },
+          { patientId: { contains: searchTerm, mode: 'insensitive' } },
+          { nic: { contains: searchTerm, mode: 'insensitive' } }
+        ]
       },
-      take: 5
+      take: 20,
+      orderBy: { createdAt: 'desc' }
     });
     
     res.json({ success: true, data: patients });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error fetching patients:", error);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -101,17 +232,71 @@ export const getMetrics = async (req: Request, res: Response) => {
   }
 };
 
+export const getActiveDoctors = async (req: Request, res: Response) => {
+  try {
+    const doctors = await prisma.user.findMany({
+      where: {
+        Role: { name: 'DOCTOR' },
+        departmentId: { not: null }, // Only doctors actively assigned to a department
+        isActive: true
+      },
+      select: {
+        id: true,
+        fullName: true,
+        specialty: true,
+        consultationFee: true,
+        feeType: true
+      }
+    });
+
+    res.json({ success: true, data: doctors });
+  } catch (error: any) {
+    console.error("Error fetching active doctors:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 export const getPatientById = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const patient = await prisma.patient.findUnique({
-      where: { id }
+      where: { id: id as string },
+      include: {
+        Appointment: {
+          where: { status: { in: ['BOOKED', 'WAITING', 'CHECKED_IN', 'IN_PROGRESS', 'ARRIVED'] } },
+          orderBy: { createdAt: "desc" },
+          take: 1
+        },
+        Prescription: {
+          include: { items: true },
+          orderBy: { createdAt: "desc" }
+        },
+        LabRequests: {
+          include: { items: { include: { LabTest: true } } },
+          orderBy: { requestedAt: "desc" }
+        }
+      }
     });
     
     if (!patient) {
       res.status(404).json({ error: "Patient not found" });
       return;
     }
+    
+    // Extract actual history from DB
+    const medicalHistory = patient.Prescription.map(p => ({
+      id: p.id,
+      date: p.createdAt,
+      diagnosis: p.diagnosis || "Consultation",
+      medications: p.items.map(i => i.drugName)
+    }));
+
+    const labResults = patient.LabRequests.map(l => ({
+      id: l.id,
+      date: l.requestedAt,
+      status: l.status,
+      tests: l.items.map(i => i.LabTest.name)
+    }));
     
     // Map to the frontend expected format
     res.json({
@@ -121,12 +306,17 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       gender: patient.gender || "UNKNOWN",
       contact: patient.phone,
       bloodGroup: patient.bloodGroup || "O+",
-      allergies: [],
-      chronicConditions: [],
-      medicalHistory: [],
-      labResults: []
+      allergies: [], // Still mocked as no allergy model exists yet
+      chronicConditions: [], // Still mocked as no chronic condition model exists yet
+      medicalHistory: medicalHistory,
+      labResults: labResults,
+      activeVisitId: patient.Appointment[0]?.id || null,
+      activeTokenNumber: patient.Appointment[0]?.tokenNumber ? (patient.Appointment[0]!.tokenNumber.includes('-') ? parseInt(patient.Appointment[0]!.tokenNumber.split('-')[1] || "0", 10) : patient.Appointment[0]!.tokenNumber) : null,
+      activeVisitStartTime: patient.Appointment[0]?.updatedAt || null,
+      bookingReference: patient.Appointment[0]?.bookingReference || null,
+      masterBarcode: patient.Appointment[0]?.bookingReference || null
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error fetching patient:", error);
     res.status(500).json({ error: error.message });
   }
@@ -134,20 +324,73 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
 
 export const generateToken = async (req: Request, res: Response) => {
   try {
-    const { patientName, patientPhone, ageFallback, doctorId, doctorName, testIds } = req.body;
+    const { 
+      patientId: requestedPatientId,
+      isNewPatient,
+      gender,
+      patientName, 
+      patientPhone, 
+      ageFallback, 
+      doctorId, 
+      doctorName, 
+      testIds, 
+      customLabPrices, 
+      serviceIds, 
+      customServicePrices, 
+      doctorTokenNumber, 
+      labTokenNumber, 
+      serviceTokenNumber, 
+      date, 
+      bookingType 
+    } = req.body;
 
-    // Find or create patient
-    let patient;
-    if (patientPhone) {
-      patient = await prisma.patient.findUnique({ where: { phone: patientPhone } });
+    // Multi-tenant patient resolution
+    let patient: any = null;
+
+    // 1. Explicit patientId provided (e.g. receptionist clicked a specific family member)
+    if (requestedPatientId) {
+      patient = await prisma.patient.findUnique({ where: { id: requestedPatientId } });
     }
-    
+
+    // 2. Composite lookup if not explicitly flagged as new patient
+    if (!patient && !isNewPatient && patientName && patientPhone) {
+      const identityKey = generateIdentityKey(patientName, patientPhone);
+      if (identityKey) {
+        patient = await prisma.patient.findUnique({ where: { identityKey } });
+      }
+      if (!patient) {
+        patient = await prisma.patient.findFirst({
+          where: {
+            phone: patientPhone,
+            fullName: { equals: patientName, mode: "insensitive" }
+          }
+        });
+      }
+    }
+
+    // 3. Create new distinct patient if still not resolved
     if (!patient) {
+      const patientId = await generateMRN(prisma);
+      const effectiveName = patientName || "Walk-in Patient";
+      const effectivePhone = patientPhone || `WALKIN-${randomUUID()}`;
+      let identityKey = generateIdentityKey(effectiveName, effectivePhone);
+
+      // Handle rare key collision
+      if (identityKey) {
+        const existingKey = await prisma.patient.findUnique({ where: { identityKey } });
+        if (existingKey) {
+          identityKey = `${identityKey}_${Date.now().toString().slice(-4)}`;
+        }
+      }
+
       patient = await prisma.patient.create({
         data: {
-          fullName: patientName || "Walk-in Patient",
-          phone: patientPhone || `WALKIN-${randomUUID()}`, // UUID fallback guarantees uniqueness under concurrency
-          ageFallback: ageFallback || null
+          patientId,
+          identityKey: identityKey || null,
+          fullName: effectiveName,
+          phone: effectivePhone,
+          ageFallback: ageFallback ? parseInt(ageFallback.toString(), 10) : null,
+          gender: gender || null
         }
       });
       
@@ -158,144 +401,462 @@ export const generateToken = async (req: Request, res: Response) => {
 
     const hasConsultation = !!doctorId;
     const hasLab = Array.isArray(testIds) && testIds.length > 0;
+    const hasService = Array.isArray(serviceIds) && serviceIds.length > 0;
 
     // --- Billing Logic ---
     let doctorDetails = null;
+    let doctorRoomNumber = null;
     if (doctorId) {
-      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId } });
+      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true } });
+      const targetDate = date ? new Date(date) : new Date();
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+      const todayAttendance = await prisma.doctorAttendance.findFirst({
+        where: { doctorId: doctorId, date: { gte: startOfDay, lte: endOfDay } },
+        include: { room: true }
+      });
+
+      const dayOfWeek = startOfDay.getDay();
+      const session = await prisma.doctorScheduleSession.findFirst({
+        where: {
+          dayOfWeek: dayOfWeek,
+          isActive: true,
+          schedule: {
+            doctorId: doctorId,
+            validFrom: { lte: endOfDay },
+            OR: [
+              { validUntil: null },
+              { validUntil: { gte: startOfDay } }
+            ]
+          }
+        },
+        include: { room: true }
+      });
+
+      doctorRoomNumber = todayAttendance?.room?.roomNumber || session?.room?.roomNumber || doctorDetails?.room?.roomNumber || null;
     }
     
     let labTestsDetails: any[] = [];
     if (hasLab) {
       labTestsDetails = await prisma.labTest.findMany({
-        where: { id: { in: testIds } }
+        where: { id: { in: testIds } },
+        include: { room: true }
+      });
+    }
+
+    let extraServicesDetails: any[] = [];
+    if (hasService) {
+      extraServicesDetails = await prisma.extraService.findMany({
+        where: { id: { in: serviceIds } },
+        include: { room: true }
       });
     }
 
     const isNonOPD = doctorDetails && doctorDetails.specialty && doctorDetails.specialty !== "General" && doctorDetails.specialty.toUpperCase() !== "OPD";
-    const needsInvoice = isNonOPD || hasLab;
+    const needsInvoice = isNonOPD || hasLab || hasService;
 
-    
-    let department = "CONSULTATION";
-    if (hasConsultation && hasLab) {
-      department = "MULTI";
-    } else if (hasLab && !hasConsultation) {
-      department = "LAB";
+    let sharedRefNo = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+
+    // If it's a PHONE booking, check if this patient already has a BOOKED phone appointment today
+    if (bookingType === "PHONE" && patient?.id) {
+      const targetDate = date ? new Date(date) : new Date();
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+
+      const existingPhoneBooking = await prisma.appointment.findFirst({
+        where: {
+          patientId: patient.id,
+          bookingType: "PHONE",
+          status: "BOOKED",
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          bookingReference: { not: null }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+      if (existingPhoneBooking && existingPhoneBooking.bookingReference) {
+        sharedRefNo = existingPhoneBooking.bookingReference;
+      }
     }
 
-    // Generate Token Number via Transaction
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
+    // Helper to robustly generate a single token
+    // Helper to robustly generate a single token
+    const generateSpecificToken = async (
+      dept: string,
+      docId: string | null,
+      roomId: string | null,
+      prefix: string,
+      requestedTokenNumber?: number
+    ) => {
+      const targetDate = date ? new Date(date) : new Date();
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
 
-    const refNo = Math.floor(10000000 + Math.random() * 90000000).toString(); 
+      let token = null;
 
-    const token = await prisma.$transaction(async (tx) => {
-      const tokenCount = await tx.appointment.count({
+      let sessionId = null;
+      if (dept === "CONSULTATION" && docId) {
+        const dayOfWeek = startOfDay.getDay();
+        const session = await prisma.doctorScheduleSession.findFirst({
+          where: {
+            dayOfWeek: dayOfWeek,
+            isActive: true,
+            schedule: {
+              doctorId: docId,
+              validFrom: { lte: endOfDay },
+              OR: [
+                { validUntil: null },
+                { validUntil: { gte: startOfDay } }
+              ]
+            }
+          }
+        });
+        if (session) {
+          sessionId = session.id;
+        }
+      }
+
+      // Format tokenDisplay
+      const formatTokenNumber = (num: number) => {
+        const padded = num.toString().padStart(2, "0");
+        return prefix ? `${prefix}-${padded}` : padded;
+      };
+
+      if (requestedTokenNumber) {
+        const tokenDisplay = formatTokenNumber(requestedTokenNumber);
+        const exists = await prisma.appointment.findFirst({
+          where: {
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            department: dept,
+            ...(roomId ? { roomId } : { doctorId: docId || null }),
+            tokenNumber: tokenDisplay,
+            status: { notIn: ["CANCELLED", "NO_SHOW"] }
+          }
+        });
+
+        if (exists) {
+          throw new Error(`Token ${requestedTokenNumber} for ${dept} is already booked.`);
+        }
+
+        token = await prisma.appointment.create({
+          data: {
+            tokenNumber: tokenDisplay,
+            patientId: patient!.id,
+            doctorId: docId || null,
+            sessionId: sessionId,
+            roomId: roomId || null,
+            department: dept,
+            status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+            bookingType: bookingType || "WALK_IN",
+            appointmentDate: startOfDay,
+            bookingReference: sharedRefNo
+          }
+        });
+        return token;
+      }
+
+      let attempts = 0;
+      const lastToken = await prisma.appointment.findFirst({
         where: {
           appointmentDate: { gte: startOfDay, lte: endOfDay },
-          department
-        }
+          department: dept,
+          ...(roomId ? { roomId } : { doctorId: docId || null }),
+          status: { notIn: ["CANCELLED", "NO_SHOW"] }
+        },
+        orderBy: { createdAt: 'desc' }
       });
 
-      const queueNumber = (tokenCount + 1).toString().padStart(3, "0");
-      const prefix = department === "LAB" ? "LAB-" : (department === "MULTI" ? "MLT-" : "");
-      const tokenDisplay = `${prefix}${queueNumber}`;
-
-      return await tx.appointment.create({
-        data: {
-          tokenNumber: tokenDisplay,
-          patientId: patient!.id,
-          doctorId: doctorId || null,
-          department,
-          status: department === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-          bookingType: "WALK_IN",
-          appointmentDate: new Date()
+      let nextTokenInt = 1;
+      if (lastToken) {
+        const digits = lastToken.tokenNumber.match(/\d+/);
+        if (digits) {
+          nextTokenInt = parseInt(digits[0], 10) + 1;
         }
+      } else {
+        const count = await prisma.appointment.count({
+          where: {
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            department: dept,
+            ...(roomId ? { roomId } : { doctorId: docId || null })
+          }
+        });
+        nextTokenInt = count + 1;
+      }
+
+      while (!token && attempts < 20) {
+        const tokenDisplay = formatTokenNumber(nextTokenInt);
+        const exists = await prisma.appointment.findFirst({
+          where: {
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            department: dept,
+            ...(roomId ? { roomId } : { doctorId: docId || null }),
+            tokenNumber: tokenDisplay
+          }
+        });
+
+        if (exists) {
+          nextTokenInt++;
+          attempts++;
+          continue;
+        }
+
+        try {
+          token = await prisma.appointment.create({
+            data: {
+              tokenNumber: tokenDisplay,
+              patientId: patient!.id,
+              doctorId: docId || null,
+              sessionId: sessionId,
+              roomId: roomId || null,
+              department: dept,
+              status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+              bookingType: bookingType || "WALK_IN",
+              appointmentDate: startOfDay,
+              bookingReference: sharedRefNo
+            }
+          });
+        } catch (e: any) {
+          nextTokenInt++;
+          attempts++;
+        }
+      }
+      
+      if (!token) throw new Error(`Failed to generate token for ${dept}`);
+      return token;
+    };
+
+    const tokensToGenerate: {
+      dept: string;
+      docId: string | null;
+      roomId: string | null;
+      prefix: string;
+      name: string;
+      roomNumber: string | null;
+      requestedTokenNumber?: number;
+      testIds?: string[];
+      serviceIds?: string[];
+    }[] = [];
+
+    if (hasConsultation) {
+      tokensToGenerate.push({
+        dept: "CONSULTATION",
+        docId: doctorId,
+        roomId: doctorDetails?.roomId || null,
+        prefix: "",
+        name: doctorName || "General Physician",
+        roomNumber: doctorRoomNumber,
+        requestedTokenNumber: doctorTokenNumber
       });
-    });
+    }
 
-    const tokenDisplay = token.tokenNumber;
+    if (hasLab) {
+      const labRooms = await prisma.room.findMany({
+        where: { department: "LAB", isActive: true },
+        orderBy: { roomNumber: "asc" }
+      });
+      const defaultLabRoom = labRooms[0] || null;
 
+      const labGroups = new Map<string, { roomId: string | null; roomNumber: string; testIds: string[] }>();
+      for (const t of labTestsDetails) {
+        const assignedRoom = t.room || labRooms.find(r => r.id === t.roomId) || defaultLabRoom;
+        const rId = assignedRoom?.id || "default-lab";
+        const rNum = assignedRoom?.roomNumber || "LAB-A";
+        if (!labGroups.has(rId)) {
+          labGroups.set(rId, { roomId: assignedRoom?.id || null, roomNumber: rNum, testIds: [] });
+        }
+        labGroups.get(rId)!.testIds.push(t.id);
+      }
+
+      for (const [_, grp] of labGroups.entries()) {
+        const isLabA = grp.roomNumber.toUpperCase().includes("A");
+        const isLabB = grp.roomNumber.toUpperCase().includes("B");
+        const prefix = isLabA ? "LA" : isLabB ? "LB" : "LAB";
+
+        tokensToGenerate.push({
+          dept: "LAB",
+          docId: null,
+          roomId: grp.roomId,
+          prefix: prefix,
+          name: `Laboratory (${grp.roomNumber})`,
+          roomNumber: grp.roomNumber,
+          requestedTokenNumber: labGroups.size === 1 ? labTokenNumber : undefined,
+          testIds: grp.testIds
+        });
+      }
+    }
+
+    if (hasService) {
+      const serviceRooms = await prisma.room.findMany({
+        where: { department: "EXTRA_SERVICE", isActive: true },
+        orderBy: { roomNumber: "asc" }
+      });
+      const defaultServiceRoom = serviceRooms[0] || null;
+
+      const serviceGroups = new Map<string, { roomId: string | null; roomNumber: string; serviceIds: string[] }>();
+      for (const s of extraServicesDetails) {
+        const assignedRoom = s.room || serviceRooms.find(r => r.id === s.roomId) || defaultServiceRoom;
+        const rId = assignedRoom?.id || "default-es";
+        const rNum = assignedRoom?.roomNumber || "EXT-01";
+        if (!serviceGroups.has(rId)) {
+          serviceGroups.set(rId, { roomId: assignedRoom?.id || null, roomNumber: rNum, serviceIds: [] });
+        }
+        serviceGroups.get(rId)!.serviceIds.push(s.id);
+      }
+
+      for (const [_, grp] of serviceGroups.entries()) {
+        const isES1 = grp.roomNumber.includes("01") || grp.roomNumber.includes("1");
+        const isES2 = grp.roomNumber.includes("02") || grp.roomNumber.includes("2");
+        const prefix = isES1 ? "ES1" : isES2 ? "ES2" : "ES";
+
+        tokensToGenerate.push({
+          dept: "EXTRA_SERVICE",
+          docId: null,
+          roomId: grp.roomId,
+          prefix: prefix,
+          name: `Extra Services (${grp.roomNumber})`,
+          roomNumber: grp.roomNumber,
+          requestedTokenNumber: serviceGroups.size === 1 ? serviceTokenNumber : undefined,
+          serviceIds: grp.serviceIds
+        });
+      }
+    }
+
+    if (tokensToGenerate.length === 0) {
+      return res.status(400).json({ success: false, error: "No services selected to generate token." });
+    }
+
+    const generatedTokens = [];
+    for (const t of tokensToGenerate) {
+      const token = await generateSpecificToken(t.dept, t.docId, t.roomId, t.prefix, t.requestedTokenNumber);
+      generatedTokens.push({
+        id: token.id,
+        refNo: token.bookingReference,
+        tokenNumber: token.tokenNumber,
+        department: token.department,
+        status: token.status,
+        doctorName: t.name,
+        patientName: patient.fullName,
+        appointmentDate: token.appointmentDate,
+        roomId: t.roomId,
+        roomNumber: t.roomNumber,
+        testIds: t.testIds,
+        serviceIds: t.serviceIds
+      });
+    }
+
+    // --- Invoice Generation ---
     let invoiceData = null;
     if (needsInvoice) {
-      // Calculate line items
       const lineItems = [];
       let totalAmount = 0;
 
-      if (isNonOPD) {
-        // Hardcoded consultation fee for non-OPD
-        const fee = 2500;
+      if (isNonOPD && doctorDetails?.feeType === "UPFRONT") {
+        const fee = doctorDetails.consultationFee || 2500;
         lineItems.push({
           department: "CONSULTATION",
-          description: `Specialist Consultation - ${doctorName}`,
+          description: `Specialist Consultation (Upfront) - ${doctorName}`,
           quantity: 1,
           unitPrice: fee,
           total: fee
         });
-        totalAmount += fee;
+        totalAmount = Math.round((totalAmount + fee) * 100) / 100;
+      }
+
+
+
+      if (hasService) {
+        extraServicesDetails.forEach(svc => {
+          const finalPrice = customServicePrices && customServicePrices[svc.id] !== undefined 
+            ? Number(customServicePrices[svc.id]) 
+            : svc.price;
+          lineItems.push({
+            department: "OTHER",
+            referenceId: svc.id,
+            description: `Extra Service: ${svc.title}`,
+            quantity: 1,
+            unitPrice: finalPrice,
+            total: finalPrice
+          });
+          totalAmount = Math.round((totalAmount + finalPrice) * 100) / 100;
+        });
       }
 
       if (hasLab) {
         labTestsDetails.forEach(test => {
+          const finalPrice = customLabPrices && customLabPrices[test.id] !== undefined 
+            ? Number(customLabPrices[test.id]) 
+            : test.price;
           lineItems.push({
             department: "LAB",
             referenceId: test.id,
             description: `Lab Test: ${test.name}`,
             quantity: 1,
-            unitPrice: test.price,
-            total: test.price
+            unitPrice: finalPrice,
+            total: finalPrice
           });
-          totalAmount += test.price;
+          totalAmount = Math.round((totalAmount + finalPrice) * 100) / 100;
         });
       }
 
-      // Create Invoice
-      const invoice = await prisma.invoice.create({
-        data: {
-          visitId: token.id,
-          patientId: patient.id,
-          status: "DRAFT", // Or PAID if payment is taken immediately
-          subtotal: totalAmount,
-          totalAmount: totalAmount,
-          lineItems: {
-            create: lineItems
-          }
-        },
-        include: { lineItems: true }
-      });
+      const discount = req.body.discount;
+      const discountAmount = Math.max(0, Math.min(totalAmount, Number(discount?.amount) || 0));
+      const finalAmount = Math.max(0, Math.round((totalAmount - discountAmount) * 100) / 100);
 
-      invoiceData = invoice;
+      if (lineItems.length > 0 && totalAmount > 0) {
+        const invoice = await prisma.invoice.create({
+          data: {
+            visitId: generatedTokens[0]?.id || "", // Associate invoice with the first primary token
+            patientId: patient.id,
+            status: bookingType === "PHONE" ? "DRAFT" : "PAID",
+            subtotal: totalAmount,
+            discountAmount: discountAmount,
+            discountType: discount?.type || null,
+            discountValue: discount?.value !== undefined ? Number(discount.value) : null,
+            discountReason: discount?.reason || null,
+            totalAmount: finalAmount,
+            lineItems: { create: lineItems },
+            ...(bookingType !== "PHONE" && {
+              payments: {
+                create: [{
+                  amount: finalAmount,
+                  method: req.body.paymentMethod || "CASH",
+                  status: "COMPLETED", shiftId: await getOpenShiftId(((req as any).user)?.id)
+                }]
+              }
+            })
+          },
+          include: { lineItems: true }
+        });
+        invoiceData = invoice;
+      }
     }
 
-
+    // --- Post Generation Hooks ---
     if (hasLab) {
-      // Import dynamically or use a service to avoid circular dependencies if any
       const { labService } = await import('../services/lab.service.js');
-      await labService.createRequest({
-        patientId: patient.id,
-        visitId: token.id,
-        testIds,
-        doctorId: doctorId || null,
-        priority: "ROUTINE"
-      });
+      const labTokens = generatedTokens.filter(t => t.department === "LAB");
+      for (const lt of labTokens) {
+        const testsForThisRoom = lt.testIds && lt.testIds.length > 0 ? lt.testIds : testIds;
+        if (testsForThisRoom && testsForThisRoom.length > 0) {
+          await labService.createRequest({
+            patientId: patient.id,
+            visitId: lt.id,
+            testIds: testsForThisRoom,
+            doctorId: doctorId || null,
+            priority: "ROUTINE",
+            customPrices: customLabPrices,
+            skipBilling: true
+          });
+        }
+      }
     }
 
     if (patientPhone && !patientPhone.startsWith('WALKIN')) {
-      let doctorDisplay = "Laboratory";
-      if (hasConsultation && hasLab) doctorDisplay = `${doctorName || "General Physician"} + Lab`;
-      else if (hasConsultation) doctorDisplay = doctorName || "General Physician";
-
       await NotificationService.sendTemplatedSMS(
         patient.id,
         patientPhone,
         'APPOINTMENT_BOOKED',
         {
           patientName: patient.fullName,
-          doctorName: doctorDisplay,
+          doctorName: generatedTokens.map(t => t.doctorName).join(", "),
           appointmentDate: new Date().toLocaleDateString(),
-          tokenNumber: tokenDisplay,
+          tokenNumber: generatedTokens.map(t => t.tokenNumber).join(", "),
           hospitalName: "AMAZ Hospital"
         }
       ).catch(console.error);
@@ -306,25 +867,23 @@ export const generateToken = async (req: Request, res: Response) => {
         const todayStr = new Date().toISOString().split('T')[0];
         const updatedAvailability = await BookingService.getAvailability(doctorId as string, todayStr as string);
         websocketService.emitToRoom(`doctor_${doctorId}_${todayStr}`, 'availability_updated', updatedAvailability);
-      } catch (e) {
-        console.error("Failed to broadcast availability update:", e);
-      }
+      } catch (e) {}
+    }
+
+    if (websocketService.getIo()) {
+      generatedTokens.forEach(t => {
+        websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: t.id });
+      });
     }
 
     res.status(201).json({
       success: true,
       data: {
-        id: token.id,
-        refNo,
-        queueNumber: tokenDisplay,
-        patientName: patient.fullName,
-        doctorName: doctorName || (hasLab ? "Laboratory" : ""),
-        department,
-        status: token.status,
+        tokens: generatedTokens, // Send all tokens to POS
         invoice: invoiceData
       }
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error generating token:", error);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -333,10 +892,10 @@ export const generateToken = async (req: Request, res: Response) => {
 export const markDoctorArrived = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { roomNumber, startTime, endTime } = req.body;
+    const { roomId, startTime, endTime } = req.body;
 
-    if (!roomNumber || roomNumber.trim() === "") {
-      return res.status(400).json({ success: false, error: "Room number is mandatory" });
+    if (!roomId || roomId.trim() === "") {
+      return res.status(400).json({ success: false, error: "Room is mandatory" });
     }
 
     
@@ -359,7 +918,7 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
         where: { id: attendance.id },
         data: {
           status: "ARRIVED",
-          roomNumber: roomNumber || null,
+          roomId: roomId || null,
           arrivedAt: attendance.arrivedAt || new Date(),
           expectedStartTime: startTime || attendance.expectedStartTime,
           expectedEndTime: endTime || attendance.expectedEndTime
@@ -371,7 +930,7 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
           doctorId: id as string,
           date: today,
           status: "ARRIVED",
-          roomNumber: roomNumber || null,
+          roomId: roomId || null,
           arrivedAt: new Date(),
           expectedStartTime: startTime || null,
           expectedEndTime: endTime || null
@@ -379,8 +938,15 @@ export const markDoctorArrived = async (req: Request, res: Response) => {
       });
     }
     
+    // Trigger SMS to waiting patients
+    try {
+      await NotificationService.triggerDoctorArrived(id as string, today);
+    } catch (e) {
+      console.error("Failed to send doctor arrived SMS notifications:", e);
+    }
+    
     res.json({ success: true, data: attendance });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error marking doctor arrived:", error);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -472,7 +1038,420 @@ export const updateShiftPeriod = async (req: Request, res: Response) => {
     
     res.json({ success: true, data: updated });
   } catch (error: any) {
-    console.error("Error updating shift period:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const checkoutAppointment = async (req: Request, res: Response) => {
+  try {
+    const { appointmentId, fee, isUpfront, discount } = req.body;
+    if (!appointmentId) {
+      return res.status(400).json({ success: false, error: "appointmentId is required" });
+    }
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id: appointmentId },
+      include: { Patient: true, User: true }
+    });
+
+    if (!appointment) {
+      return res.status(404).json({ success: false, error: "Appointment not found" });
+    }
+
+    if (appointment.status === "CANCELLED") {
+      return res.status(400).json({ success: false, error: "Cannot checkout a cancelled appointment" });
+    }
+
+    let allApptIds = [appointmentId];
+    
+    let allApptsForPatient: any[] = [];
+    if (appointment.bookingReference) {
+      allApptsForPatient = await prisma.appointment.findMany({
+        where: { 
+          bookingReference: appointment.bookingReference,
+          status: { not: "CANCELLED" }
+        }
+      });
+    } else {
+      allApptsForPatient = [appointment];
+    }
+
+    if (allApptsForPatient.length > 0) {
+      allApptIds = allApptsForPatient.map(a => a.id);
+      if (!allApptIds.includes(appointmentId)) {
+        allApptIds.push(appointmentId);
+      }
+    }
+
+    let updatedAppointment = appointment;
+
+    // Update appointment status appropriately (do not regress COMPLETED or IN_PROGRESS)
+    for (const apptId of allApptIds) {
+      const appt = allApptsForPatient.find(a => a.id === apptId) || appointment;
+      if (appt.status === "BOOKED") {
+        const newStatus = appt.department === "LAB" ? "WAITING_FOR_LAB_TEST" : "WAITING";
+        const updated = await prisma.appointment.update({
+          where: { id: apptId },
+          data: { status: newStatus }
+        });
+        if (apptId === appointmentId) {
+          updatedAppointment = updated as any;
+        }
+      }
+    }
+
+    let mergedInvoice: any = null;
+
+    await prisma.$transaction(async (tx) => {
+      let invoices = await tx.invoice.findMany({
+        where: {
+          visitId: { in: allApptIds },
+          status: "DRAFT"
+        },
+        include: { lineItems: true }
+      });
+
+      const shiftId = await getOpenShiftId(((req as any).user)?.id, tx);
+
+      // Check if this appointment already has a linked payment record
+      const existingApptPayment = await tx.payment.findUnique({
+        where: { appointmentId: appointment.id }
+      });
+      let availableApptIdForPayment: string | null = existingApptPayment ? null : appointment.id;
+
+      // Check if consultation fee was already paid
+      const existingConsultPaid = await tx.invoice.findFirst({
+        where: {
+          visitId: { in: allApptIds },
+          status: "PAID",
+          lineItems: { some: { department: "CONSULTATION" } }
+        }
+      });
+
+      const hasConsultInDraftInvoices = invoices.some((inv: any) =>
+        inv.lineItems?.some((li: any) => li.department === "CONSULTATION")
+      );
+
+      const numericFee = Number(fee) || 0;
+      const willCreateConsultInvoice = !existingConsultPaid && !hasConsultInDraftInvoices && numericFee > 0;
+
+      if (invoices.length > 0) {
+        // Pay all existing DRAFT invoices
+        for (const inv of invoices) {
+          const isConsultationInv = inv.lineItems?.some((li: any) => li.department === "CONSULTATION");
+          let linkApptId: string | null = null;
+
+          if (isConsultationInv && availableApptIdForPayment) {
+            linkApptId = availableApptIdForPayment;
+            availableApptIdForPayment = null;
+          } else if (!willCreateConsultInvoice && availableApptIdForPayment) {
+            linkApptId = availableApptIdForPayment;
+            availableApptIdForPayment = null;
+          }
+
+          const discountAmount = Math.max(0, Math.min(inv.subtotal, Number(discount?.amount) || 0));
+          const finalInvAmount = discount && discountAmount > 0 
+            ? Math.max(0, Math.round((inv.subtotal - discountAmount) * 100) / 100)
+            : inv.totalAmount;
+
+          const updatedInv = await tx.invoice.update({
+            where: { id: inv.id },
+            data: {
+              status: "PAID",
+              discountAmount,
+              discountType: discount?.type || null,
+              discountValue: discount?.value !== undefined ? Number(discount.value) : null,
+              discountReason: discount?.reason || null,
+              totalAmount: finalInvAmount,
+              payments: {
+                create: [{
+                  amount: finalInvAmount,
+                  method: req.body.paymentMethod || "CASH",
+                  status: "COMPLETED", 
+                  shiftId,
+                  ...(linkApptId ? { appointmentId: linkApptId } : {})
+                }]
+              }
+            },
+            include: { lineItems: true }
+          });
+          if (!mergedInvoice) {
+            mergedInvoice = { ...updatedInv, lineItems: [...updatedInv.lineItems] };
+          } else {
+            mergedInvoice.totalAmount += updatedInv.totalAmount;
+            mergedInvoice.lineItems.push(...updatedInv.lineItems);
+          }
+        }
+      }
+
+      if (willCreateConsultInvoice) {
+        const consultApptId = availableApptIdForPayment;
+        availableApptIdForPayment = null;
+
+        // Create a new paid invoice for consultation (upfront or post-pay)
+        const consultInvoice = await tx.invoice.create({
+          data: {
+            visitId: appointment.id,
+            patientId: appointment.patientId,
+            subtotal: numericFee,
+            totalAmount: numericFee,
+            status: "PAID",
+            payments: {
+              create: [{
+                amount: numericFee,
+                method: req.body.paymentMethod || "CASH",
+                status: "COMPLETED", 
+                shiftId,
+                ...(consultApptId ? { appointmentId: consultApptId } : {})
+              }]
+            },
+            lineItems: {
+              create: [
+                {
+                  description: `Consultation - Dr. ${appointment.User?.fullName || 'General'}`,
+                  quantity: 1,
+                  unitPrice: numericFee,
+                  total: numericFee,
+                  department: "CONSULTATION"
+                }
+              ]
+            }
+          },
+          include: { lineItems: true }
+        });
+
+        if (!mergedInvoice) {
+          mergedInvoice = consultInvoice;
+        } else {
+          mergedInvoice.totalAmount += consultInvoice.totalAmount;
+          mergedInvoice.lineItems.push(...consultInvoice.lineItems);
+        }
+      }
+    }, { timeout: 15000, maxWait: 5000 });
+
+    if (websocketService.getIo()) {
+      websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });
+    }
+
+    let allTokens = await prisma.appointment.findMany({
+      where: { id: { in: allApptIds } },
+      include: { Patient: true, User: { include: { room: true } } }
+    });
+
+    const targetDate = new Date();
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    allTokens = await Promise.all(allTokens.map(async (t) => {
+      let roomNumber = t.User?.room?.roomNumber || null;
+      if (t.doctorId) {
+        const attendance = await prisma.doctorAttendance.findFirst({
+          where: { doctorId: t.doctorId, date: { gte: startOfDay, lte: endOfDay } },
+          include: { room: true }
+        });
+        if (attendance?.room?.roomNumber) {
+          roomNumber = attendance.room.roomNumber;
+        }
+      }
+      return { ...t, roomNumber };
+    })) as any;
+
+    res.json({
+      success: true,
+      data: {
+        appointment: updatedAppointment,
+        tokens: allTokens.length > 0 ? allTokens : [appointment],
+        invoice: mergedInvoice,
+        tokenNumber: appointment.tokenNumber,
+        department: appointment.department,
+        doctorName: appointment.User?.fullName,
+        patientName: appointment.Patient?.fullName
+      }
+    });
+  } catch (error: any) {
+    console.error("Error checking out appointment:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getPOSHistory = async (req: Request, res: Response) => {
+  try {
+    const search = req.query.search as string || "";
+    
+    let patientIds: string[] = [];
+    if (search) {
+      const patients = await prisma.patient.findMany({
+        where: {
+          OR: [
+            { phone: { contains: search } },
+            { fullName: { contains: search, mode: "insensitive" } }
+          ]
+        },
+        select: { id: true }
+      });
+      patientIds = patients.map(p => p.id);
+    }
+    
+    const isTimestamp = /^\d{10}$/.test(search) && Number(search) >= 1700000000 && Number(search) <= 1950000000;
+    const timeCondition = isTimestamp ? {
+      createdAt: {
+        gte: new Date(Number(search) * 1000 - 120000),
+        lte: new Date(Number(search) * 1000 + 120000)
+      }
+    } : null;
+
+    const invoices = await prisma.invoice.findMany({
+      where: search ? {
+        OR: [
+          { id: { contains: search, mode: "insensitive" } },
+          ...(patientIds.length > 0 ? [{ patientId: { in: patientIds } }] : []),
+          ...(timeCondition ? [timeCondition] : [])
+        ]
+      } : undefined,
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: {
+        lineItems: true
+      }
+    });
+
+    const appointments = await prisma.appointment.findMany({
+      where: search ? {
+        OR: [
+          { id: { contains: search, mode: "insensitive" } },
+          { bookingReference: { contains: search, mode: "insensitive" } },
+          { tokenNumber: { contains: search, mode: "insensitive" } },
+          ...(patientIds.length > 0 ? [{ patientId: { in: patientIds } }] : []),
+          ...(timeCondition ? [{ appointmentDate: timeCondition.createdAt }] : [])
+        ]
+      } : undefined,
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: {
+        User: { select: { fullName: true } },
+        Patient: true
+      }
+    });
+
+    const timelineItems: any[] = [];
+
+    invoices.forEach(inv => {
+      timelineItems.push({
+        type: "INVOICE",
+        id: inv.id,
+        createdAt: inv.createdAt,
+        patientId: inv.patientId,
+        totalAmount: inv.totalAmount,
+        status: inv.status,
+        lineItems: inv.lineItems,
+        visitId: inv.visitId
+      });
+    });
+
+    appointments.forEach(apt => {
+      timelineItems.push({
+        type: "TOKEN",
+        id: apt.id,
+        createdAt: apt.createdAt,
+        patientId: apt.patientId,
+        tokenNumber: apt.tokenNumber,
+        department: apt.department,
+        status: apt.status,
+        doctorName: apt.User?.fullName,
+        bookingReference: apt.bookingReference
+      });
+    });
+
+    timelineItems.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const allPatientIds = Array.from(new Set(timelineItems.map(i => i.patientId).filter(id => id !== null))) as string[];
+    const patientsMap = new Map();
+    if (allPatientIds.length > 0) {
+      const pats = await prisma.patient.findMany({
+        where: { id: { in: allPatientIds } }
+      });
+      pats.forEach(p => patientsMap.set(p.id, p));
+    }
+
+    const data = timelineItems.map(item => ({
+      ...item,
+      Patient: item.patientId ? patientsMap.get(item.patientId) || null : null
+    }));
+
+    // Limit to 100 overall
+    res.json({ success: true, data: data.slice(0, 100) });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
+  try {
+    const { declaredCash } = req.body;
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+    
+    const shift = await prisma.cashRegisterShift.findFirst({
+      where: { openedBy: user.id, status: "OPEN" }
+    });
+
+    if (!shift) return res.status(400).json({ error: "No open shift found." });
+    
+    const payments = await prisma.payment.findMany({
+      where: { shiftId: shift.id, status: "COMPLETED" }
+    });
+
+    let systemCashTotal = 0;
+    let systemCardTotal = 0;
+
+    payments.forEach(payment => {
+      if (payment.method === "CASH") systemCashTotal += payment.amount;
+      if (payment.method === "CARD" || payment.method === "BANK" || payment.method === "QR") systemCardTotal += payment.amount;
+    });
+
+    const expectedCash = shift.openingFloat + systemCashTotal;
+    const variance = Number(declaredCash) - expectedCash;
+
+    await prisma.cashRegisterShift.update({
+      where: { id: shift.id },
+      data: {
+        closedAt: new Date(),
+        status: "CLOSED",
+        expectedCash,
+        actualCash: Number(declaredCash),
+        variance
+      }
+    });
+
+    // Run lifecycle cleanup for any past uncompleted tokens
+    await expirePastTokens();
+
+    // Clear not arrived tokens up to end of today
+    const { endOfDay } = getTimezoneBoundaries();
+
+    await prisma.appointment.updateMany({
+      where: {
+        appointmentDate: { lte: endOfDay },
+        status: { in: ["BOOKED", "WAITING", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
+      },
+      data: {
+        status: "NO_SHOW"
+      }
+    });
+
+    const summary = {
+      totalInvoices: payments.length, // approximation
+      systemCashTotal,
+      systemCardTotal,
+      declaredCash: Number(declaredCash),
+      expectedCash,
+      variance
+    };
+
+    res.json({ success: true, data: summary });
+  } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
 };

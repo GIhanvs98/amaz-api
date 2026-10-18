@@ -1,20 +1,59 @@
-import { prisma, withRetry } from '../lib/prisma';
+import { prisma, withRetry } from "../lib/prisma.js";
+import { BillingService } from "./billing.service.js";
+
+const billingService = new BillingService();
 
 export class PharmacyService {
-  async getAllMedicines(barcode?: string) {
-    const whereClause = barcode ? { barcode } : {};
-    return withRetry(() => prisma.medicine.findMany({
-      where: whereClause,
-      include: {
-        stockBatches: {
-          where: { currentQuantity: { gt: 0 } },
-          orderBy: { expiryDate: 'asc' },
+  async getAllMedicines(searchTerm?: string, page: number = 1, limit: number = 50) {
+    const whereClause: any = { isActive: true };
+    if (searchTerm) {
+      whereClause.OR = [
+        { name: { contains: searchTerm, mode: 'insensitive' } },
+        { genericName: { contains: searchTerm, mode: 'insensitive' } },
+        { barcode: { contains: searchTerm, mode: 'insensitive' } },
+        { category: { contains: searchTerm, mode: 'insensitive' } },
+      ];
+    }
+    
+    const skip = (page - 1) * limit;
+    
+    const [data, total] = await Promise.all([
+      withRetry(() => prisma.medicine.findMany({
+        where: whereClause,
+        include: {
+          stockBatches: {
+            where: { currentQuantity: { gt: 0 } },
+            orderBy: { expiryDate: 'asc' },
+          },
         },
-      },
-    }));
+        skip,
+        take: limit
+      })),
+      withRetry(() => prisma.medicine.count({ where: whereClause }))
+    ]);
+    
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
   }
 
-  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; form: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number }) {
+  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; itemType?: string; form?: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number; expiryDate?: Date }) {
+    const existingName = await prisma.medicine.findFirst({
+      where: { name: { equals: data.name, mode: 'insensitive' } }
+    });
+    if (existingName) {
+      const err = new Error(`An item with the name "${data.name}" already exists in the inventory.`);
+      (err as any).code = 'ALREADY_EXISTS';
+      (err as any).itemId = existingName.id;
+      throw err;
+    }
+    
     return withRetry(() => prisma.$transaction(async (tx) => {
       const medicine = await tx.medicine.create({
         data: {
@@ -22,6 +61,7 @@ export class PharmacyService {
           barcode: data.barcode,
           genericName: data.genericName,
           category: data.category,
+          itemType: data.itemType || "MEDICINE",
           form: data.form,
           unit: data.unit,
           reorderLevel: data.reorderLevel,
@@ -33,7 +73,7 @@ export class PharmacyService {
           data: {
             medicineId: medicine.id,
             batchNumber: `INIT-${Date.now()}`,
-            expiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1)), // 1 year from now
+            expiryDate: data.expiryDate || null,
             initialQuantity: data.baseStock,
             currentQuantity: data.baseStock,
             unitPrice: data.basePrice || 0,
@@ -46,24 +86,36 @@ export class PharmacyService {
   }
 
   // --- INVENTORY MANAGEMENT ---
-  async addStockBatch(data: { medicineId: string; batchNumber: string; expiryDate: Date; initialQuantity: number; unitPrice: number }) {
+  async addStockBatch(data: { medicineId: string; batchNumber: string; expiryDate?: Date; initialQuantity: number; unitPrice: number }) {
     return withRetry(() => prisma.stockBatch.create({
       data: {
         ...data,
+        expiryDate: data.expiryDate || null,
         currentQuantity: data.initialQuantity,
       },
     }));
   }
 
   // --- DISPENSING ENGINE (FIFO LOGIC) ---
-  async dispenseMedicine(medicineId: string, quantityToDispense: number) {
-    return withRetry(() => prisma.$transaction(async (tx) => {
+  async dispenseMedicine(
+    medicineId: string, 
+    quantityToDispense: number,
+    billingInfo?: { visitId?: string; patientId?: string; description?: string, skipBilling?: boolean },
+    existingTx?: any
+  ) {
+    const executeLogic = async (tx: any) => {
+      // Lock all batches for this medicine to serialize concurrent dispensing
+      await tx.$executeRaw`SELECT id FROM "StockBatch" WHERE "medicineId" = ${medicineId} FOR UPDATE`;
+
       // 1. Get all available unexpired stock batches for this medicine, ordered by expiry date (FIFO)
       const availableBatches = await tx.stockBatch.findMany({
         where: {
           medicineId,
           currentQuantity: { gt: 0 },
-          expiryDate: { gt: new Date() }, // Don't dispense expired meds
+          OR: [
+            { expiryDate: null },
+            { expiryDate: { gt: new Date() } }
+          ]
         },
         orderBy: {
           expiryDate: 'asc', // Oldest expiry first
@@ -71,7 +123,7 @@ export class PharmacyService {
       });
 
       // 2. Check if we have enough total stock
-      const totalAvailable = availableBatches.reduce((sum, b) => sum + b.currentQuantity, 0);
+      const totalAvailable = availableBatches.reduce((sum: number, b: any) => sum + b.currentQuantity, 0);
       if (totalAvailable < quantityToDispense) {
         throw new Error(`Insufficient stock. Requested: ${quantityToDispense}, Available: ${totalAvailable}`);
       }
@@ -100,21 +152,47 @@ export class PharmacyService {
         remainingToDispense -= quantityFromThisBatch;
       }
 
+      if (billingInfo && !billingInfo.skipBilling && (billingInfo.visitId || billingInfo.patientId)) {
+        const totalCost = batchesUsed.reduce((sum: number, b: any) => sum + (b.quantityDispensed * b.unitPrice), 0);
+        if (totalCost > 0) {
+          await billingService.addCharge({
+            visitId: billingInfo.visitId,
+            patientId: billingInfo.patientId,
+            department: 'PHARMACY',
+            referenceId: medicineId,
+            description: billingInfo.description || 'Pharmacy Medication',
+            quantity: 1,
+            unitPrice: totalCost
+          }, tx);
+        }
+      }
+
       return {
         success: true,
         message: `Successfully dispensed ${quantityToDispense} units.`,
         batchesUsed,
+        totalCost: batchesUsed.reduce((sum, b) => sum + (b.quantityDispensed * b.unitPrice), 0)
       };
-    }));
+    };
+
+    if (existingTx) return executeLogic(existingTx);
+    return withRetry(() => prisma.$transaction(executeLogic));
   }
 
   // --- ALERTS ---
   async getLowStockAlerts() {
     return withRetry(async () => {
       const medicines = await prisma.medicine.findMany({
+        where: { isActive: true },
         include: {
           stockBatches: {
-            where: { currentQuantity: { gt: 0 }, expiryDate: { gt: new Date() } },
+            where: { 
+              currentQuantity: { gt: 0 },
+              OR: [
+                { expiryDate: null },
+                { expiryDate: { gt: new Date() } }
+              ]
+            },
           },
         },
       });
@@ -149,6 +227,52 @@ export class PharmacyService {
     });
   }
 
+  /**
+   * [P1 Fix] Get stock that has ALREADY expired (Ghost Inventory detection)
+   */
+  async getExpiredStock() {
+    return withRetry(() => prisma.stockBatch.findMany({
+      where: {
+        currentQuantity: { gt: 0 },
+        expiryDate: { lte: new Date() }
+      },
+      include: { medicine: true },
+      orderBy: { expiryDate: 'asc' }
+    }));
+  }
+
+  /**
+   * [P1 Fix] Write off expired / damaged stock, zeroing quantity and logging a loss
+   */
+  async writeOffBatch(batchId: string, reason: string, performedBy: string) {
+    return withRetry(() => prisma.$transaction(async (tx) => {
+      const batch = await tx.stockBatch.findUnique({ where: { id: batchId } });
+      if (!batch) throw new Error('Batch not found');
+      if (batch.currentQuantity === 0) throw new Error('Batch already at zero quantity');
+
+      const writtenOffQty = batch.currentQuantity;
+      const lossValue = writtenOffQty * batch.unitPrice;
+
+      await tx.stockBatch.update({
+        where: { id: batchId },
+        data: { currentQuantity: 0 }
+      });
+
+      // Log the write-off as an expense
+      await tx.expense.create({
+        data: {
+          category: 'INVENTORY_WRITEOFF',
+          description: `Stock Write-Off: Batch ${batch.batchNumber} - ${reason}`,
+          amount: lossValue,
+          date: new Date(),
+          performedBy
+        }
+      });
+
+      return { success: true, writtenOffQty, lossValue };
+    }));
+  }
+
   async getMetrics() {
     return withRetry(async () => {
       const today = new Date();
@@ -165,7 +289,15 @@ export class PharmacyService {
         }
       });
 
-      const allMedicines = await this.getAllMedicines();
+      const allMedicines = await prisma.medicine.findMany({
+        where: { isActive: true },
+        select: {
+          reorderLevel: true,
+          stockBatches: {
+            select: { currentQuantity: true }
+          }
+        }
+      });
       let lowStockItems = 0;
       allMedicines.forEach((med: any) => {
         const stock = med.stockBatches.reduce((sum: number, b: any) => sum + b.currentQuantity, 0);
@@ -200,6 +332,37 @@ export class PharmacyService {
         recentPrescriptions
       };
     });
+  }
+
+  async updateMedicine(id: string, data: { name?: string; genericName?: string; category?: string; form?: string; unit?: string; reorderLevel?: number; barcode?: string }) {
+    if (data.name) {
+      const existingName = await prisma.medicine.findFirst({
+        where: { name: { equals: data.name, mode: 'insensitive' }, id: { not: id } }
+      });
+      if (existingName) {
+        const err = new Error(`An item with the name "${data.name}" already exists in the inventory.`);
+        (err as any).code = 'ALREADY_EXISTS';
+        (err as any).itemId = existingName.id;
+        throw err;
+      }
+    }
+    
+    return withRetry(() => prisma.medicine.update({
+      where: { id },
+      data
+    }));
+  }
+
+  async deleteMedicine(id: string) {
+    // Check if medicine has active stock batches
+    const batches = await prisma.stockBatch.findMany({
+      where: { medicineId: id, currentQuantity: { gt: 0 } }
+    });
+    if (batches.length > 0) {
+      throw new Error("Cannot delete medicine with active stock. Deplete or adjust stock first.");
+    }
+    // Soft delete
+    return prisma.medicine.update({ where: { id }, data: { isActive: false } });
   }
 }
 

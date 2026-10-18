@@ -60,7 +60,7 @@ export const getDoctorsTodayStatus = async (req: Request, res: Response) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     const doctors = await prisma.user.findMany({
-      where: { Role: { name: "DOCTOR" } },
+      where: { Role: { name: "Doctor" } },
       select: {
         id: true,
         fullName: true,

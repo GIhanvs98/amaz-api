@@ -1,5 +1,8 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
+import bcrypt from "bcryptjs";
+import { clearCache } from "../middlewares/cache.middleware.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 
 export const getAdminMetrics = async (req: Request, res: Response) => {
   try {
@@ -7,16 +10,26 @@ export const getAdminMetrics = async (req: Request, res: Response) => {
     
     // Count active doctors (anyone with specialty)
     const activeDoctors = await prisma.user.count({
-      where: { specialty: { not: null } }
+      where: { specialty: { not: null }, isActive: true }
     });
 
     const activePatients = await prisma.patient.count();
+    const { startOfDay } = getTimezoneBoundaries();
 
-    const payments = await prisma.payment.aggregate({
-      where: { status: "COMPLETED" },
-      _sum: { amount: true }
-    });
-    const revenue = payments._sum.amount || 0;
+    const [payments, refunds] = await Promise.all([
+      prisma.payment.aggregate({
+        where: { status: { in: ["COMPLETED", "REFUNDED"] } },
+        _sum: { amount: true }
+      }),
+      prisma.refund.aggregate({
+        where: { status: "COMPLETED" },
+        _sum: { amount: true }
+      })
+    ]);
+
+    const grossRevenue = payments._sum.amount || 0;
+    const totalRefunds = refunds._sum.amount || 0;
+    const revenue = grossRevenue - totalRefunds;
 
     const revenueGrowth = 12.5;
     const systemAlerts = [
@@ -51,7 +64,8 @@ export const getAdminMetrics = async (req: Request, res: Response) => {
 export const getStaff = async (req: Request, res: Response) => {
   try {
     const staff = await prisma.user.findMany({
-      include: { Role: true },
+      where: { isActive: true },
+      include: { Role: true, Department: true, room: true, EmployeeProfile: { include: { deviceMapping: true } } },
       orderBy: { createdAt: 'desc' }
     });
     
@@ -60,9 +74,16 @@ export const getStaff = async (req: Request, res: Response) => {
       name: s.fullName,
       email: s.email,
       role: s.Role.name,
-      status: "ACTIVE", // Mocked as active since there's no status field
-      roomNumber: s.roomNumber,
-      specialty: s.specialty
+      status: s.isActive ? "ACTIVE" : "INACTIVE",
+      roomId: s.roomId,
+      roomNumber: s.room?.roomNumber || null,
+      specialty: s.specialty,
+      title: s.title,
+      departmentId: s.departmentId,
+      departmentName: s.Department?.name,
+      consultationFee: s.consultationFee,
+      feeType: s.feeType,
+      deviceUserId: s.EmployeeProfile?.deviceMapping?.deviceUserId || null
     }));
     
     res.json({ data: formattedStaff });
@@ -73,28 +94,72 @@ export const getStaff = async (req: Request, res: Response) => {
 
 export const createStaff = async (req: Request, res: Response) => {
   try {
-    const { name, email, password, roleName, specialty, roomNumber } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, deviceUserId } = req.body;
     
-    // Find or create role
+    if (!name || !email || !password || !roleName) {
+      return res.status(400).json({ success: false, error: "Name, email, password, and roleName are required" });
+    }
+
+    // Find role
     let role = await prisma.role.findUnique({ where: { name: roleName } });
     if (!role) {
-      role = await prisma.role.create({ data: { name: roleName } });
+      return res.status(400).json({ success: false, error: "Role not found" });
     }
+
+    if (departmentId && role.name.toUpperCase() !== 'DOCTOR') {
+      return res.status(400).json({ success: false, error: "Only Doctors can be assigned to a department" });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
     const newStaff = await prisma.user.create({
       data: {
         fullName: name,
         email,
-        password, // In a real app, hash this
+        password: hashedPassword,
         roleId: role.id,
         specialty: specialty || null,
-        roomNumber: roomNumber || null
+        roomId: roomId || null,
+        title: title || null,
+        departmentId: departmentId || null,
+        consultationFee: consultationFee ? parseFloat(consultationFee) : null,
+        feeType: feeType || "POST"
       },
-      include: { Role: true }
+      include: { Role: true, Department: true }
     });
+
+    if (deviceUserId) {
+      const profile = await prisma.employeeProfile.create({
+        data: {
+          userId: newStaff.id,
+          employmentType: "FULL_TIME",
+          salaryBasis: "MONTHLY",
+          joiningDate: new Date(),
+          paymentMethod: "BANK_TRANSFER"
+        }
+      });
+      await prisma.deviceUserMapping.create({
+        data: {
+          deviceUserId,
+          employeeId: profile.id
+        }
+      });
+    }
+
+    await clearCache("/api/admin/staff");
+    if (roleName.toUpperCase() === 'DOCTOR') {
+      await clearCache("/api/admin/doctors");
+      await clearCache("/api/reception/doctors");
+      await clearCache("/api/booking/doctors");
+      await clearCache("*departments*");
+    }
 
     res.json({ success: true, data: newStaff });
   } catch (error: any) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ success: false, error: "User with this email already exists" });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -102,33 +167,87 @@ export const createStaff = async (req: Request, res: Response) => {
 export const updateStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, email, password, roleName, specialty, roomNumber } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, deviceUserId } = req.body;
     
     let roleId;
+    let foundRoleName;
     if (roleName) {
       let role = await prisma.role.findUnique({ where: { name: roleName } });
       if (!role) {
-        role = await prisma.role.create({ data: { name: roleName } });
+        return res.status(400).json({ success: false, error: "Role not found" });
       }
       roleId = role.id;
+      foundRoleName = role.name;
+    } else if (departmentId !== undefined) {
+       // if we are updating departmentId, we need to make sure the user is currently a doctor
+       const existingUser = await prisma.user.findUnique({ where: { id: id as string }, include: { Role: true }});
+       if (existingUser) foundRoleName = existingUser.Role.name;
+    }
+
+    if (departmentId && foundRoleName?.toUpperCase() !== 'DOCTOR') {
+      return res.status(400).json({ success: false, error: "Only Doctors can be assigned to a department" });
     }
 
     const data: any = {};
     if (name) data.fullName = name;
     if (email) data.email = email;
-    if (password) data.password = password;
+    if (password) {
+      const salt = await bcrypt.genSalt(10);
+      data.password = await bcrypt.hash(password, salt);
+    }
     if (roleId) data.roleId = roleId;
     if (specialty !== undefined) data.specialty = specialty || null;
-    if (roomNumber !== undefined) data.roomNumber = roomNumber || null;
+    if (roomId !== undefined) data.roomId = roomId || null;
+    if (title !== undefined) data.title = title || null;
+    if (departmentId !== undefined) data.departmentId = departmentId || null;
+    if (consultationFee !== undefined) data.consultationFee = consultationFee ? parseFloat(consultationFee) : null;
+    if (feeType !== undefined) data.feeType = feeType || "POST";
 
     const updatedStaff = await prisma.user.update({
       where: { id: id as string },
       data,
-      include: { Role: true }
+      include: { Role: true, Department: true, EmployeeProfile: { include: { deviceMapping: true } } }
     });
+
+    if (deviceUserId !== undefined) {
+      let profile = updatedStaff.EmployeeProfile;
+      if (!profile) {
+        profile = await prisma.employeeProfile.create({
+          data: {
+            userId: id as string,
+            employmentType: "FULL_TIME",
+            salaryBasis: "MONTHLY",
+            joiningDate: new Date(),
+            paymentMethod: "BANK_TRANSFER"
+          },
+          include: { deviceMapping: true }
+        });
+      }
+
+      if (deviceUserId === "") {
+        if (profile.deviceMapping) {
+          await prisma.deviceUserMapping.delete({ where: { employeeId: profile.id } });
+        }
+      } else {
+        await prisma.deviceUserMapping.upsert({
+          where: { employeeId: profile.id },
+          create: { deviceUserId, employeeId: profile.id },
+          update: { deviceUserId }
+        });
+      }
+    }
+
+    await clearCache("/api/admin/staff");
+    await clearCache("/api/admin/doctors");
+    await clearCache("/api/reception/doctors");
+    await clearCache("/api/booking/doctors");
+    await clearCache("*departments*");
 
     res.json({ success: true, data: updatedStaff });
   } catch (error: any) {
+    if (error.code === 'P2002') {
+      return res.status(400).json({ success: false, error: "User with this email already exists" });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -136,8 +255,227 @@ export const updateStaff = async (req: Request, res: Response) => {
 export const deleteStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    await prisma.user.delete({ where: { id: id as string } });
+    await prisma.user.update({ where: { id: id as string }, data: { isActive: false } });
+
+    await clearCache("/api/admin/staff");
+    await clearCache("/api/admin/doctors");
+    await clearCache("/api/reception/doctors");
+    await clearCache("/api/booking/doctors");
+    await clearCache("*departments*");
+
     res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getRoles = async (req: Request, res: Response) => {
+  try {
+    const roles = await prisma.role.findMany({
+      include: {
+        RolePermission: {
+          include: {
+            Permission: true
+          }
+        }
+      }
+    });
+    res.json({ success: true, data: roles });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const createRole = async (req: Request, res: Response) => {
+  try {
+    const { name, description } = req.body;
+    const role = await prisma.role.create({
+      data: {
+        name: name.toUpperCase(),
+        description
+      }
+    });
+    await clearCache('*roles*');
+    res.json({ success: true, data: role });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const updateRolePermissions = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { permissions } = req.body; // array of { action, resource }
+    const userRole = (req as any).user?.role;
+
+    const roleToUpdate = await prisma.role.findUnique({ where: { id: id as string } });
+    if (!roleToUpdate) return res.status(404).json({ error: "Role not found" });
+
+    if (roleToUpdate.name === 'SUPERADMIN' && userRole !== 'SUPERADMIN') {
+       return res.status(403).json({ error: "Cannot modify SUPERADMIN role permissions" });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.rolePermission.deleteMany({
+        where: { roleId: id as string }
+      });
+
+      for (const p of permissions) {
+        let perm = await tx.permission.findFirst({
+          where: { action: p.action, resource: p.resource }
+        });
+        if (!perm) {
+          perm = await tx.permission.create({
+            data: { action: p.action, resource: p.resource }
+          });
+        }
+        await tx.rolePermission.create({
+          data: {
+            roleId: id as string,
+            permissionId: perm.id
+          }
+        });
+      }
+    });
+
+    await clearCache('*roles*');
+    res.json({ success: true, message: "Permissions updated" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getRooms = async (req: Request, res: Response) => {
+  try {
+    const rooms = await prisma.room.findMany({
+      orderBy: { roomNumber: 'asc' }
+    });
+    
+    const formattedRooms = rooms.map(r => ({
+      id: r.id,
+      name: r.roomNumber, // Frontend expects name
+      roomNumber: r.roomNumber,
+      department: r.department || "General",
+      status: r.status
+    }));
+    
+    res.json({ success: true, data: formattedRooms });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getRoomSchedules = async (req: Request, res: Response) => {
+  try {
+    const roomId = req.params.id as string;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
+    
+    if (!startDate || !endDate) {
+       return res.status(400).json({ success: false, error: "Missing date range" });
+    }
+
+    const startStr = (startDate as string).includes('T') ? (startDate as string).split('T')[0] : (startDate as string);
+    const endStr = (endDate as string).includes('T') ? (endDate as string).split('T')[0] : (endDate as string);
+
+    const start = new Date(`${startStr}T00:00:00`);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(`${endStr}T00:00:00`);
+    end.setHours(23, 59, 59, 999);
+
+    const room = await prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) return res.status(404).json({ success: false, error: "Room not found" });
+
+    // Sessions specifically assigned to this room, OR assigned to doctors who have this room as default (and no specific session room)
+    const sessions = await prisma.doctorScheduleSession.findMany({
+      where: {
+        OR: [
+          { roomId: roomId },
+          { roomId: null, schedule: { doctor: { roomId: roomId } } }
+        ],
+        isActive: true,
+      },
+      include: {
+        schedule: {
+          include: {
+            doctor: { select: { fullName: true } },
+            exceptions: {
+              where: {
+                exceptionDate: { gte: start, lte: end }
+              }
+            },
+            leaves: {
+              where: {
+                status: "APPROVED",
+                startDate: { lte: end },
+                endDate: { gte: start }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    const results = [];
+    
+    let currentDate = new Date(start);
+    while (currentDate <= end) {
+      const dayIndex = currentDate.getDay(); // 0=Sun, 1=Mon...
+      const isoDate = currentDate.toLocaleDateString('en-CA', { timeZone: 'Asia/Colombo' });
+      
+      const daySessions = sessions.filter(s => s.dayOfWeek === dayIndex);
+      
+      for (const s of daySessions) {
+         const validFrom = new Date(s.schedule.validFrom);
+         validFrom.setHours(0, 0, 0, 0);
+         if (currentDate < validFrom) continue;
+         
+         if (s.schedule.validUntil) {
+            const validUntil = new Date(s.schedule.validUntil);
+            validUntil.setHours(23, 59, 59, 999);
+            if (currentDate > validUntil) continue;
+         }
+
+         // Check leave
+         const onLeave = s.schedule.leaves?.some(l => {
+           const lStart = new Date(l.startDate);
+           lStart.setHours(0, 0, 0, 0);
+           const lEnd = new Date(l.endDate);
+           lEnd.setHours(23, 59, 59, 999);
+           return currentDate >= lStart && currentDate <= lEnd;
+         });
+         if (onLeave) continue;
+
+         // Check exceptions
+         const exception = s.schedule.exceptions?.find(e => {
+           const eDate = new Date(e.exceptionDate).toLocaleDateString('en-CA', { timeZone: 'Asia/Colombo' });
+           return eDate === isoDate;
+         });
+         if (exception?.isUnavailable) continue;
+         
+         results.push({
+            id: s.id + '-' + isoDate, // unique id for table key
+            date: isoDate,
+            dayOfWeek: dayIndex,
+            startTime: exception?.newStartTime || s.startTime,
+            endTime: exception?.newEndTime || s.endTime,
+            sessionName: s.sessionName,
+            doctorName: s.schedule.doctor.fullName
+         });
+      }
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    
+    // Sort by date then startTime
+    results.sort((a, b) => {
+      const dateA = a.date || "";
+      const dateB = b.date || "";
+      if (dateA !== dateB) return dateA.localeCompare(dateB);
+      return (a.startTime || "").localeCompare(b.startTime || "");
+    });
+
+    res.json({ success: true, data: results });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

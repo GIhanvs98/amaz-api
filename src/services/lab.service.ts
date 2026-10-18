@@ -1,5 +1,9 @@
 import { billingService } from './billing.service.js';
 import { prisma as sharedPrisma, withRetry } from '../lib/prisma.js';
+import { NotificationService } from './notification.service.js';
+import { websocketService } from './websocket.service.js';
+import { S3Service } from './s3.service.js';
+import { getTimezoneBoundaries } from '../lib/dateUtils.js';
 
 // Use shared singleton to avoid multiple connection pools
 const prisma = sharedPrisma;
@@ -11,6 +15,11 @@ export class LabService {
   async getCatalog() {
     return withRetry(() => prisma.labTest.findMany({
       where: { isActive: true },
+      include: {
+        room: {
+          select: { id: true, roomNumber: true, department: true }
+        }
+      },
       orderBy: { category: 'asc' }
     }));
   }
@@ -24,8 +33,75 @@ export class LabService {
     category: string;
     price: number;
     sampleType?: string;
+    roomId?: string;
+    roomNumber?: string;
   }) {
-    return withRetry(() => prisma.labTest.create({ data }));
+    let targetRoomId = data.roomId;
+    if (!targetRoomId && data.roomNumber) {
+      const room = await prisma.room.findFirst({ where: { roomNumber: data.roomNumber } });
+      if (room) targetRoomId = room.id;
+    }
+
+    return withRetry(() => prisma.labTest.create({
+      data: {
+        name: data.name,
+        code: data.code,
+        category: data.category,
+        price: data.price,
+        sampleType: data.sampleType,
+        roomId: targetRoomId || undefined
+      },
+      include: {
+        room: {
+          select: { id: true, roomNumber: true, department: true }
+        }
+      }
+    }));
+  }
+
+  async updateTestInCatalog(id: string, data: {
+    name?: string;
+    code?: string;
+    price?: number;
+    category?: string;
+    sampleType?: string;
+    roomId?: string;
+    roomNumber?: string;
+    isActive?: boolean;
+  }) {
+    const updateData: any = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.code !== undefined) updateData.code = data.code;
+    if (data.price !== undefined) updateData.price = data.price;
+    if (data.category !== undefined) updateData.category = data.category;
+    if (data.sampleType !== undefined) updateData.sampleType = data.sampleType;
+    if (data.isActive !== undefined) updateData.isActive = data.isActive;
+
+    if (data.roomId !== undefined) {
+      updateData.roomId = data.roomId || null;
+    } else if (data.roomNumber !== undefined) {
+      if (data.roomNumber) {
+        const room = await prisma.room.findFirst({ where: { roomNumber: data.roomNumber } });
+        updateData.roomId = room ? room.id : null;
+      } else {
+        updateData.roomId = null;
+      }
+    }
+
+    return withRetry(() => prisma.labTest.update({
+      where: { id },
+      data: updateData,
+      include: {
+        room: {
+          select: { id: true, roomNumber: true, department: true }
+        }
+      }
+    }));
+  }
+
+  async deleteTestFromCatalog(id: string) {
+    // Soft delete: mark as inactive
+    return withRetry(() => prisma.labTest.update({ where: { id }, data: { isActive: false } }));
   }
 
   /**
@@ -33,11 +109,14 @@ export class LabService {
    */
   async resolvePatient(phone: string, name: string): Promise<string> {
     return withRetry(async () => {
-      const patient = await prisma.patient.upsert({
-        where: { phone },
-        update: {},
-        create: { phone, fullName: name }
+      let patient = await prisma.patient.findFirst({
+        where: { phone, fullName: name }
       });
+      if (!patient) {
+        patient = await prisma.patient.create({
+          data: { phone, fullName: name }
+        });
+      }
       return patient.id;
     });
   }
@@ -52,6 +131,8 @@ export class LabService {
     testIds: string[];
     doctorId?: string;
     priority?: string;
+    customPrices?: Record<string, number>;
+    skipBilling?: boolean;
   }) {
     return withRetry(async () => {
       // Verify tests exist to get prices
@@ -63,18 +144,35 @@ export class LabService {
         throw new Error("One or more tests not found in catalog");
       }
 
+      let effectiveDoctorId = data.doctorId;
+      if (!effectiveDoctorId && data.visitId) {
+        const apt = await prisma.appointment.findUnique({
+          where: { id: data.visitId },
+          select: { doctorId: true }
+        });
+        if (apt?.doctorId) effectiveDoctorId = apt.doctorId;
+      }
+
       // 1. Create the lab request with items
       const request = await prisma.labRequest.create({
         data: {
           patientId: data.patientId,
-          doctorId: data.doctorId,
+          doctorId: effectiveDoctorId,
+          visitId: data.visitId,
           priority: data.priority || "ROUTINE",
           status: "PENDING",
           items: {
-            create: tests.map(test => ({
-              labTestId: test.id,
-              price: test.price
-            }))
+            create: tests.map(test => {
+              const finalPrice = data.customPrices && data.customPrices[test.id] !== undefined 
+                ? Number(data.customPrices[test.id]) 
+                : test.price;
+              
+              if (finalPrice < 0) throw new Error("Price cannot be negative");
+              return {
+                labTestId: test.id,
+                price: finalPrice
+              };
+            })
           }
         },
         include: {
@@ -82,22 +180,27 @@ export class LabService {
         }
       });
 
-      // 2. Add the charge to the centralized billing engine
-      if (data.visitId || data.patientId) {
-        // Create separate charges for each test
-        for (const test of tests) {
-          await billingService.addCharge({
-            visitId: data.visitId,
-            patientId: data.patientId,
-            department: 'LAB',
-            referenceId: request.id,
-            description: `Lab Test: ${test.name}`,
-            quantity: 1,
-            unitPrice: test.price
-          });
-        }
+      // 2. Add all charges atomically using bulk billing
+      if (!data.skipBilling && (data.visitId || data.patientId)) {
+        await billingService.addChargesBulk({
+          visitId: data.visitId,
+          patientId: data.patientId,
+          charges: tests.map(test => {
+            const finalPrice = data.customPrices && data.customPrices[test.id] !== undefined
+              ? Number(data.customPrices[test.id])
+              : test.price;
+            return {
+              department: 'LAB',
+              referenceId: request.id,
+              description: `Lab Test: ${test.name}`,
+              quantity: 1,
+              unitPrice: finalPrice
+            };
+          })
+        });
       }
 
+      websocketService.broadcast("lab_request_created", request);
       return request;
     });
   }
@@ -105,12 +208,20 @@ export class LabService {
   /**
    * Get pending lab requests for the technicians
    */
-  async getPendingRequests() {
+  async getPendingRequests(doctorId?: string) {
     return withRetry(() => prisma.labRequest.findMany({
-      where: { status: "PENDING" },
+      where: doctorId
+        ? {
+            status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] },
+            OR: [
+              { doctorId },
+              { Visit: { doctorId } }
+            ]
+          }
+        : { status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } },
       include: {
         items: {
-          include: { LabTest: true }
+          include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } }, room: true } } }
         },
         Patient: true,
         Visit: {
@@ -124,25 +235,61 @@ export class LabService {
   /**
    * Submit biomarker results for a specific request
    */
-  async submitResults(requestId: string, results: { biomarker: string; value: string; isOutOfRange: boolean; notes?: string }[], reportUrl?: string) {
+  async submitResults(requestId: string, results: { biomarker: string; value: string; flag?: string; referenceRange?: string; isOutOfRange: boolean; notes?: string }[], reportUrl?: string) {
     return withRetry(() => prisma.$transaction(async (tx) => {
-      // 1. Mark request as completed
+      // 1. Mark request as SAVED (has results but not finalized/published)
       const request = await tx.labRequest.update({
         where: { id: requestId },
-        data: { status: "COMPLETED", reportUrl: reportUrl || null }
+        data: { status: "SAVED", reportUrl: reportUrl || null }
       });
 
-      // 2. Insert all results
+      // 2. Delete old results if re-submitting
+      await tx.labResult.deleteMany({ where: { requestId } });
+
+      // 3. Fetch canonical biomarker definitions for server-side validation
+      const labReq = await tx.labRequest.findUnique({
+        where: { id: requestId },
+        include: { items: { include: { LabTest: { include: { biomarkers: true } } } } }
+      });
+
+      const biomarkerMap = new Map<string, any>();
+      labReq?.items.forEach(item => {
+        item.LabTest.biomarkers.forEach((bm: any) => {
+          biomarkerMap.set(bm.name.toLowerCase().trim(), bm);
+        });
+      });
+
+      // Helper to compute flag server-side from reference range
+      const computeFlag = (value: string, refRange: string): { flag: string; isOutOfRange: boolean } => {
+        const numVal = parseFloat(value);
+        if (isNaN(numVal) || !refRange) return { flag: 'N', isOutOfRange: false };
+        const rangeMatch = refRange.match(/^([\d.]+)\s*-\s*([\d.]+)$/);
+        if (!rangeMatch) return { flag: 'N', isOutOfRange: false };
+        const low = parseFloat(rangeMatch[1] as string);
+        const high = parseFloat(rangeMatch[2] as string);
+        if (numVal < low) return { flag: 'L', isOutOfRange: true };
+        if (numVal > high) return { flag: 'H', isOutOfRange: true };
+        return { flag: 'N', isOutOfRange: false };
+      };
+
+      // 4. Insert all results with server-validated flags
       const createdResults = await Promise.all(
-        results.map(res => tx.labResult.create({
-          data: {
-            requestId: requestId,
-            biomarker: res.biomarker,
-            value: res.value,
-            isOutOfRange: res.isOutOfRange,
-            notes: res.notes
-          }
-        }))
+        results.map(res => {
+          const bm = biomarkerMap.get(res.biomarker.toLowerCase().trim());
+          const canonicalRange = bm?.referenceRange || res.referenceRange || '';
+          const { flag, isOutOfRange } = computeFlag(res.value, canonicalRange);
+          return tx.labResult.create({
+            data: {
+              requestId,
+              biomarker: res.biomarker,
+              value: res.value,
+              flag, // Server-validated, not from client
+              referenceRange: canonicalRange,
+              isOutOfRange, // Server-validated, not from client
+              notes: res.notes
+            }
+          });
+        })
       );
 
       return { request, results: createdResults };
@@ -150,73 +297,251 @@ export class LabService {
   }
 
   /**
+   * Publish a completed lab report: save results, set COMPLETED, store reportUrl, and fire SMS to patient.
+   */
+  async publishReport(
+    requestId: string,
+    results: { biomarker: string; value: string; flag?: string; referenceRange?: string; isOutOfRange: boolean; notes?: string }[],
+    reportUrl: string,
+    referenceNo: string,
+    testProfile: string
+  ) {
+    return withRetry(async () => {
+      const labReqResult = await prisma.$transaction(async (tx) => {
+        // 1. Atomic status update allowing updates from active states and re-publishing
+        const updateResult = await tx.labRequest.updateMany({
+          where: { id: requestId, status: { in: ['PENDING', 'SAVED', 'IN_PROGRESS', 'COMPLETED'] } },
+          data: { status: 'COMPLETED', reportUrl }
+        });
+
+        if (updateResult.count === 0) {
+          throw new Error("Lab request not found or cannot be published.");
+        }
+
+        const labReq = await tx.labRequest.findUnique({
+          where: { id: requestId },
+          include: { Patient: true }
+        });
+
+        if (!labReq) throw new Error("Lab request not found after update");
+
+        // 2. Insert new results
+        await tx.labResult.deleteMany({ where: { requestId } });
+        await tx.labResult.createMany({
+          data: results.map(r => ({
+            requestId,
+            biomarker: r.biomarker,
+            value: r.value,
+            flag: r.flag || 'N',
+            referenceRange: r.referenceRange || '',
+            isOutOfRange: r.isOutOfRange,
+            notes: r.notes
+          }))
+        });
+
+        return labReq;
+      });
+
+      // 3. Broadcast real-time websocket event
+      websocketService.broadcast("lab_report_published", {
+        requestId,
+        reportUrl,
+        status: "COMPLETED",
+        referenceNo
+      });
+
+      // 4. Fire SMS — non-blocking (fire and forget), outside transaction
+      const patient = labReqResult.Patient;
+      if (patient?.phone) {
+        NotificationService.sendTemplatedSMS(
+          patient.id,
+          patient.phone,
+          'LAB_REPORT_READY',
+          {
+            patientName: patient.fullName,
+            testProfile,
+            referenceNo,
+            reportLink: reportUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reports/${referenceNo}`
+          }
+        ).catch(console.error);
+      }
+
+      return { success: true, requestId, reportUrl };
+    });
+  }
+
+  /**
    * Get all completed (published) lab requests
    */
-  async getPublishedReports() {
-    return withRetry(() => prisma.labRequest.findMany({
-      where: { status: "COMPLETED" },
-      include: {
-        items: {
-          include: { LabTest: true }
+  async getPublishedReports(doctorId?: string) {
+    return withRetry(async () => {
+      const reports = await prisma.labRequest.findMany({
+        where: doctorId
+          ? {
+              status: "COMPLETED",
+              OR: [
+                { doctorId },
+                { Visit: { doctorId } }
+              ]
+            }
+          : { status: "COMPLETED" },
+        include: {
+          items: {
+            include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } }, room: true } } }
+          },
+          results: true,
+          Patient: true,
+          Visit: {
+            include: { User: true }
+          }
         },
-        results: true,
-        Patient: true
-      },
-      orderBy: { requestedAt: 'desc' }
-    }));
+        orderBy: { requestedAt: 'desc' }
+      });
+
+      for (const report of reports) {
+        if (report.reportUrl && S3Service.isS3Url(report.reportUrl)) {
+          const presignedUrl = await S3Service.generateDownloadUrl(report.reportUrl);
+          if (presignedUrl) report.reportUrl = presignedUrl;
+        }
+      }
+
+      return reports;
+    });
   }
 
   /**
    * Get lab tech dashboard metrics
    */
-  async getMetrics() {
+    async getMetrics() {
     return withRetry(async () => {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+
+      // Pending (currently waiting)
       const pendingCount = await prisma.labRequest.count({
         where: { status: "PENDING" }
       });
-
-      const publishedCount = await prisma.labRequest.count({
-        where: { 
-          status: "COMPLETED",
-          requestedAt: { gte: today } 
-        }
+      const savedCount = await prisma.labRequest.count({
+        where: { status: "SAVED" }
       });
 
-      const criticalCount = await prisma.labResult.count({
-        where: {
-          isOutOfRange: true,
-          request: {
-            requestedAt: { gte: today }
-          }
-        }
+      // Published today vs yesterday
+      const publishedToday = await prisma.labRequest.count({
+        where: { status: "COMPLETED", requestedAt: { gte: today } }
+      });
+      const publishedYesterday = await prisma.labRequest.count({
+        where: { status: "COMPLETED", requestedAt: { gte: yesterday, lt: today } }
       });
 
+      const requestsToday = await prisma.labRequest.count({
+        where: { requestedAt: { gte: today } }
+      });
+      const requestsYesterday = await prisma.labRequest.count({
+        where: { requestedAt: { gte: yesterday, lt: today } }
+      });
+
+      const criticalToday = await prisma.labResult.count({
+        where: { isOutOfRange: true, request: { requestedAt: { gte: today } } }
+      });
+      const criticalYesterday = await prisma.labResult.count({
+        where: { isOutOfRange: true, request: { requestedAt: { gte: yesterday, lt: today } } }
+      });
+
+      // Status Distribution
+      const statusCounts = await prisma.labRequest.groupBy({
+        by: ['status'],
+        _count: { id: true },
+        where: { requestedAt: { gte: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000) } } // Last 30 days
+      });
+      
+      const statusDistribution = statusCounts.map(s => ({
+        name: s.status,
+        value: s._count.id
+      }));
+
+      // Weekly tests (Last 7 days)
+      const weeklyTests = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const nextD = new Date(d);
+        nextD.setDate(d.getDate() + 1);
+        
+        const count = await prisma.labRequest.count({
+          where: { requestedAt: { gte: d, lt: nextD } }
+        });
+        
+        weeklyTests.push({
+          date: d.toLocaleDateString('en-US', { weekday: 'short' }),
+          count
+        });
+      }
+
+      // Urgent Pending
       const urgentPending = await prisma.labRequest.findMany({
-        where: { status: "PENDING", priority: "URGENT" },
+        where: { status: { in: ["PENDING", "SAVED"] }, priority: "URGENT" },
         include: { 
           items: { include: { LabTest: true } },
           Patient: true,
           Visit: { include: { User: true } }
         },
-        orderBy: { requestedAt: 'asc' }
+        orderBy: { requestedAt: 'asc' },
+        take: 10
+      });
+
+      // Recent Published
+      const recentPublished = await prisma.labRequest.findMany({
+        where: { status: "COMPLETED" },
+        include: { 
+          items: { include: { LabTest: true } },
+          Patient: true,
+          Visit: { include: { User: true } }
+        },
+        orderBy: { requestedAt: 'desc' },
+        take: 5
       });
 
       return {
-        pendingRequests: pendingCount,
-        inProgressTests: Math.floor(pendingCount * 0.3),
-        publishedToday: publishedCount,
-        criticalResults: criticalCount,
-        urgentRequests: urgentPending.map(req => ({
-          id: req.id,
-          patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
-          doctor: req.Visit?.User?.fullName || "Unknown Doctor",
-          tests: req.items.map(i => i.LabTest?.name),
-          priority: req.priority,
-          requestedAt: req.requestedAt
-        }))
+        summary: {
+          requestsToday,
+          requestsYesterday,
+          pendingRequests: pendingCount,
+          inProgressTests: savedCount,
+          publishedToday,
+          publishedYesterday,
+          criticalToday,
+          criticalYesterday
+        },
+        charts: {
+          weeklyTests,
+          statusDistribution
+        },
+        tables: {
+          urgentRequests: urgentPending.map(req => ({
+            id: req.id,
+            patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
+            doctor: req.Visit?.User?.fullName || "Unknown Doctor",
+            tests: req.items.map(i => i.LabTest?.name),
+            priority: req.priority,
+            status: req.status,
+            requestedAt: req.requestedAt
+          })),
+          recentPublished: recentPublished.map(req => {
+            // Note: Not making this fully async for metrics view, 
+            // but if reportUrl is S3 we could transform it. We'll leave metrics raw for speed
+            return {
+              id: req.id,
+              patientName: req.Patient?.fullName || `Patient ${req.patientId.slice(0, 4)}`,
+              doctor: req.Visit?.User?.fullName || "Unknown Doctor",
+              tests: req.items.map(i => i.LabTest?.name),
+              reportUrl: req.reportUrl,
+              requestedAt: req.requestedAt
+            };
+          })
+        }
       };
     });
   }
@@ -224,22 +549,295 @@ export class LabService {
   /**
    * Get waiting lab queue tokens
    */
-  async getQueueTokens() {
+  async getQueueTokens(roomId?: string) {
     return withRetry(async () => {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const { startOfDay, endOfDay } = getTimezoneBoundaries();
+
+      const whereClause: any = {
+        department: { in: ["LAB", "MULTI"] },
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        status: { in: ["WAITING", "BOOKED", "WAITING_FOR_LAB_TEST", "IN_PROGRESS"] }
+      };
+
+      if (roomId) {
+        whereClause.OR = [
+          { roomId: roomId },
+          { room: { roomNumber: roomId } }
+        ];
+      }
 
       return prisma.appointment.findMany({
-        where: {
-          department: { in: ["LAB", "MULTI"] },
-          appointmentDate: { gte: today },
-          status: { notIn: ["COMPLETED", "CANCELLED"] }
-        },
+        where: whereClause,
         include: {
-          Patient: true
+          Patient: true,
+          room: true
         },
         orderBy: { createdAt: 'asc' }
       });
+    });
+  }
+
+  /**
+   * Get biomarkers for a specific test
+   */
+  async getBiomarkers(testId: string) {
+    return withRetry(() => prisma.labTestBiomarker.findMany({
+      where: { labTestId: testId },
+      orderBy: { orderIndex: 'asc' }
+    }));
+  }
+
+  /**
+   * Update biomarkers for a specific test
+   */
+  async updateBiomarkers(testId: string, biomarkers: { name: string; category?: string; unit?: string; referenceRange?: string; orderIndex: number }[]) {
+    return withRetry(() => prisma.$transaction(async (tx) => {
+      // Delete existing
+      await tx.labTestBiomarker.deleteMany({ where: { labTestId: testId } });
+      
+      // Create new
+      if (biomarkers.length > 0) {
+        await tx.labTestBiomarker.createMany({
+          data: biomarkers.map(b => ({
+            ...b,
+            labTestId: testId
+          }))
+        });
+      }
+      
+      return tx.labTestBiomarker.findMany({
+        where: { labTestId: testId },
+        orderBy: { orderIndex: 'asc' }
+      });
+    }, {
+      maxWait: 5000,
+      timeout: 15000
+    }));
+  }
+
+  /**
+   * Resolve a token to its patient and pending lab requests
+   */
+  async getRequestByToken(tokenOrBarcode: string) {
+    return withRetry(async () => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const code = (tokenOrBarcode || "").trim();
+
+      if (!code) {
+        throw new Error("Token or barcode is required");
+      }
+
+      // 1. Direct LabRequest ID check
+      const directLabReq = await prisma.labRequest.findFirst({
+        where: {
+          OR: [
+            { id: code },
+            ...(code.length >= 8 ? [{ id: { startsWith: code.toLowerCase() } }] : [])
+          ]
+        },
+        include: {
+          Patient: true,
+          items: {
+            include: { LabTest: { include: { biomarkers: true, room: true } } }
+          }
+        }
+      });
+
+      if (directLabReq) {
+        const appt = directLabReq.visitId ? await prisma.appointment.findUnique({
+          where: { id: directLabReq.visitId },
+          include: { Patient: true }
+        }) : null;
+
+        let allLabRequests = [directLabReq];
+        let allAppointments: any[] = appt ? [appt] : [];
+
+        if (appt?.bookingReference) {
+          allAppointments = await prisma.appointment.findMany({
+            where: { bookingReference: appt.bookingReference, status: { not: "CANCELLED" } },
+            include: { Patient: true },
+            orderBy: { createdAt: "asc" }
+          });
+          const apptIds = allAppointments.map(a => a.id);
+          allLabRequests = await prisma.labRequest.findMany({
+            where: {
+              OR: [
+                { visitId: { in: apptIds } },
+                { patientId: directLabReq.patientId, requestedAt: { gte: today } }
+              ]
+            },
+            include: {
+              Patient: true,
+              items: { include: { LabTest: { include: { biomarkers: true, room: true } } } }
+            },
+            orderBy: { requestedAt: "desc" }
+          });
+        }
+
+        const labAppt = allAppointments.find(a => a.department === "LAB") || appt;
+        const consultAppt = allAppointments.find(a => a.department === "CONSULTATION");
+
+        return {
+          ...(appt || {}),
+          id: appt?.id || directLabReq.visitId || directLabReq.id,
+          bookingReference: appt?.bookingReference || null,
+          tokenNumber: labAppt?.tokenNumber || appt?.tokenNumber || "LAB",
+          Patient: directLabReq.Patient,
+          allAppointments,
+          LabRequests: allLabRequests,
+          tokens: {
+            lab: labAppt?.tokenNumber || "LAB",
+            consultation: consultAppt?.tokenNumber || null
+          }
+        };
+      }
+
+      // 2. Appointment lookup by UUID, booking reference, or tokenNumber
+      const orConditions: any[] = [
+        { id: code },
+        { bookingReference: code }
+      ];
+
+      if (code.length >= 8) {
+        orConditions.push({ id: { startsWith: code } });
+      }
+
+      if (/^\d{1,3}$/.test(code)) {
+        orConditions.push({
+          tokenNumber: code.padStart(2, "0"),
+          appointmentDate: { gte: today }
+        });
+        orConditions.push({
+          tokenNumber: code,
+          appointmentDate: { gte: today }
+        });
+      }
+
+      let appointment = await prisma.appointment.findFirst({
+        where: {
+          OR: orConditions,
+          status: { notIn: ["CANCELLED"] }
+        },
+        include: {
+          Patient: true,
+          room: true
+        },
+        orderBy: { appointmentDate: "desc" }
+      });
+
+      // 3. Fallback: check Invoice ID -> visitId
+      if (!appointment) {
+        const invoice = await prisma.invoice.findFirst({
+          where: {
+            OR: [
+              { id: code },
+              ...(code.length >= 8 ? [{ id: { startsWith: code } }] : [])
+            ]
+          }
+        });
+
+        if (invoice && invoice.visitId) {
+          appointment = await prisma.appointment.findUnique({
+            where: { id: invoice.visitId },
+            include: {
+              Patient: true,
+              room: true
+            }
+          });
+        }
+      }
+
+      if (!appointment) {
+        throw new Error("Token or barcode not found");
+      }
+
+      // Fetch all appointments connected to this visit
+      let allAppointments: any[] = [];
+      if (appointment.bookingReference) {
+        allAppointments = await prisma.appointment.findMany({
+          where: {
+            bookingReference: appointment.bookingReference,
+            status: { not: "CANCELLED" }
+          },
+          include: { Patient: true, room: true },
+          orderBy: { createdAt: "asc" }
+        });
+      }
+
+      if (allAppointments.length === 0) {
+        allAppointments = [appointment];
+      }
+
+      const allApptIds = allAppointments.map(a => a.id);
+
+      // Fetch all LabRequests across all visit appointments or created for this patient today
+      const allLabRequests = await prisma.labRequest.findMany({
+        where: {
+          OR: [
+            { visitId: { in: allApptIds } },
+            {
+              patientId: appointment.patientId,
+              requestedAt: { gte: today }
+            }
+          ]
+        },
+        include: {
+          Patient: true,
+          items: {
+            include: { LabTest: { include: { biomarkers: true } } }
+          }
+        },
+        orderBy: { requestedAt: "desc" }
+      });
+
+      const labAppts = allAppointments.filter(a => a.department === "LAB");
+      const consultAppt = allAppointments.find(a => a.department === "CONSULTATION");
+
+      return {
+        ...appointment,
+        bookingReference: appointment.bookingReference,
+        tokenNumber: labAppts.map(a => a.tokenNumber).join(", ") || appointment.tokenNumber,
+        allAppointments,
+        LabRequests: allLabRequests,
+        tokens: {
+          lab: labAppts.map(a => a.tokenNumber).join(", ") || appointment.tokenNumber,
+          consultation: consultAppt?.tokenNumber || null
+        }
+      };
+    });
+  }
+  /**
+   * Fetch a published report by its reference number (first 8 chars of requestId, uppercase)
+   */
+  async getReportByRef(referenceNo: string) {
+    return withRetry(async () => {
+      // referenceNo is first 8 chars of the UUID in uppercase
+      const report = await prisma.labRequest.findFirst({
+        where: {
+          id: { startsWith: referenceNo.toLowerCase() },
+          status: 'COMPLETED'
+        },
+        include: {
+          Patient: true,
+          results: { orderBy: { recordedAt: 'asc' } },
+          items: {
+            include: {
+              LabTest: {
+                include: { biomarkers: { orderBy: { orderIndex: 'asc' } } }
+              }
+            }
+          },
+          Visit: { include: { User: true } }
+        }
+      });
+
+      if (!report) throw new Error('Report not found or not yet published');
+      if (report.reportUrl && S3Service.isS3Url(report.reportUrl)) {
+        const presignedUrl = await S3Service.generateDownloadUrl(report.reportUrl);
+        if (presignedUrl) report.reportUrl = presignedUrl;
+      }
+      return report;
     });
   }
 }

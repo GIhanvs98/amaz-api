@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { BookingService } from "../services/booking.service.js";
 import { prisma } from "../lib/prisma.js";
 
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+
 export const getDoctors = async (req: Request, res: Response) => {
   try {
     const doctors = await BookingService.getDoctors();
@@ -18,6 +20,19 @@ export const getAvailability = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: "doctorId and date are required" });
     }
     const availability = await BookingService.getAvailability(doctorId as string, date as string);
+    res.json({ success: true, data: availability });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getDepartmentAvailability = async (req: Request, res: Response) => {
+  try {
+    const { department, date } = req.query;
+    if (!department || !date) {
+      return res.status(400).json({ success: false, error: "department and date are required" });
+    }
+    const availability = await BookingService.getDepartmentAvailability(department as string, date as string);
     res.json({ success: true, data: availability });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -64,10 +79,7 @@ export const getTodayAppointments = async (req: Request, res: Response) => {
   try {
     const { date, doctorId } = req.query;
     const targetDate = date ? new Date(date as string) : new Date();
-    const startOfDay = new Date(targetDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
+    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
 
     // Query all appointments for the specified date
     const whereClause: any = {

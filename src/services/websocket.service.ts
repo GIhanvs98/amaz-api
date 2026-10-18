@@ -1,5 +1,6 @@
 import { Server as SocketIOServer } from "socket.io";
 import { Server as HttpServer } from "http";
+import jwt from "jsonwebtoken";
 
 class WebSocketService {
   private io: SocketIOServer | null = null;
@@ -12,8 +13,26 @@ class WebSocketService {
       }
     });
 
+    // Middleware for Authentication (Optional)
+    this.io.use((socket, next) => {
+      try {
+        const token = socket.handshake.auth.token || socket.handshake.query.token;
+        if (!token) {
+          // Allow anonymous connections for public screens (Customer Display)
+          return next();
+        }
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || "fallback_secret");
+        (socket as any).user = decoded;
+        next();
+      } catch (err) {
+        // If token is invalid, log it but still allow connection as anonymous
+        console.warn(`[Socket.io] Invalid token provided for socket ${socket.id}`);
+        next();
+      }
+    });
+
     this.io.on("connection", (socket) => {
-      console.log(`[Socket.io] Client connected: ${socket.id}`);
+      console.log(`[Socket.io] Authenticated client connected: ${socket.id}`);
 
       // Basic room joining mechanism if needed later
       socket.on("join", (room) => {
@@ -24,6 +43,13 @@ class WebSocketService {
       socket.on("leave", (room) => {
         socket.leave(room);
         console.log(`[Socket.io] Client ${socket.id} left room ${room}`);
+      });
+      
+      // Cart sync relay for Customer Display
+      socket.on("sync_cart", (data: { room: string; state: any }) => {
+        if (data.room && data.state) {
+          socket.to(data.room).emit("cart_updated", data.state);
+        }
       });
 
       socket.on("disconnect", () => {

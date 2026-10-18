@@ -1,7 +1,10 @@
+import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
 import { markDoctorArrived, getDoctorsTodayStatus, getDoctorMetrics } from "../controllers/doctor-attendance.controller.js";
 
 const router = Router();
+
+router.use(verifyToken, requireRole(['ADMIN', 'DOCTOR', 'HR']));
 
 // GET /api/doctors/metrics
 router.get("/metrics", getDoctorMetrics);

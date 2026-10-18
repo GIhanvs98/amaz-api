@@ -1,6 +1,6 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+import { websocketService } from "./websocket.service.js";
 
 export class BillingService {
   /**
@@ -15,27 +15,45 @@ export class BillingService {
     description: string;
     quantity: number;
     unitPrice: number;
-  }) {
-    const total = data.quantity * data.unitPrice;
+  }, tx?: any) {
+    const db = tx || prisma;
+    const unitPrice = Math.round(data.unitPrice * 100) / 100;
+    const total = Math.round(data.quantity * unitPrice * 100) / 100;
 
     // 1. Try to find an open DRAFT invoice for this visit (or patient if walk-in)
     let invoice = null;
     
     if (data.invoiceId) {
-      invoice = await prisma.invoice.findUnique({ where: { id: data.invoiceId } });
+      invoice = await db.invoice.findUnique({ where: { id: data.invoiceId } });
     } else if (data.visitId) {
-      invoice = await prisma.invoice.findFirst({
+      invoice = await db.invoice.findFirst({
         where: { visitId: data.visitId, status: "DRAFT" }
       });
+      if (!invoice) {
+        const currentAppt = await db.appointment.findUnique({
+          where: { id: data.visitId },
+          select: { bookingReference: true }
+        });
+        if (currentAppt?.bookingReference) {
+          const siblingAppts = await db.appointment.findMany({
+            where: { bookingReference: currentAppt.bookingReference },
+            select: { id: true }
+          });
+          const siblingIds = siblingAppts.map((a: any) => a.id);
+          invoice = await db.invoice.findFirst({
+            where: { visitId: { in: siblingIds }, status: "DRAFT" }
+          });
+        }
+      }
     } else if (data.patientId) {
-       invoice = await prisma.invoice.findFirst({
+       invoice = await db.invoice.findFirst({
         where: { patientId: data.patientId, status: "DRAFT" }
       });
     }
 
     // 2. If no open invoice, create one
     if (!invoice) {
-      invoice = await prisma.invoice.create({
+      invoice = await db.invoice.create({
         data: {
           visitId: data.visitId,
           patientId: data.patientId,
@@ -46,32 +64,136 @@ export class BillingService {
       });
     }
 
+    // 2.5 Guard against duplicate CONSULTATION charges
+    if (data.department === "CONSULTATION") {
+      const existingConsult = await db.invoiceLineItem.findFirst({
+        where: {
+          invoiceId: invoice.id,
+          department: "CONSULTATION"
+        }
+      });
+      if (existingConsult) {
+        console.warn(`[BillingService] Consultation charge already exists for invoice ${invoice.id}. Skipping duplicate.`);
+        return db.invoice.findUnique({
+          where: { id: invoice.id },
+          include: { lineItems: true }
+        });
+      }
+    }
+
     // 3. Add the line item
-    const lineItem = await prisma.invoiceLineItem.create({
+    const lineItem = await db.invoiceLineItem.create({
       data: {
         invoiceId: invoice.id,
         department: data.department,
         referenceId: data.referenceId,
         description: data.description,
         quantity: data.quantity,
-        unitPrice: data.unitPrice,
+        unitPrice: unitPrice,
         total: total
       }
     });
 
-    // 4. Update invoice totals
-    const updatedInvoice = await prisma.invoice.update({
-      where: { id: invoice.id },
+    // 4. Update invoice totals only if it is still DRAFT
+    const updatedInvoiceResult = await db.invoice.updateMany({
+      where: { id: invoice.id, status: "DRAFT" },
       data: {
         subtotal: { increment: total },
         totalAmount: { increment: total }
-      },
-      include: {
-        lineItems: true
       }
     });
 
-    return updatedInvoice;
+    if (updatedInvoiceResult.count === 0) {
+      throw new Error("Concurrency error: The invoice is no longer in DRAFT status and cannot be modified. It may have just been checked out.");
+    }
+
+    return db.invoice.findUnique({
+      where: { id: invoice.id },
+      include: { lineItems: true }
+    });
+  }
+
+  /**
+   * Adds multiple charges atomically to a DRAFT invoice (or creates one).
+   * Optimized for bulk operations: finds invoice once, createMany line items, updates total once.
+   */
+  async addChargesBulk(data: {
+    invoiceId?: string;
+    visitId?: string;
+    patientId?: string;
+    charges: {
+      department: string;
+      referenceId?: string;
+      description: string;
+      quantity: number;
+      unitPrice: number;
+    }[];
+  }, tx?: any) {
+    if (!data.charges || data.charges.length === 0) return null;
+
+    const db = tx || prisma;
+    let totalToIncrement = 0;
+    const formattedCharges: any[] = [];
+    
+    // 1. Find or create a DRAFT invoice
+    let invoice = null;
+    if (data.invoiceId) {
+      invoice = await db.invoice.findUnique({ where: { id: data.invoiceId } });
+    } else if (data.visitId) {
+      invoice = await db.invoice.findFirst({ where: { visitId: data.visitId, status: 'DRAFT' } });
+    } else if (data.patientId) {
+      invoice = await db.invoice.findFirst({ where: { patientId: data.patientId, status: 'DRAFT' } });
+    }
+
+    if (!invoice) {
+      invoice = await db.invoice.create({
+        data: {
+          visitId: data.visitId,
+          patientId: data.patientId,
+          status: 'DRAFT',
+          subtotal: 0,
+          totalAmount: 0
+        }
+      });
+    }
+
+    data.charges.forEach(charge => {
+      const unitPrice = Math.round(charge.unitPrice * 100) / 100;
+      const total = Math.round(charge.quantity * unitPrice * 100) / 100;
+      totalToIncrement = Math.round((totalToIncrement + total) * 100) / 100;
+      formattedCharges.push({
+        invoiceId: invoice!.id,
+        department: charge.department,
+        referenceId: charge.referenceId,
+        description: charge.description,
+        quantity: charge.quantity,
+        unitPrice: unitPrice,
+        total: total
+      });
+    });
+
+    // 2. Bulk insert all line items in a single query
+    await db.invoiceLineItem.createMany({
+      data: formattedCharges
+    });
+
+    // 3. Update invoice totals exactly once, ensuring it is still DRAFT
+    const updatedInvoiceResult = await db.invoice.updateMany({
+      where: { id: invoice.id, status: "DRAFT" },
+      data: {
+        subtotal: { increment: totalToIncrement },
+        totalAmount: { increment: totalToIncrement }
+      }
+    });
+
+    if (updatedInvoiceResult.count === 0) {
+      throw new Error("Concurrency error: The invoice is no longer in DRAFT status and cannot be modified. It may have just been checked out.");
+    }
+
+    return db.invoice.findUnique({
+      where: { id: invoice.id },
+      include: { lineItems: true }
+    });
   }
 
   /**
@@ -84,38 +206,305 @@ export class BillingService {
         include: { lineItems: true, payments: true }
       });
     } else if (query.visitId) {
-      return prisma.invoice.findFirst({
+      let inv = await prisma.invoice.findFirst({
         where: { visitId: query.visitId, status: "DRAFT" },
         include: { lineItems: true, payments: true }
       });
+
+      if (!inv) {
+        const appt = await prisma.appointment.findUnique({
+          where: { id: query.visitId },
+          select: { bookingReference: true }
+        });
+        if (appt?.bookingReference) {
+          const siblingAppts = await prisma.appointment.findMany({
+            where: { bookingReference: appt.bookingReference },
+            select: { id: true }
+          });
+          const siblingIds = siblingAppts.map((a: any) => a.id);
+          inv = await prisma.invoice.findFirst({
+            where: { visitId: { in: siblingIds }, status: "DRAFT" },
+            include: { lineItems: true, payments: true }
+          });
+        }
+      }
+
+      return inv;
     }
     throw new Error("Must provide invoiceId or visitId");
   }
 
   /**
-   * Pay an invoice
+   * Fetch all invoices
    */
-  async payInvoice(invoiceId: string, amount: number, method: string, tokenId?: string) {
-    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
-    if (!invoice) throw new Error("Invoice not found");
-    if (invoice.status === "PAID") throw new Error("Invoice is already paid");
-    
-    // In a real system, you'd validate partial payments. Here we assume full payment.
-    await prisma.payment.create({
-      data: {
-        invoiceId,
-        amount,
-        method,
-        status: "COMPLETED",
-        ...(tokenId ? { tokenId } : {})
+  async getAllInvoices(page: number = 1, limit: number = 50) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      prisma.invoice.findMany({
+        include: { lineItems: true, payments: true },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.invoice.count()
+    ]);
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
       }
+    };
+  }
+
+  /**
+   * Pay an invoice with optional discount
+   */
+  async payInvoice(
+    invoiceId: string, 
+    amount: number, 
+    method: string, 
+    shiftId?: string,
+    discount?: { type?: string; value?: number; amount?: number; reason?: string }
+  ) {
+    return prisma.$transaction(async (tx) => {
+      const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
+      if (!invoice) throw new Error("Invoice not found");
+      if (invoice.status === "PAID") throw new Error("Invoice is already paid");
+      
+      const discountAmount = Math.max(0, Math.min(invoice.subtotal, Number(discount?.amount) || 0));
+      const finalTotal = discount && discountAmount > 0 
+        ? Math.max(0, Math.round((invoice.subtotal - discountAmount) * 100) / 100)
+        : invoice.totalAmount;
+
+      // Ensure strict financial integrity
+      if (amount < finalTotal) {
+        throw new Error(`Insufficient payment amount. Expected at least ${finalTotal}, but received ${amount}`);
+      }
+      
+      // [P1 Fix] Cap the recorded revenue at the invoice total to prevent change from inflating revenue
+      const actualRevenue = Math.min(amount, finalTotal);
+
+      // Atomic state transition using updateMany to prevent read-modify-write double payment race condition
+      const updateResult = await tx.invoice.updateMany({
+        where: { id: invoiceId, status: "DRAFT" },
+        data: { 
+          status: "PAID",
+          discountAmount: discountAmount,
+          discountType: discount?.type || null,
+          discountValue: discount?.value !== undefined ? Number(discount.value) : null,
+          discountReason: discount?.reason || null,
+          totalAmount: finalTotal
+        }
+      });
+
+      if (updateResult.count === 0) {
+        throw new Error("Invoice is already paid or being processed concurrently.");
+      }
+
+      await tx.payment.create({
+        data: {
+          invoiceId,
+          amount: actualRevenue, // Capped revenue
+          method,
+          status: "COMPLETED",
+          ...(shiftId ? { shiftId } : {})
+        }
+      });
+
+      // Auto-settle linked prescription ONLY if it has zero medicines prescribed (advice-only / lab-only prescription)
+      if (invoice.visitId) {
+        const linkedRx = await tx.prescription.findFirst({
+          where: { visitId: invoice.visitId, status: { in: ["PENDING", "IN_PROGRESS"] } },
+          include: { items: true }
+        });
+        // Prescriptions with medicines (> 0 items) must NEVER be auto-dispensed by invoice payment;
+        // they must be explicitly dispensed at the pharmacy to deduct inventory and verify drugs.
+        if (linkedRx && (!linkedRx.items || linkedRx.items.length === 0)) {
+          const updatedRx = await tx.prescription.update({
+            where: { id: linkedRx.id },
+            data: { status: "DISPENSED" }
+          });
+          websocketService.broadcast("prescription_status_updated", updatedRx);
+        }
+      }
+
+      return tx.invoice.findUnique({
+        where: { id: invoiceId },
+        include: { lineItems: true, payments: true }
+      });
     });
+  }
+
+  async getCashierMetrics() {
+    const { startOfDay } = getTimezoneBoundaries();
+
+    const [pendingInvoices, completedToday, todayGrossRevenueObj, recentPayments, pendingDrafts, todayRefundsObj] = await Promise.all([
+      prisma.invoice.aggregate({
+        where: { status: 'DRAFT' },
+        _count: { _all: true }
+      }),
+      prisma.payment.aggregate({
+        where: { createdAt: { gte: startOfDay }, status: { in: ['COMPLETED', 'REFUNDED'] } },
+        _count: { _all: true }
+      }),
+      prisma.payment.aggregate({
+        where: { createdAt: { gte: startOfDay }, status: { in: ['COMPLETED', 'REFUNDED'] } },
+        _sum: { amount: true }
+      }),
+      prisma.payment.findMany({
+        take: 5,
+        orderBy: { createdAt: 'desc' },
+        include: { invoice: { include: { lineItems: true } } }
+      }),
+      prisma.invoice.findMany({
+        where: { status: 'DRAFT' },
+        take: 5,
+        orderBy: { createdAt: 'desc' }
+      }),
+      prisma.refund.aggregate({
+        where: { createdAt: { gte: startOfDay }, status: 'COMPLETED' },
+        _sum: { amount: true }
+      })
+    ]);
+
+    const grossRevenue = todayGrossRevenueObj._sum.amount || 0;
+    const refunds = todayRefundsObj._sum.amount || 0;
+    const totalRevenue = grossRevenue - refunds;
+    const cashInDrawer = totalRevenue * 0.4; // Estimate 40% is cash for UI purposes
+
+    const recentTransactions: any[] = [];
+
+    // Map recent drafts
+    pendingDrafts.forEach(d => {
+      recentTransactions.push({
+        id: (d.id.split('-')[0] || '').toUpperCase(),
+        patientName: d.patientId || "Walk-in Patient",
+        type: "Pending Bill",
+        amount: d.totalAmount,
+        status: "PENDING",
+        time: d.createdAt.toISOString()
+      });
+    });
+
+    // Map recent payments
+    recentPayments.forEach(p => {
+      recentTransactions.push({
+        id: (p.id.split('-')[0] || '').toUpperCase(),
+        patientName: p.invoice?.patientId || "Walk-in Patient",
+        type: "Payment",
+        amount: p.amount,
+        status: p.status,
+        time: p.createdAt.toISOString()
+      });
+    });
+
+    // Sort combined by date desc, take 10
+    recentTransactions.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+
+    return {
+      pendingPayments: pendingInvoices._count._all,
+      processedToday: completedToday._count._all,
+      totalRevenue,
+      cashInDrawer,
+      recentTransactions: recentTransactions.slice(0, 10)
+    };
+  }
+
+  /**
+   * Processes a refund for a specific payment, supporting partial or full refunds.
+   */
+  async processRefund(paymentId: string, amount: number, reason: string, shiftId?: string) {
+    return prisma.$transaction(async (tx) => {
+      // 1. Lock the payment row to serialize concurrent refunds
+      await tx.$executeRaw`SELECT id FROM "Payment" WHERE id = ${paymentId} FOR UPDATE`;
+
+      const payment = await tx.payment.findUnique({
+        where: { id: paymentId },
+        include: { invoice: true }
+      });
+
+      if (!payment) throw new Error("Payment not found");
+      if (payment.status !== "COMPLETED") throw new Error("Can only refund completed payments");
+
+      // Calculate existing refunds securely within the locked transaction
+      const existingRefunds = await tx.refund.aggregate({
+        where: { paymentId, status: "COMPLETED" },
+        _sum: { amount: true }
+      });
+      const refundedAmount = existingRefunds._sum.amount || 0;
+
+      if (amount > (payment.amount - refundedAmount)) {
+        throw new Error(`Refund amount exceeds available payment balance. Available: ${payment.amount - refundedAmount}`);
+      }
+
+      const refund = await tx.refund.create({
+        data: {
+          paymentId,
+          amount,
+          reason,
+          status: "COMPLETED",
+          ...(shiftId ? { shiftId } : {})
+        }
+      });
+
+      // If fully refunded, mark the parent records
+      if (amount === (payment.amount - refundedAmount)) {
+        await tx.payment.update({
+          where: { id: paymentId },
+          data: { status: "REFUNDED" }
+        });
+        await tx.invoice.update({
+          where: { id: payment.invoiceId },
+          data: { status: "REFUNDED" }
+        });
+      }
+
+      return refund;
+    });
+  }
+
+  /**
+   * Remove a line item from a DRAFT invoice and update totals.
+   */
+  async removeCharge(invoiceId: string, lineItemId: string) {
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { lineItems: true }
+    });
+
+    if (!invoice) throw new Error("Invoice not found");
+    if (invoice.status !== "DRAFT") throw new Error("Can only remove charges from DRAFT invoices");
+
+    const lineItem = invoice.lineItems.find(li => li.id === lineItemId);
+    if (!lineItem) throw new Error("Line item not found on this invoice");
+
+    await prisma.invoiceLineItem.delete({ where: { id: lineItemId } });
 
     return prisma.invoice.update({
       where: { id: invoiceId },
-      data: { status: "PAID" },
-      include: { lineItems: true, payments: true }
+      data: {
+        subtotal: { decrement: lineItem.total },
+        totalAmount: { decrement: lineItem.total }
+      },
+      include: { lineItems: true }
     });
+  }
+
+  /**
+   * Cancel/delete a DRAFT invoice and all its line items.
+   */
+  async deleteDraftInvoice(invoiceId: string) {
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!invoice) throw new Error("Invoice not found");
+    if (invoice.status !== "DRAFT") throw new Error("Can only delete DRAFT invoices");
+
+    await prisma.invoiceLineItem.deleteMany({ where: { invoiceId } });
+    await prisma.invoice.delete({ where: { id: invoiceId } });
+
+    return { success: true };
   }
 }
 

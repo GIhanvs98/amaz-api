@@ -1,15 +1,13 @@
-import { prisma } from '../lib/prisma';
+import { prisma } from "../lib/prisma.js";
 import { Prisma } from '@prisma/client';
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 
 export class FinanceService {
   /**
    * Generates the comprehensive dashboard payload required by the frontend
    */
   async getDashboardData() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const { startOfDay, firstDayOfMonth } = getTimezoneBoundaries();
 
     // 1. O(1) Aggregations
     const [
@@ -18,14 +16,15 @@ export class FinanceService {
       outstandingInvoices,
       monthlyPurchaseOrders,
       monthlyExpenses,
-      monthlyRefunds
+      todayRefundsObj,
+      monthlyRefundsObj
     ] = await Promise.all([
       prisma.payment.aggregate({
-        where: { createdAt: { gte: today }, status: 'COMPLETED' },
+        where: { createdAt: { gte: startOfDay }, status: { in: ['COMPLETED', 'REFUNDED'] } },
         _sum: { amount: true }
       }),
       prisma.payment.aggregate({
-        where: { createdAt: { gte: firstDayOfMonth }, status: 'COMPLETED' },
+        where: { createdAt: { gte: firstDayOfMonth }, status: { in: ['COMPLETED', 'REFUNDED'] } },
         _sum: { amount: true }
       }),
       prisma.invoice.aggregate({
@@ -41,20 +40,30 @@ export class FinanceService {
         _sum: { amount: true }
       }),
       prisma.refund.aggregate({
+        where: { createdAt: { gte: startOfDay }, status: 'COMPLETED' },
+        _sum: { amount: true }
+      }),
+      prisma.refund.aggregate({
         where: { createdAt: { gte: firstDayOfMonth }, status: 'COMPLETED' },
         _sum: { amount: true }
       })
     ]);
 
-    const todayRevenue = todayRevenueObj._sum.amount || 0;
-    const monthlyRevenue = monthlyRevenueObj._sum.amount || 0;
+    const todayGrossRevenue = todayRevenueObj._sum.amount || 0;
+    const monthlyGrossRevenue = monthlyRevenueObj._sum.amount || 0;
+    
+    const todayRefunds = todayRefundsObj._sum.amount || 0;
+    const monthlyRefunds = monthlyRefundsObj._sum.amount || 0;
+
+    const todayRevenue = todayGrossRevenue - todayRefunds;
+    const monthlyRevenue = monthlyGrossRevenue - monthlyRefunds;
+    
     const outstandingReceivables = outstandingInvoices._sum.totalAmount || 0;
     
-    // Total expenses = POs + Misc Expenses + Refunds
+    // Total expenses = POs + Misc Expenses (Refunds are contra-revenue, not expenses)
     const totalExpenses = 
       (monthlyPurchaseOrders._sum.totalAmount || 0) + 
-      (monthlyExpenses._sum.amount || 0) + 
-      (monthlyRefunds._sum.amount || 0);
+      (monthlyExpenses._sum.amount || 0);
 
     // 2. Fetch recent unified transactions
     const transactions = await this.getUnifiedRecentTransactions();
@@ -153,6 +162,475 @@ export class FinanceService {
 
     // Keep it ordered chronologically
     return chartData;
+  }
+
+  /**
+   * Generates a dynamic ledger of payables owed to Doctors for completed appointments.
+   * Calculates based on 85% revenue share of the consultation fee.
+   */
+  async getDoctorSettlements(startDate?: string, endDate?: string) {
+    const start = startDate ? new Date(startDate) : new Date(new Date().setHours(0, 0, 0, 0));
+    const end = endDate ? new Date(endDate) : new Date(new Date().setHours(23, 59, 59, 999));
+
+    // 1. Get all COMPLETED appointments in the date range
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        completedAt: { gte: start, lte: end },
+        status: 'COMPLETED',
+        doctorId: { not: null }
+      },
+      include: {
+        User: true
+      }
+    });
+
+    // 2. Fetch associated invoices to calculate actual paid amounts
+    const visitIds = appointments.map(a => a.id);
+    const paidInvoices: any[] = await prisma.invoice.findMany({
+      where: {
+        visitId: { in: visitIds },
+        status: 'PAID'
+      },
+      include: {
+        lineItems: true,
+        payments: {
+          include: {
+            refunds: { where: { status: 'COMPLETED' } }
+          }
+        }
+      }
+    });
+
+    // 3. Aggregate by Doctor
+    const settlementMap: Record<string, {
+      doctorId: string;
+      doctorName: string;
+      totalConsultations: number;
+      totalCollected: number;
+      doctorShare: number; // 85%
+      hospitalShare: number; // 15%
+    }> = {};
+
+    for (const apt of appointments) {
+      if (!apt.doctorId || !apt.User) continue;
+
+      const docId = apt.doctorId;
+      if (!settlementMap[docId]) {
+        settlementMap[docId] = {
+          doctorId: docId,
+          doctorName: apt.User.fullName,
+          totalConsultations: 0,
+          totalCollected: 0,
+          doctorShare: 0,
+          hospitalShare: 0
+        };
+      }
+
+      // Find the paid invoice for this appointment
+      const invoice = paidInvoices.find(inv => inv.visitId === apt.id);
+      if (invoice) {
+        // Find the consultation line item
+        const consultItem = invoice.lineItems.find((li: any) => li.department === 'CONSULTATION');
+        if (consultItem) {
+          // Find any refunds allocated against this invoice
+          const totalRefunds = invoice.payments.reduce((sum: any, p: any) => 
+            sum + p.refunds.reduce((rSum: any, r: any) => rSum + r.amount, 0), 0
+          );
+          
+          // Proportionally deduct refund from consultation item if needed, 
+          // but for simplicity, we assume consultation gets refunded first or calculate net total.
+          // Since we are only calculating settlement on the consultation part, 
+          // let's deduct the refund amount from the consultation fee.
+          // Ensure we don't deduct more than the consultation itself.
+          const netConsultationRevenue = Math.max(0, consultItem.total - totalRefunds);
+
+          settlementMap[docId].totalConsultations += 1;
+          settlementMap[docId].totalCollected += netConsultationRevenue;
+          
+          // 85% to doctor, 15% to hospital
+          const docCut = netConsultationRevenue * 0.85;
+          settlementMap[docId].doctorShare += docCut;
+          settlementMap[docId].hospitalShare += (netConsultationRevenue - docCut);
+        }
+      }
+    }
+
+    // Convert map to array
+    return Object.values(settlementMap).sort((a, b) => b.totalCollected - a.totalCollected);
+  }
+
+  // --- Expenses API ---
+
+  async addExpense(data: { category: string; amount: number; description: string; date?: string }) {
+    return prisma.expense.create({
+      data: {
+        category: data.category,
+        amount: Number(data.amount),
+        description: data.description,
+        date: data.date ? new Date(data.date) : new Date(),
+        status: "COMPLETED"
+      }
+    });
+  }
+
+  async getExpenses(page: number = 1, limit: number = 50, filters: {
+    category?: string;
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    search?: string;
+  } = {}) {
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.ExpenseWhereInput = {};
+    if (filters.category) where.category = filters.category;
+    if (filters.status) where.status = filters.status;
+    if (filters.search) where.description = { contains: filters.search, mode: 'insensitive' };
+    if (filters.startDate || filters.endDate) {
+      where.date = {};
+      if (filters.startDate) where.date.gte = new Date(filters.startDate);
+      if (filters.endDate) {
+        const end = new Date(filters.endDate);
+        end.setHours(23, 59, 59, 999);
+        where.date.lte = end;
+      }
+    }
+
+    const [data, total] = await Promise.all([
+      prisma.expense.findMany({
+        where,
+        orderBy: { date: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.expense.count({ where })
+    ]);
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
+  }
+
+  async getTransactions(page: number = 1, limit: number = 50, filters: {
+    type?: string;         // INCOME | EXPENSE
+    category?: string;
+    status?: string;
+    startDate?: string;
+    endDate?: string;
+    search?: string;
+  } = {}) {
+    const skip = (page - 1) * limit;
+
+    const dateFilter: Prisma.DateTimeFilter | undefined =
+      filters.startDate || filters.endDate
+        ? {
+            ...(filters.startDate ? { gte: new Date(filters.startDate) } : {}),
+            ...(filters.endDate ? (() => { const d = new Date(filters.endDate!); d.setHours(23,59,59,999); return { lte: d }; })() : {})
+          }
+        : undefined;
+
+    const paymentWhere: Prisma.PaymentWhereInput = {};
+    if (filters.status) paymentWhere.status = filters.status;
+    if (dateFilter) paymentWhere.createdAt = dateFilter;
+
+    const poWhere: Prisma.PurchaseOrderWhereInput = {};
+    if (dateFilter) poWhere.createdAt = dateFilter;
+
+    const expWhere: Prisma.ExpenseWhereInput = {};
+    if (filters.category) expWhere.category = filters.category;
+    if (filters.status) expWhere.status = filters.status;
+    if (dateFilter) expWhere.date = dateFilter;
+    if (filters.search) expWhere.description = { contains: filters.search, mode: 'insensitive' };
+
+    // Determine what to fetch based on type filter
+    const fetchPayments = !filters.type || filters.type === 'INCOME';
+    const fetchExpenses = !filters.type || filters.type === 'EXPENSE';
+
+    const [payments, po, expenses] = await Promise.all([
+      fetchPayments ? prisma.payment.findMany({
+        where: paymentWhere,
+        orderBy: { createdAt: 'desc' },
+        include: { invoice: { include: { lineItems: true } } },
+        take: 500  // over-fetch before unified sort
+      }) : Promise.resolve([]),
+      fetchExpenses ? prisma.purchaseOrder.findMany({
+        where: poWhere,
+        orderBy: { createdAt: 'desc' },
+        include: { supplier: true },
+        take: 500
+      }) : Promise.resolve([]),
+      fetchExpenses ? prisma.expense.findMany({
+        where: expWhere,
+        orderBy: { date: 'desc' },
+        take: 500
+      }) : Promise.resolve([])
+    ]);
+
+    const unified: any[] = [];
+
+    payments.forEach((p: any) => {
+      const category = p.invoice?.lineItems[0]?.department || 'MIXED';
+      if (filters.category && filters.category !== category) return;
+      if (filters.search && !p.id.toLowerCase().includes(filters.search.toLowerCase()) && !category.toLowerCase().includes(filters.search.toLowerCase())) return;
+      unified.push({
+        id: (p.id.split('-')[0] || '').toUpperCase(),
+        fullId: p.id,
+        date: p.createdAt.toISOString(),
+        type: 'INCOME',
+        category,
+        amount: p.amount,
+        status: p.status
+      });
+    });
+
+    po.forEach((p: any) => {
+      if (filters.category && filters.category !== 'SUPPLIES') return;
+      unified.push({
+        id: (p.id.split('-')[0] || '').toUpperCase(),
+        fullId: p.id,
+        date: p.createdAt.toISOString(),
+        type: 'EXPENSE',
+        category: 'SUPPLIES',
+        amount: p.totalAmount,
+        status: p.status === 'PENDING' ? 'PENDING' : 'COMPLETED',
+        description: p.supplier?.name ? `Purchase Order - ${p.supplier.name}` : 'Purchase Order'
+      });
+    });
+
+    expenses.forEach((e: any) => {
+      unified.push({
+        id: (e.id.split('-')[0] || '').toUpperCase(),
+        fullId: e.id,
+        date: e.date.toISOString(),
+        type: 'EXPENSE',
+        category: e.category,
+        amount: e.amount,
+        status: e.status,
+        description: e.description
+      });
+    });
+
+    unified.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    const total = unified.length;
+    const paginated = unified.slice(skip, skip + limit);
+
+    return {
+      data: paginated,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
+  }
+
+  async updateExpense(id: string, data: { category?: string; amount?: number; description?: string; date?: string }) {
+    return prisma.expense.update({
+      where: { id },
+      data: {
+        ...(data.category && { category: data.category }),
+        ...(data.amount !== undefined && { amount: Number(data.amount) }),
+        ...(data.description && { description: data.description }),
+        ...(data.date && { date: new Date(data.date) }),
+      }
+    });
+  }
+
+  async deleteExpense(id: string) {
+    return prisma.expense.delete({
+      where: { id }
+    });
+  }
+
+  // --- Purchase Orders API ---
+
+  async createPurchaseOrder(data: { supplierId: string; items: { medicineId: string; quantity: number; unitPrice: number; }[] }) {
+    let totalAmount = 0;
+    const poItems = data.items.map(item => {
+      const totalPrice = Math.round(item.quantity * item.unitPrice * 100) / 100;
+      totalAmount = Math.round((totalAmount + totalPrice) * 100) / 100;
+      return {
+        medicineId: item.medicineId,
+        quantity: item.quantity,
+        unitPrice: Math.round(item.unitPrice * 100) / 100,
+        totalPrice
+      };
+    });
+
+    return prisma.purchaseOrder.create({
+      data: {
+        supplierId: data.supplierId,
+        totalAmount,
+        status: "PENDING",
+        items: {
+          create: poItems
+        }
+      },
+      include: {
+        items: true,
+        supplier: true
+      }
+    });
+  }
+
+  async getPurchaseOrders(page: number = 1, limit: number = 50) {
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      prisma.purchaseOrder.findMany({
+        orderBy: { createdAt: 'desc' },
+        include: {
+          items: {
+            include: { medicine: true }
+          },
+          supplier: true
+        },
+        skip,
+        take: limit
+      }),
+      prisma.purchaseOrder.count()
+    ]);
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
+  }
+
+  async updatePurchaseOrderStatus(id: string, status: string) {
+    const validStatuses = ['PENDING', 'DELIVERED', 'COMPLETED', 'CANCELLED'];
+    if (!validStatuses.includes(status)) {
+      throw new Error(`Invalid status. Must be one of: ${validStatuses.join(', ')}`);
+    }
+
+    return prisma.$transaction(async (tx) => {
+      const po = await tx.purchaseOrder.findUnique({
+        where: { id },
+        include: { items: { include: { medicine: true } } }
+      });
+
+      if (!po) throw new Error('Purchase Order not found');
+
+      // Guard against idempotency issue — no double-delivering
+      if (status === 'DELIVERED' && (po.status === 'DELIVERED' || po.status === 'COMPLETED')) {
+        throw new Error('This Purchase Order has already been delivered and stock has been received.');
+      }
+
+      // Guard against cancelling a delivered/completed PO without reverting stock
+      if (status === 'CANCELLED' && (po.status === 'DELIVERED' || po.status === 'COMPLETED')) {
+        throw new Error('Cannot cancel a Purchase Order that has already been delivered and received into stock.');
+      }
+
+      const updatedPO = await tx.purchaseOrder.update({
+        where: { id },
+        data: { status },
+        include: { items: true, supplier: true }
+      });
+
+      // AUTO STOCK RECEIVING: When goods are marked as delivered,
+      // automatically create new stock batches for each ordered item.
+      if (status === 'DELIVERED') {
+        const batchTimestamp = Date.now();
+        await Promise.all(
+          po.items.map((item, index) =>
+            tx.stockBatch.create({
+              data: {
+                medicineId: item.medicineId,
+                batchNumber: `PO-${id.slice(-6).toUpperCase()}-${batchTimestamp + index}`,
+                expiryDate: new Date(new Date().setFullYear(new Date().getFullYear() + 1)),
+                initialQuantity: item.quantity,
+                currentQuantity: item.quantity,
+                unitPrice: item.medicine.retailPrice > 0 ? item.medicine.retailPrice : item.unitPrice, // Retail Price for selling
+                costPrice: item.unitPrice // Wholesale Cost Price for accounting
+              }
+            })
+          )
+        );
+      }
+
+      return updatedPO;
+    });
+  }
+
+  // --- Suppliers API ---
+
+  async createSupplier(data: { name: string; contactPerson?: string; email?: string; phone?: string; address?: string }) {
+    return prisma.supplier.create({
+      data
+    });
+  }
+
+  async getSuppliers() {
+    return prisma.supplier.findMany({
+      orderBy: { name: 'asc' }
+    });
+  }
+
+  async updateSupplier(id: string, data: { name?: string; contactPerson?: string; email?: string; phone?: string; address?: string }) {
+    return prisma.supplier.update({
+      where: { id },
+      data
+    });
+  }
+
+  async deleteSupplier(id: string) {
+    // Check constraints: if POs exist, prevent delete
+    const supplier = await prisma.supplier.findUnique({
+      where: { id },
+      include: { _count: { select: { purchaseOrders: true } } }
+    });
+
+    if (supplier && supplier._count.purchaseOrders > 0) {
+      throw new Error("Cannot delete supplier with existing Purchase Orders.");
+    }
+
+    return prisma.supplier.delete({
+      where: { id }
+    });
+  }
+
+  async getShifts(page: number = 1, limit: number = 50) {
+    const skip = (page - 1) * limit;
+    const [shifts, total] = await Promise.all([
+      prisma.cashRegisterShift.findMany({
+        skip,
+        take: limit,
+        orderBy: { openedAt: "desc" },
+        include: {
+          user: { select: { fullName: true } }
+        }
+      }),
+      prisma.cashRegisterShift.count()
+    ]);
+    return {
+      data: shifts.map(s => ({
+        id: s.id,
+        cashier: s.user?.fullName || "Unknown",
+        openedAt: s.openedAt,
+        closedAt: s.closedAt,
+        startingFloat: s.openingFloat,
+        expectedCash: s.expectedCash,
+        actualCash: s.actualCash,
+        variance: s.variance,
+        status: s.status
+      })),
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
   }
 }
 
