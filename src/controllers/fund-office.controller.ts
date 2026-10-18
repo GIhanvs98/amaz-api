@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
+import { S3Service } from "../services/s3.service.js";
 
 // Helper to format date boundaries in local time
 function getDayRange(dateStr: string) {
@@ -421,11 +422,7 @@ export const markDailySheetPaid = async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
     const authUser = (req as any).user;
-    const { paymentMethod = "BANK_TRANSFER", paymentReference, paidAt } = req.body;
-
-    if (!paymentReference) {
-      return res.status(400).json({ success: false, error: "Payment Reference Number is required" });
-    }
+    const { paymentMethod = "BANK_TRANSFER", paymentReference, paymentSlipUrl, paidAt } = req.body;
 
     const sheet = await prisma.doctorDailySheet.findUnique({ where: { id } });
     if (!sheet) return res.status(404).json({ success: false, error: "Daily sheet not found" });
@@ -438,7 +435,8 @@ export const markDailySheetPaid = async (req: Request, res: Response) => {
       data: {
         status: "PAID",
         paymentMethod,
-        paymentReference,
+        paymentReference: paymentReference || sheet.paymentReference || null,
+        paymentSlipUrl: paymentSlipUrl || sheet.paymentSlipUrl || null,
         paidAt: paidAt ? new Date(paidAt) : new Date(),
         disbursedById: authUser?.id || null,
         disbursedByRole: "SUPERADMIN",
@@ -893,6 +891,7 @@ export const disburseDoctorShare = async (req: Request, res: Response) => {
       cashAmount = 0,
       bankAmount = 0,
       paymentReference,
+      paymentSlipUrl,
       bankDetails,
       remarks
     } = req.body;
@@ -922,13 +921,7 @@ export const disburseDoctorShare = async (req: Request, res: Response) => {
       }
     }
 
-    // RULE 2: If Bank Transfer is being disbursed, ensure reference or bank details
-    if (numBank > 0 && !paymentReference) {
-      return res.status(400).json({
-        success: false,
-        error: "Payment Reference / Transaction ID is required for bank transfer disbursements"
-      });
-    }
+    // Payment reference is optional. If provided or if slip uploaded, use it.
 
     // Update doctor's bank details if provided
     if (bankDetails && (bankDetails.bankAccountNumber || bankDetails.bankName)) {
@@ -955,6 +948,19 @@ export const disburseDoctorShare = async (req: Request, res: Response) => {
     const receiptNumber = sheet.receiptNumber || await generateReceiptNumber();
     const roleName = isSuperAdmin ? "SUPERADMIN" : isFrontDesk ? "FRONTDESK" : "CASHIER";
 
+    const resolvedSlipUrl = paymentSlipUrl || sheet.paymentSlipUrl || null;
+    const resolvedBankDetails = bankDetails
+      ? { ...bankDetails, slipUrl: resolvedSlipUrl }
+      : sheet.bankDetails
+      ? { ...(typeof sheet.bankDetails === 'object' ? sheet.bankDetails : {}), slipUrl: resolvedSlipUrl }
+      : {
+          bankName: sheet.doctor.bankName,
+          bankBranch: sheet.doctor.bankBranch,
+          bankAccountNumber: sheet.doctor.bankAccountNumber,
+          bankAccountName: sheet.doctor.bankAccountName,
+          slipUrl: resolvedSlipUrl
+        };
+
     const updated = await prisma.doctorDailySheet.update({
       where: { id },
       data: {
@@ -962,14 +968,10 @@ export const disburseDoctorShare = async (req: Request, res: Response) => {
         bankDisbursed: newBankDisbursed,
         disbursedByRole: roleName,
         disbursedById: authUser?.id || null,
-        bankDetails: bankDetails || sheet.bankDetails || {
-          bankName: sheet.doctor.bankName,
-          bankBranch: sheet.doctor.bankBranch,
-          bankAccountNumber: sheet.doctor.bankAccountNumber,
-          bankAccountName: sheet.doctor.bankAccountName
-        },
+        bankDetails: resolvedBankDetails,
+        paymentSlipUrl: resolvedSlipUrl,
         paymentMethod: disbursementType || (numCash > 0 && numBank > 0 ? "SPLIT" : numCash > 0 ? "CASH" : "BANK_TRANSFER"),
-        paymentReference: paymentReference || sheet.paymentReference || (numCash > 0 ? `CASH-VOUCHER-${Date.now().toString().slice(-6)}` : null),
+        paymentReference: paymentReference || sheet.paymentReference || (numCash > 0 ? `CASH-VOUCHER-${Date.now().toString().slice(-6)}` : (resolvedSlipUrl ? `SLIP-${Date.now().toString().slice(-6)}` : null)),
         paidAt: new Date(),
         receiptNumber,
         status: newStatus,
@@ -999,6 +1001,33 @@ export const disburseDoctorShare = async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error("disburseDoctorShare error:", error);
     res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// POST /api/fund-office/upload-slip
+export const uploadPaymentSlip = async (req: Request, res: Response) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ success: false, error: "No file uploaded" });
+    }
+
+    const cleanName = (file.originalname || "slip")
+      .replace(/[^a-zA-Z0-9.-]/g, "_")
+      .toLowerCase();
+    const key = `payment-slips/slip-${Date.now()}-${cleanName}`;
+
+    const fileUrl = await S3Service.uploadBuffer(file.buffer, key, file.mimetype || "application/octet-stream");
+
+    return res.json({
+      success: true,
+      fileUrl,
+      key,
+      message: "Payment slip uploaded successfully"
+    });
+  } catch (error: any) {
+    console.error("uploadPaymentSlip error:", error);
+    return res.status(500).json({ success: false, error: error.message || "Failed to upload payment slip" });
   }
 };
 

@@ -1,4 +1,5 @@
 import express from "express";
+import multer from "multer";
 import { verifyToken } from "../middlewares/auth.middleware.js";
 import {
   syncOrCreateDailySheet,
@@ -14,12 +15,21 @@ import {
   getDoctorBankDetails,
   updateDoctorBankDetails,
   getFrontdeskDoctorShares,
-  getUnifiedPaymentHistory
+  getUnifiedPaymentHistory,
+  uploadPaymentSlip
 } from "../controllers/fund-office.controller.js";
 
 const router = express.Router();
 
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 } // 15MB max
+});
+
 router.use(verifyToken);
+
+// File Upload for Payment Slips
+router.post("/upload-slip", upload.single("file"), uploadPaymentSlip);
 
 // Fund Office Dashboard Metrics & Reports
 router.get("/metrics", getFundOfficeMetrics);
