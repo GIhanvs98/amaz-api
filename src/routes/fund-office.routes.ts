@@ -8,7 +8,8 @@ import {
   approveDailySheet,
   markDailySheetPaid,
   getFundOfficeMetrics,
-  getDoctorWiseReports
+  getDoctorWiseReports,
+  getDoctorEarningsSummary
 } from "../controllers/fund-office.controller.js";
 
 const router = express.Router();
@@ -18,6 +19,7 @@ router.use(verifyToken);
 // Fund Office Dashboard Metrics & Reports
 router.get("/metrics", getFundOfficeMetrics);
 router.get("/reports", getDoctorWiseReports);
+router.get("/doctor-summary", getDoctorEarningsSummary);
 
 // Doctor Daily Sheets & Patient Records
 router.post("/daily-sheets/sync-or-create", syncOrCreateDailySheet);

@@ -75,8 +75,12 @@ export const generateDoctorStatements = async (req: Request, res: Response) => {
       const appointments = await prisma.appointment.findMany({
         where: {
           doctorId: doc.id,
-          completedAt: { gte: start, lte: end },
           status: "COMPLETED",
+          OR: [
+            { completedAt: { gte: start, lte: end } },
+            { appointmentDate: { gte: start, lte: end } },
+            { createdAt: { gte: start, lte: end } }
+          ],
         },
         select: { id: true },
       });

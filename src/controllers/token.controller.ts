@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { websocketService } from "../services/websocket.service.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+import { recordCompletedConsultationInDailySheet } from "./fund-office.controller.js";
 
 export const generateToken = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -183,14 +184,26 @@ export const updateTokenStatus = async (req: Request, res: Response): Promise<vo
       return;
     }
 
+    const isCompleted = status === "COMPLETED";
+    const updateData: any = { status };
+    if (isCompleted) {
+      updateData.completedAt = new Date();
+    }
+
     const updatedApp = await prisma.appointment.update({
       where: { id: appointment.id },
-      data: { status },
+      data: updateData,
       include: {
         User: true,
         Patient: true
       }
     });
+
+    if (isCompleted) {
+      recordCompletedConsultationInDailySheet(appointment.id).catch((e) =>
+        console.error("Error auto-recording daily sheet for appointment:", e)
+      );
+    }
 
     websocketService.broadcast("TOKEN_STATUS_UPDATED", updatedApp);
 
