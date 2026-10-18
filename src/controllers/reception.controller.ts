@@ -1564,65 +1564,329 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
     if (!user) return res.status(401).json({ error: "Unauthorized" });
     
     const shift = await prisma.cashRegisterShift.findFirst({
-      where: { openedBy: user.id, status: "OPEN" }
+      where: { openedBy: user.id, status: "OPEN" },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            Role: { select: { name: true } }
+          }
+        }
+      }
     });
 
     if (!shift) return res.status(400).json({ error: "No open shift found." });
     
-    const [payments, refunds] = await Promise.all([
+    const [payments, refunds, doctorDisbursements, todayAgg] = await Promise.all([
       prisma.payment.findMany({
-        where: { shiftId: shift.id, status: "COMPLETED" }
+        where: { shiftId: shift.id, status: "COMPLETED" },
+        include: {
+          invoice: {
+            include: {
+              lineItems: true
+            }
+          },
+          Appointment: {
+            include: {
+              User: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  specialty: true,
+                  consultationFee: true,
+                  commissionRate: true
+                }
+              }
+            }
+          }
+        }
       }),
       prisma.refund.findMany({
         where: { shiftId: shift.id, status: "COMPLETED" },
         include: { payment: true }
-      })
+      }),
+      prisma.doctorDailySheet.findMany({
+        where: {
+          disbursedById: user.id,
+          updatedAt: { gte: shift.openedAt },
+          cashDisbursed: { gt: 0 }
+        },
+        include: {
+          doctor: {
+            select: { id: true, fullName: true, specialty: true }
+          }
+        }
+      }),
+      (() => {
+        const { startOfDay, endOfDay } = getTimezoneBoundaries();
+        return prisma.payment.aggregate({
+          where: {
+            createdAt: { gte: startOfDay, lte: endOfDay },
+            status: "COMPLETED"
+          },
+          _sum: { amount: true }
+        });
+      })()
     ]);
 
+    // Resolve doctor details for any invoices linked via visitId
+    const visitIds = payments
+      .map(p => p.invoice?.visitId)
+      .filter((id): id is string => Boolean(id));
+
+    const visitAppointments = visitIds.length > 0
+      ? await prisma.appointment.findMany({
+          where: { id: { in: visitIds } },
+          include: {
+            User: {
+              select: {
+                id: true,
+                fullName: true,
+                specialty: true,
+                consultationFee: true,
+                commissionRate: true
+              }
+            }
+          }
+        })
+      : [];
+
+    const visitMap = new Map<string, any>();
+    visitAppointments.forEach(va => visitMap.set(va.id, va));
+
+    // 1. Payment Method Breakdown
     let systemCashTotal = 0;
     let systemCardTotal = 0;
+    let systemBankTotal = 0;
+    let systemQrTotal = 0;
 
     payments.forEach(payment => {
-      if (payment.method === "CASH") systemCashTotal += payment.amount;
-      if (payment.method === "CARD" || payment.method === "BANK" || payment.method === "QR") systemCardTotal += payment.amount;
-    });
-
-    let cashRefundsTotal = 0;
-    refunds.forEach(refund => {
-      if (refund.payment?.method === "CASH") {
-        cashRefundsTotal += refund.amount;
+      const amt = payment.amount || 0;
+      const m = (payment.method || "CASH").toUpperCase();
+      if (m === "CASH") {
+        systemCashTotal += amt;
+      } else if (m === "CARD") {
+        systemCardTotal += amt;
+      } else if (m === "BANK" || m === "TRANSFER") {
+        systemBankTotal += amt;
+      } else if (m === "QR") {
+        systemQrTotal += amt;
+      } else {
+        systemCardTotal += amt;
       }
     });
 
-    const totalSales = systemCashTotal + systemCardTotal;
-    const expectedCash = shift.openingFloat + systemCashTotal - cashRefundsTotal;
-    const variance = Number(declaredCash) - expectedCash;
+    // 2. Department Breakdown
+    let consultationSales = 0;
+    let pharmacySales = 0;
+    let labSales = 0;
+    let extraServiceSales = 0;
+    let otherSales = 0;
 
+    const countedInvoices = new Set<string>();
+    payments.forEach(p => {
+      if (p.invoice && !countedInvoices.has(p.invoice.id)) {
+        countedInvoices.add(p.invoice.id);
+        (p.invoice.lineItems || []).forEach(li => {
+          const tot = li.total || 0;
+          const dept = (li.department || "").toUpperCase();
+          if (dept === "CONSULTATION") {
+            consultationSales += tot;
+          } else if (dept === "PHARMACY") {
+            pharmacySales += tot;
+          } else if (dept === "LAB") {
+            labSales += tot;
+          } else if (dept === "EXTRA_SERVICE" || dept === "OTHER") {
+            extraServiceSales += tot;
+          } else {
+            otherSales += tot;
+          }
+        });
+      }
+    });
+
+    // 3. Refunds
+    let cashRefundsTotal = 0;
+    let nonCashRefundsTotal = 0;
+    refunds.forEach(refund => {
+      const rAmt = refund.amount || 0;
+      if (refund.payment?.method === "CASH") {
+        cashRefundsTotal += rAmt;
+      } else {
+        nonCashRefundsTotal += rAmt;
+      }
+    });
+
+    // 4. Doctor Payments Breakdown
+    const doctorMap = new Map<string, {
+      doctorId: string;
+      doctorName: string;
+      specialty: string;
+      patientCount: number;
+      totalFee: number;
+      commissionRate: number;
+      hospitalCommission: number;
+      netDoctorPayment: number;
+    }>();
+
+    payments.forEach(p => {
+      const doc = p.Appointment?.User || (p.invoice?.visitId ? visitMap.get(p.invoice.visitId)?.User : null);
+      const consultItems = p.invoice?.lineItems?.filter(li => li.department === "CONSULTATION") || [];
+      const consultTotal = consultItems.reduce((acc, ci) => acc + (ci.total || 0), 0);
+
+      if (doc) {
+        const docId = doc.id;
+        const current = doctorMap.get(docId) || {
+          doctorId: docId,
+          doctorName: doc.fullName.startsWith("Dr.") ? doc.fullName : `Dr. ${doc.fullName}`,
+          specialty: doc.specialty || "General",
+          patientCount: 0,
+          totalFee: 0,
+          commissionRate: doc.commissionRate ?? 20,
+          hospitalCommission: 0,
+          netDoctorPayment: 0
+        };
+        current.patientCount += 1;
+        current.totalFee += (consultTotal > 0 ? consultTotal : (doc.consultationFee || p.amount));
+        doctorMap.set(docId, current);
+      } else if (consultItems.length > 0) {
+        consultItems.forEach(ci => {
+          const rawDocName = ci.description
+            .replace(/^Specialist Consultation\s*(\(Upfront\))?\s*-\s*/i, "")
+            .replace(/^Consultation\s*-\s*/i, "")
+            .trim();
+          const cleanName = rawDocName.startsWith("Dr.") ? rawDocName : `Dr. ${rawDocName || "Specialist"}`;
+          const key = `named_${cleanName}`;
+          const current = doctorMap.get(key) || {
+            doctorId: key,
+            doctorName: cleanName,
+            specialty: "Consultation",
+            patientCount: 0,
+            totalFee: 0,
+            commissionRate: 20,
+            hospitalCommission: 0,
+            netDoctorPayment: 0
+          };
+          current.patientCount += ci.quantity || 1;
+          current.totalFee += ci.total || 0;
+          doctorMap.set(key, current);
+        });
+      }
+    });
+
+    const doctorPayments = Array.from(doctorMap.values()).map(d => {
+      const hospComm = Math.round(d.totalFee * (d.commissionRate / 100) * 100) / 100;
+      const netDoc = Math.round((d.totalFee - hospComm) * 100) / 100;
+      return {
+        ...d,
+        hospitalCommission: hospComm,
+        netDoctorPayment: netDoc
+      };
+    });
+
+    const totalDoctorPayments = {
+      totalDoctors: doctorPayments.length,
+      totalConsultations: doctorPayments.reduce((sum, d) => sum + d.patientCount, 0),
+      totalFee: doctorPayments.reduce((sum, d) => sum + d.totalFee, 0),
+      hospitalCommission: doctorPayments.reduce((sum, d) => sum + d.hospitalCommission, 0),
+      netDoctorPayment: doctorPayments.reduce((sum, d) => sum + d.netDoctorPayment, 0)
+    };
+
+    // 5. Doctor Cash Disbursements
+    const totalDoctorCashDisbursed = doctorDisbursements.reduce((sum, d) => sum + (d.cashDisbursed || 0), 0);
+    const doctorDisbursementsList = doctorDisbursements.map(d => ({
+      id: d.id,
+      doctorName: d.doctor?.fullName || "Doctor",
+      specialty: d.doctor?.specialty || "",
+      cashDisbursed: d.cashDisbursed,
+      disbursedAt: d.updatedAt
+    }));
+
+    // 6. Cash Balance & Drawer Reconciliation
+    const startingFloat = shift.openingFloat || 0;
+    const totalSales = systemCashTotal + systemCardTotal + systemBankTotal + systemQrTotal;
+    const netSales = totalSales - (cashRefundsTotal + nonCashRefundsTotal);
+    const expectedCash = startingFloat + systemCashTotal - cashRefundsTotal - totalDoctorCashDisbursed;
+    const actualCash = Number(declaredCash);
+    const variance = actualCash - expectedCash;
+    const varianceStatus = Math.abs(variance) < 0.01 ? "BALANCED" : variance > 0 ? "SURPLUS" : "SHORTAGE";
+
+    // 7. Update Shift in Database
+    const closedAt = new Date();
     await prisma.cashRegisterShift.update({
       where: { id: shift.id },
       data: {
-        closedAt: new Date(),
+        closedAt,
         status: "CLOSED",
         expectedCash,
-        actualCash: Number(declaredCash),
+        actualCash,
         variance
       }
     });
 
+    const openedAt = shift.openedAt;
+    const durationMs = closedAt.getTime() - new Date(openedAt).getTime();
+    const durationHours = Math.floor(durationMs / (1000 * 60 * 60));
+    const durationMins = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+    const durationFormatted = `${durationHours}h ${durationMins}m`;
+
     const summary = {
+      // 1. Shift & Cashier Meta
+      shiftId: shift.id,
+      shiftRef: `SH-${shift.id.slice(0, 8).toUpperCase()}`,
+      cashierId: user.id,
+      cashierName: shift.user?.fullName || user.fullName || "Cashier",
+      cashierRole: shift.user?.Role?.name || user.role || "Cashier",
+      openedAt,
+      closedAt,
+      durationMinutes: Math.round(durationMs / 60000),
+      durationFormatted,
+      printedAt: closedAt.toISOString(),
+
+      // 2. Day & Shift Sales Breakdown
       totalInvoices: payments.length,
-      startingFloat: shift.openingFloat,
+      totalTransactions: payments.length,
       systemCashTotal,
       systemCardTotal,
+      systemBankTotal,
+      systemQrTotal,
+      nonCashTotal: systemCardTotal + systemBankTotal + systemQrTotal,
+      grossSales: totalSales,
       totalSales,
       cashRefundsTotal,
-      declaredCash: Number(declaredCash),
+      totalRefunds: cashRefundsTotal + nonCashRefundsTotal,
+      netSales,
+      todayHospitalTotalSales: todayAgg._sum.amount || 0,
+      departmentSales: {
+        consultations: consultationSales,
+        pharmacy: pharmacySales,
+        lab: labSales,
+        extraServices: extraServiceSales,
+        other: otherSales
+      },
+
+      // 3. Cash Balance & Drawer Reconciliation
+      startingFloat,
+      cashCollected: systemCashTotal,
+      cashRefunds: cashRefundsTotal,
+      doctorCashDisbursed: totalDoctorCashDisbursed,
       expectedCash,
-      variance
+      actualCash,
+      declaredCash: actualCash,
+      variance,
+      varianceStatus,
+
+      // 4. Doctor Payments
+      doctorPayments,
+      totalDoctorPayments,
+      doctorDisbursementsList
     };
 
     res.json({ success: true, data: summary });
   } catch (error: any) {
+    console.error("closeShiftAndGetSummary error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
