@@ -50,6 +50,7 @@ import patientPortalRoutes from "./routes/patient-portal.routes.js";
 import roomRoutes from "./routes/room.routes.js";
 import staffRoutes from "./routes/staff.routes.js";
 import hrRoutes from "./routes/hr.routes.js";
+import fundOfficeRoutes from "./routes/fund-office.routes.js";
 
 import { prisma } from "./lib/prisma.js";
 
@@ -91,6 +92,7 @@ app.use("/api/patient-portal", patientPortalRoutes);
 app.use("/api/rooms", roomRoutes);
 app.use("/api/staff", staffRoutes);
 app.use("/api/hr", hrRoutes);
+app.use("/api/fund-office", fundOfficeRoutes);
 
 
 // Handle 404

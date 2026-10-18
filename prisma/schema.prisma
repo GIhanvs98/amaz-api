@@ -393,6 +393,7 @@ model User {
   room             Room?               @relation(fields: [roomId], references: [id])
   consultationFee  Float?              @default(2500)
   feeType          String              @default("POST") // UPFRONT or POST
+  commissionRate   Float?              @default(20) // % Hospital Commission
   departmentId     String?
   basicSalary      Float?
   isActive         Boolean             @default(true)
@@ -412,6 +413,7 @@ model User {
   OvertimeRecords        OvertimeRecord[]
   ApprovedOvertimes      OvertimeRecord[]        @relation("OTApprover")
   DoctorPaymentStatements DoctorPaymentStatement[]
+  DoctorDailySheets      DoctorDailySheet[]
   EmployeeProfile        EmployeeProfile?
 }
 
@@ -804,4 +806,53 @@ model ProcessedAttendance {
   employee   EmployeeProfile @relation(fields: [employeeId], references: [id])
   
   @@unique([employeeId, timestamp]) // Prevent duplicate scans in the same second
+}
+
+model DoctorDailySheet {
+  id                 String                  @id @default(uuid())
+  doctorId           String
+  date               DateTime
+  sessionName        String?                 @default("All Day")
+  totalPatients      Int                     @default(0)
+  consultationFee    Float                   @default(0)
+  totalRevenue       Float                   @default(0)
+  commissionRate     Float                   @default(20) // e.g. 20%
+  hospitalCommission Float                   @default(0)
+  otherAdjustments   Float                   @default(0)
+  netDoctorPayment   Float                   @default(0)
+  status             String                  @default("DRAFT") // DRAFT, VERIFIED, APPROVED, PAID, CANCELLED
+  verifiedById       String?
+  verifiedAt         DateTime?
+  approvedById       String?
+  approvedAt         DateTime?
+  paymentMethod      String?                 // BANK_TRANSFER, CASH, CHEQUE
+  paymentReference   String?
+  paidAt             DateTime?
+  receiptNumber      String?                 @unique
+  remarks            String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @default(now()) @updatedAt
+  doctor             User                    @relation(fields: [doctorId], references: [id])
+  patientItems       DoctorDailyPatientItem[]
+
+  @@unique([doctorId, date])
+  @@index([date])
+  @@index([status])
+}
+
+model DoctorDailyPatientItem {
+  id              String           @id @default(uuid())
+  dailySheetId    String
+  patientName     String
+  patientId       String?
+  appointmentId   String?
+  tokenNumber     String?
+  consultationFee Float            @default(0)
+  hospitalShare   Float            @default(0)
+  doctorShare     Float            @default(0)
+  time            DateTime?        @default(now())
+  remarks         String?
+  dailySheet      DoctorDailySheet @relation(fields: [dailySheetId], references: [id], onDelete: Cascade)
+
+  @@index([dailySheetId])
 }
