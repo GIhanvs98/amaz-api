@@ -33,6 +33,24 @@ async function generateReceiptNumber(): Promise<string> {
   return `${prefix}${String(nextNum).padStart(4, "0")}`;
 }
 
+const signSheetSlips = async <T extends any>(sheet: T): Promise<T> => {
+  if (!sheet) return sheet;
+  const s = { ...sheet } as any;
+  if (s.paymentSlipUrl && S3Service.isS3Url(s.paymentSlipUrl)) {
+    try {
+      const presigned = await S3Service.generateDownloadUrl(s.paymentSlipUrl);
+      if (presigned) s.paymentSlipUrl = presigned;
+    } catch (e) {}
+  }
+  if (s.bankDetails && typeof s.bankDetails === 'object' && s.bankDetails.slipUrl && S3Service.isS3Url(s.bankDetails.slipUrl)) {
+    try {
+      const presigned = await S3Service.generateDownloadUrl(s.bankDetails.slipUrl);
+      if (presigned) s.bankDetails = { ...s.bankDetails, slipUrl: presigned };
+    } catch (e) {}
+  }
+  return s;
+};
+
 // POST /api/fund-office/daily-sheets/sync-or-create
 export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
   try {
@@ -304,7 +322,8 @@ export const getDailySheets = async (req: Request, res: Response) => {
       }
     });
 
-    res.json({ success: true, data: sheets });
+    const signedSheets = await Promise.all(sheets.map(signSheetSlips));
+    res.json({ success: true, data: signedSheets });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -337,7 +356,8 @@ export const getDailySheetById = async (req: Request, res: Response) => {
 
     if (!sheet) return res.status(404).json({ success: false, error: "Daily sheet not found" });
 
-    res.json({ success: true, data: sheet });
+    const signedSheet = await signSheetSlips(sheet);
+    res.json({ success: true, data: signedSheet });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1018,16 +1038,39 @@ export const uploadPaymentSlip = async (req: Request, res: Response) => {
     const key = `payment-slips/slip-${Date.now()}-${cleanName}`;
 
     const fileUrl = await S3Service.uploadBuffer(file.buffer, key, file.mimetype || "application/octet-stream");
+    const presignedUrl = await S3Service.generateDownloadUrl(key);
 
     return res.json({
       success: true,
       fileUrl,
+      presignedUrl: presignedUrl || fileUrl,
       key,
       message: "Payment slip uploaded successfully"
     });
   } catch (error: any) {
     console.error("uploadPaymentSlip error:", error);
     return res.status(500).json({ success: false, error: error.message || "Failed to upload payment slip" });
+  }
+};
+
+// GET /api/fund-office/view-slip
+export const viewPaymentSlip = async (req: Request, res: Response) => {
+  try {
+    const { url, key } = req.query;
+    const target = (url || key) as string;
+    if (!target) {
+      return res.status(400).send("No file key or URL provided");
+    }
+
+    const presigned = await S3Service.generateDownloadUrl(target);
+    if (!presigned) {
+      return res.status(404).send("Unable to generate secure view link for slip");
+    }
+
+    return res.redirect(presigned);
+  } catch (error: any) {
+    console.error("viewPaymentSlip error:", error);
+    return res.status(500).send("Error loading slip");
   }
 };
 
@@ -1122,7 +1165,8 @@ export const getFrontdeskDoctorShares = async (req: Request, res: Response) => {
       }
     });
 
-    res.json({ success: true, data: sheets });
+    const signedSheets = await Promise.all(sheets.map(signSheetSlips));
+    res.json({ success: true, data: signedSheets });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1177,7 +1221,8 @@ export const getUnifiedPaymentHistory = async (req: Request, res: Response) => {
       }
     });
 
-    res.json({ success: true, data: history });
+    const signedHistory = await Promise.all(history.map(signSheetSlips));
+    res.json({ success: true, data: signedHistory });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

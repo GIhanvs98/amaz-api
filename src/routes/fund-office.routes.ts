@@ -16,7 +16,8 @@ import {
   updateDoctorBankDetails,
   getFrontdeskDoctorShares,
   getUnifiedPaymentHistory,
-  uploadPaymentSlip
+  uploadPaymentSlip,
+  viewPaymentSlip
 } from "../controllers/fund-office.controller.js";
 
 const router = express.Router();
@@ -25,6 +26,9 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 } // 15MB max
 });
+
+// Direct Secure View for Payment Slips (handles browser new tab redirects to S3 presigned URLs)
+router.get("/view-slip", viewPaymentSlip);
 
 router.use(verifyToken);
 
