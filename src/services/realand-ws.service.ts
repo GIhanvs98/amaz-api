@@ -13,7 +13,8 @@ class RealandWsService {
 
     server.on("upgrade", (request, socket, head) => {
       const url = new URL(request.url || "", `http://${request.headers.host}`);
-      if (url.pathname === "/ws/biometric") {
+      // Handle biometric connections on /ws/biometric, /ws, /, /wssample, but avoid interfering with socket.io
+      if (!url.pathname.startsWith("/socket.io")) {
         this.wss!.handleUpgrade(request, socket, head, (ws) => {
           this.wss!.emit("connection", ws, request);
         });
@@ -35,18 +36,42 @@ class RealandWsService {
 
           const serialNo = msg.DeviceSerialNo || "UNKNOWN";
 
+          // Track device status as ONLINE in database
+          if (serialNo !== "UNKNOWN") {
+            try {
+              await prisma.biometricDevice.upsert({
+                where: { serialNumber: serialNo },
+                update: {
+                  status: "ONLINE",
+                  lastSeenAt: new Date(),
+                  ipAddress: request.socket.remoteAddress || null
+                },
+                create: {
+                  serialNumber: serialNo,
+                  location: "Main Entrance",
+                  status: "ONLINE",
+                  lastSeenAt: new Date(),
+                  ipAddress: request.socket.remoteAddress || null
+                }
+              });
+            } catch (devErr) {
+              // Ignore unique/constraint race conditions
+            }
+          }
+
           // Handle "Register" command
           if (msg.Request === "Register") {
             const token = crypto.randomUUID();
             const responseXml = `<?xml version="1.0"?>\n` + this.xmlBuilder.buildObject({
               Response: "Register",
-              Actid: msg.Rrid,
+              Actid: msg.Rrid || "0",
               Time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
               DeviceSerialNo: serialNo,
               Token: token,
               Result: "OK"
             });
             ws.send(responseXml);
+            console.log(`[Realand WS] Register response sent for ${serialNo}`);
             return;
           }
 
@@ -54,12 +79,26 @@ class RealandWsService {
           if (msg.Request === "Login") {
             const responseXml = `<?xml version="1.0"?>\n` + this.xmlBuilder.buildObject({
               Response: "Login",
-              Actid: msg.Rrid,
+              Actid: msg.Rrid || "0",
               Time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
               DeviceSerialNo: serialNo,
               Result: "OK"
             });
             ws.send(responseXml);
+            console.log(`[Realand WS] Login response sent for ${serialNo}`);
+            return;
+          }
+
+          // Handle "AdminLog" / "AdminLog_v2" (Real-time admin/enrollment event pushed by device)
+          if (msg.Event === "AdminLog" || msg.Event === "AdminLog_v2") {
+            const responseXml = `<?xml version="1.0"?>\n` + this.xmlBuilder.buildObject({
+              Response: msg.Event === "AdminLog_v2" ? "AdminLog_v2" : "AdminLog",
+              Actid: msg.Rrid || msg.TransID || "0",
+              Time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+              Result: "OK"
+            });
+            ws.send(responseXml);
+            console.log(`[Realand WS] AdminLog ACK sent for ${serialNo}`);
             return;
           }
 
@@ -78,7 +117,7 @@ class RealandWsService {
       });
     });
 
-    console.log("[Realand WS] Service initialized on /ws/biometric");
+    console.log("[Realand WS] Service initialized for biometric terminals.");
   }
 
   private async handleTimeLog(msg: any, ws: WebSocket, serialNo: string) {
@@ -93,23 +132,63 @@ class RealandWsService {
 
       // 2. Process the attendance record
       const deviceUserId = msg.UserID;
-      const timestampStr = msg.Time;
-      if (deviceUserId && timestampStr) {
+      const rawTime = msg.Time;
+      // Realand devices format time as "2026-10-19-T12:00:00Z" (note the hyphen before T).
+      const cleanTime = rawTime ? rawTime.replace("-T", "T") : new Date().toISOString();
+      const punchTime = isNaN(new Date(cleanTime).getTime()) ? new Date() : new Date(cleanTime);
+
+      if (deviceUserId) {
         const mapping = await prisma.deviceUserMapping.findFirst({
-          where: { deviceUserId: String(deviceUserId) }
+          where: { deviceUserId: String(deviceUserId) },
+          include: { employee: true }
         });
 
         if (mapping) {
           await prisma.processedAttendance.create({
             data: {
               employeeId: mapping.employeeId,
-              timestamp: new Date(timestampStr),
+              timestamp: punchTime,
               type: "CLOCK_IN",
             },
           });
-          console.log(`[Realand WS] Punch processed for User ID: ${deviceUserId}`);
+
+          // Also update StaffAttendance if user is linked
+          if (mapping.employee?.userId) {
+            const todayStart = new Date(punchTime.getFullYear(), punchTime.getMonth(), punchTime.getDate(), 0, 0, 0, 0);
+            await prisma.staffAttendance.upsert({
+              where: {
+                userId_date: {
+                  userId: mapping.employee.userId,
+                  date: todayStart
+                }
+              },
+              update: {
+                checkIn: punchTime
+              },
+              create: {
+                userId: mapping.employee.userId,
+                date: todayStart,
+                checkIn: punchTime,
+                status: "PRESENT"
+              }
+            }).catch(() => {});
+
+            // If user is a Doctor, update DoctorAttendance arrivedAt
+            await prisma.doctorAttendance.updateMany({
+              where: {
+                doctorId: mapping.employee.userId,
+                date: { gte: todayStart }
+              },
+              data: {
+                status: "ARRIVED",
+                arrivedAt: punchTime
+              }
+            }).catch(() => {});
+          }
+
+          console.log(`[Realand WS] Punch processed for Device User ID: ${deviceUserId}`);
         } else {
-          console.warn(`[Realand WS] Unknown User ID scanned: ${deviceUserId}`);
+          console.warn(`[Realand WS] Unmapped Device User ID scanned: ${deviceUserId}`);
         }
         
         // Mark raw log processed
@@ -122,7 +201,7 @@ class RealandWsService {
       // 3. Send ACK to device so it removes the offline log
       const responseXml = `<?xml version="1.0"?>\n` + this.xmlBuilder.buildObject({
         Response: "TimeLog",
-        Actid: msg.Rrid,
+        Actid: msg.Rrid || "0",
         Time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
         Result: "OK"
       });
