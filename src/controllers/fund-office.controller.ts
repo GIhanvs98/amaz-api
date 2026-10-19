@@ -1136,6 +1136,28 @@ export const getFrontdeskDoctorShares = async (req: Request, res: Response) => {
     const targetDate = date ? String(date) : new Date().toISOString().split("T")[0]!;
     const { start, end } = getDayRange(targetDate);
 
+    // Auto-sync completed appointments for targetDate so frontdesk always sees active doctors
+    try {
+      const completedApts = await prisma.appointment.findMany({
+        where: {
+          status: "COMPLETED",
+          ...(doctorId && doctorId !== "ALL" ? { doctorId: String(doctorId) } : {}),
+          OR: [
+            { completedAt: { gte: start, lte: end } },
+            { appointmentDate: { gte: start, lte: end } },
+            { createdAt: { gte: start, lte: end } }
+          ]
+        },
+        select: { id: true }
+      });
+
+      for (const apt of completedApts) {
+        await recordCompletedConsultationInDailySheet(apt.id);
+      }
+    } catch (syncErr) {
+      console.warn("Auto-sync completed appointments warning:", syncErr);
+    }
+
     const where: any = {
       date: { gte: start, lte: end }
     };
