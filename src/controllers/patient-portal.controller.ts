@@ -13,40 +13,54 @@ export const requestOTP = async (req: Request, res: Response) => {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number is required" });
 
+    const cleanPhone = phone.trim();
+    const digitsOnly = cleanPhone.replace(/[^0-9]/g, "");
+    const last9 = digitsOnly.length >= 9 ? digitsOnly.slice(-9) : digitsOnly;
+
     // Check if patient exists (supports multi-family under phone)
     const patients = await prisma.patient.findMany({ 
-      where: { phone, isActive: true },
-      select: { id: true, fullName: true, ageFallback: true, gender: true }
+      where: {
+        isActive: true,
+        OR: [
+          { phone: cleanPhone },
+          ...(digitsOnly ? [{ phone: digitsOnly }] : []),
+          ...(last9 ? [{ phone: { endsWith: last9 } }] : [])
+        ]
+      },
+      select: { id: true, fullName: true, ageFallback: true, gender: true, phone: true }
     });
-    if (patients.length === 0) return res.status(404).json({ error: "No records found for this phone number." });
 
-    // Generate 6-digit OTP
-    const otp = process.env.NODE_ENV === "production"
-      ? Math.floor(100000 + Math.random() * 900000).toString()
-      : "123456";
+    if (patients.length === 0) {
+      return res.status(404).json({ error: "No patient records found for this phone number. Please contact hospital reception." });
+    }
+
+    // Canonical phone to send SMS to
+    const targetPhone = cleanPhone;
+
+    // Generate real secure 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
 
     await prisma.patientOTP.upsert({
-      where: { phone },
+      where: { phone: targetPhone },
       update: { code: otp, expiresAt, attempts: 0 },
-      create: { phone, code: otp, expiresAt }
+      create: { phone: targetPhone, code: otp, expiresAt }
     });
 
     // Dispatch templated SMS via gateway
     NotificationService.sendTemplatedSMS(
       patients[0]?.id || "PORTAL",
-      phone,
+      targetPhone,
       "PATIENT_PORTAL_OTP",
       { otp }
     ).catch((err) => {
       console.error("Failed to send portal OTP SMS:", err);
-      SMSService.sendSMS(phone, `AMAZ Hospital: Your verification code is ${otp}. Valid for 5 minutes. Do not share this OTP with anyone.`).catch(() => {});
+      SMSService.sendSMS(targetPhone, `AMAZ Hospital: Your verification code is ${otp}. Valid for 5 minutes. Do not share this OTP with anyone.`).catch(() => {});
     });
 
     res.json({ 
       success: true, 
-      message: "OTP sent successfully",
-      otp: process.env.NODE_ENV === "production" ? undefined : otp,
+      message: "Verification code sent successfully via SMS",
       patients: patients.length > 1 ? patients : undefined
     });
   } catch (error: any) {
@@ -58,39 +72,60 @@ export const verifyOTP = async (req: Request, res: Response) => {
   try {
     const { phone, otp, patientId } = req.body;
     if (!phone) return res.status(400).json({ error: "Phone number is required" });
+    if (!otp) return res.status(400).json({ error: "Verification code is required" });
 
-    // TEMPORARY BYPASS: allow any OTP or test code 123456
-    const isBypass = true;
+    const cleanPhone = phone.trim();
+    const digitsOnly = cleanPhone.replace(/[^0-9]/g, "");
+    const last9 = digitsOnly.length >= 9 ? digitsOnly.slice(-9) : digitsOnly;
 
-    if (!isBypass) {
-      const record = await prisma.patientOTP.findUnique({ where: { phone } });
-      if (!record) return res.status(400).json({ error: "No OTP requested or OTP expired." });
-
-      if (Date.now() > record.expiresAt.getTime()) {
-        await prisma.patientOTP.delete({ where: { phone } });
-        return res.status(400).json({ error: "OTP expired." });
+    // Look up OTP record by cleanPhone or digits
+    const record = await prisma.patientOTP.findFirst({
+      where: {
+        OR: [
+          { phone: cleanPhone },
+          ...(digitsOnly ? [{ phone: digitsOnly }] : []),
+          ...(last9 ? [{ phone: { endsWith: last9 } }] : [])
+        ]
       }
+    });
 
-      if (record.code !== otp && otp !== "123456") {
-        return res.status(400).json({ error: "Invalid OTP." });
-      }
-
-      await prisma.patientOTP.delete({ where: { phone } });
+    if (!record) {
+      return res.status(400).json({ error: "No OTP requested or OTP has expired. Please request a new code." });
     }
+
+    if (Date.now() > record.expiresAt.getTime()) {
+      await prisma.patientOTP.delete({ where: { id: record.id } }).catch(() => {});
+      return res.status(400).json({ error: "OTP has expired. Please request a new code." });
+    }
+
+    const inputCode = String(otp).trim();
+    if (record.code !== inputCode) {
+      return res.status(400).json({ error: "Invalid verification code. Please check your SMS and try again." });
+    }
+
+    // Delete used OTP
+    await prisma.patientOTP.delete({ where: { id: record.id } }).catch(() => {});
 
     // Resolve patient (by patientId if specified, or by phone)
     let patient = null;
     if (patientId) {
       patient = await prisma.patient.findUnique({ where: { id: patientId } });
     }
-    if (!patient && phone) {
+    if (!patient) {
       patient = await prisma.patient.findFirst({
-        where: { phone, isActive: true },
+        where: {
+          isActive: true,
+          OR: [
+            { phone: cleanPhone },
+            ...(digitsOnly ? [{ phone: digitsOnly }] : []),
+            ...(last9 ? [{ phone: { endsWith: last9 } }] : [])
+          ]
+        },
         orderBy: { createdAt: "desc" }
       });
     }
 
-    if (!patient) return res.status(404).json({ error: "Patient not found." });
+    if (!patient) return res.status(404).json({ error: "Patient record not found." });
 
     // Generate JWT for patient with phone
     const token = jwt.sign(
