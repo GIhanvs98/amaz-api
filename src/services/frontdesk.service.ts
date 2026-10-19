@@ -346,6 +346,86 @@ export class FrontdeskService {
     return apt;
   }
 
+  // 4.1 Cancel Appointment
+  async cancelAppointment(appointmentId: string, reason: string, notes?: string, userId?: string) {
+    const apt = await prisma.appointment.findUnique({
+      where: { id: appointmentId },
+      include: {
+        Patient: true,
+        User: true,
+        Payment: true
+      }
+    });
+
+    if (!apt) throw new Error("Appointment not found");
+
+    const effectiveReason = reason ? `${reason}${notes ? ` - ${notes}` : ''}` : (notes || "Cancelled by Front Desk");
+
+    const updatedApt = await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: {
+        status: "CANCELLED",
+        cancelledAt: new Date(),
+        cancellationReason: effectiveReason
+      },
+      include: { Patient: true, User: true }
+    });
+
+    // Check if there was an invoice / payment for this appointment / visit
+    let wasPaid = false;
+    let invoiceId: string | null = null;
+    let paidAmount = 0;
+
+    const inv = await prisma.invoice.findFirst({
+      where: {
+        OR: [
+          { visitId: appointmentId },
+          ...(apt.bookingReference ? [{ visitId: apt.bookingReference }] : [])
+        ],
+        status: "PAID"
+      },
+      include: { payments: true }
+    });
+
+    if (inv) {
+      wasPaid = true;
+      invoiceId = inv.id;
+      paidAmount = inv.totalAmount;
+    } else if (apt.Payment && apt.Payment.status === "COMPLETED") {
+      wasPaid = true;
+      invoiceId = apt.Payment.invoiceId;
+      paidAmount = apt.Payment.amount;
+    }
+
+    if (userId) {
+      try {
+        await prisma.activityLog.create({
+          data: {
+            entityType: 'Appointment',
+            entityId: appointmentId,
+            action: 'APPOINTMENT_CANCELLED',
+            description: `Token #${apt.tokenNumber} cancelled: ${effectiveReason}`,
+            userId
+          }
+        });
+      } catch (logErr) {
+        console.warn("Could not log activity for cancelAppointment:", logErr);
+      }
+    }
+
+    // Notify clients via WebSocket
+    websocketService.broadcast('TOKEN_STATUS_UPDATED', { sessionId: apt.sessionId, appointment: updatedApt });
+    websocketService.broadcast('APPOINTMENT_CANCELLED', { appointmentId, tokenNumber: apt.tokenNumber });
+
+    return {
+      success: true,
+      appointment: updatedApt,
+      wasPaid,
+      invoiceId,
+      paidAmount
+    };
+  }
+
   // 5. Walk-in Registration
   async createWalkIn(doctorId: string, sessionId: string, patientData: any, userId: string, date?: string) {
     const targetDate = date ? new Date(date) : new Date();

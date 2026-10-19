@@ -5,7 +5,7 @@ import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ADMIN', 'CASHIER', 'RECEPTIONIST']));
+router.use(verifyToken, requireRole(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST']));
 
 // GET /api/billing/cashier-metrics
 router.get('/cashier-metrics', cacheMiddleware(300), billingController.getCashierMetrics.bind(billingController));
@@ -18,6 +18,12 @@ router.post('/charge', billingController.charge.bind(billingController));
 
 // POST /api/billing/invoices/:invoiceId/pay
 router.post('/invoices/:invoiceId/pay', billingController.payInvoice.bind(billingController));
+
+// POST /api/billing/refunds
+router.post('/refunds', billingController.processRefund.bind(billingController));
+
+// GET /api/billing/refunds
+router.get('/refunds', billingController.getRefunds.bind(billingController));
 
 // DELETE /api/billing/invoices/:invoiceId/items/:lineItemId
 router.delete('/invoices/:invoiceId/items/:lineItemId', billingController.removeCharge.bind(billingController));
