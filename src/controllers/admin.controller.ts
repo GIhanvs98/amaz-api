@@ -86,6 +86,7 @@ export const getStaff = async (req: Request, res: Response) => {
       departmentName: s.Department?.name,
       consultationFee: s.consultationFee,
       feeType: s.feeType,
+      commissionRate: s.commissionRate,
       deviceUserId: s.EmployeeProfile?.deviceMapping?.deviceUserId || null
     }));
     
@@ -97,7 +98,7 @@ export const getStaff = async (req: Request, res: Response) => {
 
 export const createStaff = async (req: Request, res: Response) => {
   try {
-    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, deviceUserId } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, commissionRate, deviceUserId } = req.body;
     
     if (!name || !email || !password || !roleName) {
       return res.status(400).json({ success: false, error: "Name, email, password, and roleName are required" });
@@ -129,7 +130,8 @@ export const createStaff = async (req: Request, res: Response) => {
         title: title || null,
         departmentId: departmentId || null,
         consultationFee: consultationFee ? parseFloat(consultationFee) : null,
-        feeType: feeType || "POST"
+        feeType: feeType || "POST",
+        commissionRate: commissionRate !== undefined && commissionRate !== null ? parseFloat(commissionRate) : 20
       },
       include: { Role: true, Department: true }
     });
@@ -172,7 +174,7 @@ export const createStaff = async (req: Request, res: Response) => {
 export const updateStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, deviceUserId } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, commissionRate, deviceUserId } = req.body;
     
     let roleId;
     let foundRoleName;
@@ -207,6 +209,7 @@ export const updateStaff = async (req: Request, res: Response) => {
     if (departmentId !== undefined) data.departmentId = departmentId || null;
     if (consultationFee !== undefined) data.consultationFee = consultationFee ? parseFloat(consultationFee) : null;
     if (feeType !== undefined) data.feeType = feeType || "POST";
+    if (commissionRate !== undefined) data.commissionRate = commissionRate !== null ? parseFloat(commissionRate) : 20;
 
     const updatedStaff = await prisma.user.update({
       where: { id: id as string },
