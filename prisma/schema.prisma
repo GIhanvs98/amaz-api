@@ -190,11 +190,14 @@ model LabTest {
   price      Float
   category   String?
   sampleType String?
-  roomId     String?
-  room       Room?    @relation(fields: [roomId], references: [id])
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  roomId             String?
+  room               Room?    @relation(fields: [roomId], references: [id])
+  isOutsideTest      Boolean  @default(false)
+  hospitalCommission Float?   @default(0)
+  outsourcedCenter   String?
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   items      LabRequestItem[]
   biomarkers LabTestBiomarker[]
@@ -388,6 +391,10 @@ model Appointment {
   cancelledAt      DateTime?
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
+  reportUrl        String?
+  fileName         String?
+  fileType         String?
+  notes            String?
   Payment          Payment?
   User             User?                  @relation(fields: [doctorId], references: [id])
   Patient          Patient                @relation(fields: [patientId], references: [id], onDelete: Cascade)

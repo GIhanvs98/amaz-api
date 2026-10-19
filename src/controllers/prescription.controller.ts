@@ -313,6 +313,21 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
               unitPrice: targetConsultationFee
             }, tx);
           }
+
+          if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
+            for (const svc of req.body.extraServices) {
+              const targetPrice = Number(svc.customPrice !== undefined ? svc.customPrice : (svc.price ?? 0));
+              await billingService.addCharge({
+                visitId,
+                patientId,
+                department: "EXTRA_SERVICE",
+                referenceId: svc.id,
+                description: `Extra Service: ${svc.title}`,
+                quantity: 1,
+                unitPrice: targetPrice
+              }, tx);
+            }
+          }
           // NOTE: Appointment status is NOT changed here. The doctor must explicitly
           // click "Complete Consultation" to remove the patient from the queue.
         }
@@ -888,6 +903,21 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
                 description: `Doctor Consultation Fee (Post) - Dr. ${rx.doctorName || doctor?.fullName || ''}`.trim(),
                 quantity: 1,
                 unitPrice: effectiveFee
+              }, tx);
+            }
+          }
+
+          if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
+            for (const svc of req.body.extraServices) {
+              const targetPrice = Number(svc.customPrice !== undefined ? svc.customPrice : (svc.price ?? 0));
+              await billingService.addCharge({
+                visitId: rx.visitId,
+                patientId: rx.patientId,
+                department: "EXTRA_SERVICE",
+                referenceId: svc.id,
+                description: `Extra Service: ${svc.title}`,
+                quantity: 1,
+                unitPrice: targetPrice
               }, tx);
             }
           }

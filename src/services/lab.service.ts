@@ -35,6 +35,9 @@ export class LabService {
     sampleType?: string;
     roomId?: string;
     roomNumber?: string;
+    isOutsideTest?: boolean;
+    hospitalCommission?: number;
+    outsourcedCenter?: string;
   }) {
     let targetRoomId = data.roomId;
     if (!targetRoomId && data.roomNumber) {
@@ -49,7 +52,10 @@ export class LabService {
         category: data.category,
         price: data.price,
         sampleType: data.sampleType,
-        roomId: targetRoomId || undefined
+        roomId: targetRoomId || undefined,
+        isOutsideTest: Boolean(data.isOutsideTest),
+        hospitalCommission: data.hospitalCommission !== undefined ? parseFloat(String(data.hospitalCommission)) : 0,
+        outsourcedCenter: data.outsourcedCenter || null
       },
       include: {
         room: {
@@ -67,6 +73,9 @@ export class LabService {
     sampleType?: string;
     roomId?: string;
     roomNumber?: string;
+    isOutsideTest?: boolean;
+    hospitalCommission?: number;
+    outsourcedCenter?: string;
     isActive?: boolean;
   }) {
     const updateData: any = {};
@@ -76,6 +85,9 @@ export class LabService {
     if (data.category !== undefined) updateData.category = data.category;
     if (data.sampleType !== undefined) updateData.sampleType = data.sampleType;
     if (data.isActive !== undefined) updateData.isActive = data.isActive;
+    if (data.isOutsideTest !== undefined) updateData.isOutsideTest = Boolean(data.isOutsideTest);
+    if (data.hospitalCommission !== undefined) updateData.hospitalCommission = parseFloat(String(data.hospitalCommission));
+    if (data.outsourcedCenter !== undefined) updateData.outsourcedCenter = data.outsourcedCenter;
 
     if (data.roomId !== undefined) {
       updateData.roomId = data.roomId || null;
@@ -163,9 +175,13 @@ export class LabService {
           status: "PENDING",
           items: {
             create: tests.map(test => {
-              const finalPrice = data.customPrices && data.customPrices[test.id] !== undefined 
+              const basePrice = data.customPrices && data.customPrices[test.id] !== undefined 
                 ? Number(data.customPrices[test.id]) 
                 : test.price;
+              
+              const finalPrice = test.isOutsideTest && (test.hospitalCommission || 0) > 0 && !data.customPrices?.[test.id]
+                ? basePrice + (test.hospitalCommission || 0)
+                : basePrice;
               
               if (finalPrice < 0) throw new Error("Price cannot be negative");
               return {
@@ -186,13 +202,20 @@ export class LabService {
           visitId: data.visitId,
           patientId: data.patientId,
           charges: tests.map(test => {
-            const finalPrice = data.customPrices && data.customPrices[test.id] !== undefined
+            const basePrice = data.customPrices && data.customPrices[test.id] !== undefined
               ? Number(data.customPrices[test.id])
               : test.price;
+            
+            const finalPrice = test.isOutsideTest && (test.hospitalCommission || 0) > 0 && !data.customPrices?.[test.id]
+              ? basePrice + (test.hospitalCommission || 0)
+              : basePrice;
+
             return {
               department: 'LAB',
               referenceId: request.id,
-              description: `Lab Test: ${test.name}`,
+              description: test.isOutsideTest
+                ? `Lab Test (Outsourced - ${test.outsourcedCenter || 'Partner'}): ${test.name}`
+                : `Lab Test: ${test.name}`,
               quantity: 1,
               unitPrice: finalPrice
             };
