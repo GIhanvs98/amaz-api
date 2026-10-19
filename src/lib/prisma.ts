@@ -2,7 +2,26 @@ import { PrismaClient } from '@prisma/client';
 
 const globalForPrisma = global as unknown as { prisma: PrismaClient };
 
-export const prisma = globalForPrisma.prisma || new PrismaClient();
+const basePrisma = globalForPrisma.prisma || new PrismaClient();
+
+// Bulletproof Data Integrity: Automatically normalize User.email to lowercase & trim across all Prisma queries
+basePrisma.$use(async (params: any, next: any) => {
+  if (params.model === 'User') {
+    if (params.action === 'create' || params.action === 'update' || params.action === 'upsert') {
+      if (params.args?.data?.email && typeof params.args.data.email === 'string') {
+        params.args.data.email = params.args.data.email.trim().toLowerCase();
+      }
+    }
+    if (params.action === 'findUnique' || params.action === 'findFirst' || params.action === 'findMany') {
+      if (params.args?.where?.email && typeof params.args.where.email === 'string') {
+        params.args.where.email = params.args.where.email.trim().toLowerCase();
+      }
+    }
+  }
+  return next(params);
+});
+
+export const prisma = basePrisma;
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 

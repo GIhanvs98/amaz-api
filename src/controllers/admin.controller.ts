@@ -113,13 +113,15 @@ export const createStaff = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: "Only Doctors can be assigned to a department" });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
     const newStaff = await prisma.user.create({
       data: {
         fullName: name,
-        email,
+        email: normalizedEmail,
         password: hashedPassword,
         roleId: role.id,
         specialty: specialty || null,
@@ -193,7 +195,7 @@ export const updateStaff = async (req: Request, res: Response) => {
 
     const data: any = {};
     if (name) data.fullName = name;
-    if (email) data.email = email;
+    if (email) data.email = email.trim().toLowerCase();
     if (password) {
       const salt = await bcrypt.genSalt(10);
       data.password = await bcrypt.hash(password, salt);

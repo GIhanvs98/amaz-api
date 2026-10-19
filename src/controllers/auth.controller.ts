@@ -14,7 +14,8 @@ export const forgotPassword = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
     if (!user) {
       // Return success even if user not found to prevent email enumeration
       res.status(200).json({ message: "If an account with that email exists, a reset link has been sent." });

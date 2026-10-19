@@ -28,7 +28,9 @@ export const createStaff = async (req: Request, res: Response): Promise<void> =>
       return;
     }
 
-    const exists = await prisma.user.findUnique({ where: { email } });
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const exists = await prisma.user.findUnique({ where: { email: normalizedEmail } });
     if (exists) {
       res.status(400).json({ success: false, error: "Email already in use" });
       return;
@@ -40,7 +42,7 @@ export const createStaff = async (req: Request, res: Response): Promise<void> =>
     const newUser = await prisma.user.create({
       data: {
         fullName,
-        email,
+        email: normalizedEmail,
         password: hashedPassword,
         roleId,
         departmentId: departmentId || null,
@@ -68,7 +70,7 @@ export const updateStaff = async (req: Request, res: Response): Promise<void> =>
 
     const dataToUpdate: any = {
       fullName,
-      email,
+      email: email ? email.trim().toLowerCase() : undefined,
       roleId,
       departmentId: departmentId || null,
       specialty: specialty || null,
