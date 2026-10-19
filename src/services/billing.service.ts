@@ -506,6 +506,56 @@ export class BillingService {
 
     return { success: true };
   }
+
+  /**
+   * Get refund records with pagination
+   */
+  async getRefunds(query: { page?: number; limit?: number; search?: string; startDate?: string; endDate?: string }) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 50));
+    const skip = (page - 1) * limit;
+
+    const where: any = {};
+    if (query.startDate || query.endDate) {
+      where.createdAt = {};
+      if (query.startDate) where.createdAt.gte = new Date(query.startDate);
+      if (query.endDate) {
+        const end = new Date(query.endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+
+    const [refunds, total] = await Promise.all([
+      prisma.refund.findMany({
+        where,
+        include: {
+          payment: {
+            include: {
+              invoice: {
+                include: { lineItems: true }
+              }
+            }
+          },
+          shift: true
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit
+      }),
+      prisma.refund.count({ where })
+    ]);
+
+    return {
+      refunds,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
+  }
 }
 
 export const billingService = new BillingService();
