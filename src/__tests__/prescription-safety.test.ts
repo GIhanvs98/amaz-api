@@ -51,8 +51,23 @@ const overrideItem2 = calcDispenseQty({ frequency: "BD", duration: "10 days", di
 assert.equal(overrideItem2, 12, "Explicit dispenseQty of 12 should override auto-calculated 20");
 console.log("✔ PASS: Clinician explicit quantity overrides are strictly respected.\n");
 
-// Test 5: Canonical Vocabulary Check
-console.log("Test 5: Canonical Vocabulary Validation");
+// Test 5: Fractional / Half Tablet Dosing (e.g. 0.5 tablets)
+console.log("Test 5: Fractional Dosing Calculation (e.g. 0.5 tablets)");
+const halfTabBd = calcDispenseQty({ frequency: "BD", dosageAmount: "0.5", duration: "5 days" });
+assert.equal(halfTabBd, 5, "BD with 0.5 tablets for 5 days must calculate exactly: 0.5 * 2 * 5 = 5 units");
+
+const halfTabOd = calcDispenseQty({ frequency: "OD", dosageAmount: "0.5", duration: "5 days" });
+assert.equal(halfTabOd, 3, "OD with 0.5 tablets for 5 days: 0.5 * 1 * 5 = 2.5, must round up to 3 dispensable units");
+
+const halfTabOd7Days = calcDispenseQty({ frequency: "OD", dosageAmount: "0.5", duration: "7 days" });
+assert.equal(halfTabOd7Days, 4, "OD with 0.5 tablets for 7 days: 0.5 * 1 * 7 = 3.5, must round up to 4 dispensable units");
+
+const quarterTabQds = calcDispenseQty({ frequency: "QDS", dosageAmount: "0.25", duration: "4 days" });
+assert.equal(quarterTabQds, 4, "QDS with 0.25 tablets for 4 days: 0.25 * 4 * 4 = 4 units");
+console.log("✔ PASS: Fractional / half-tablet dosages calculate accurately and round up to whole units.\n");
+
+// Test 6: Canonical Vocabulary Check
+console.log("Test 6: Canonical Vocabulary Validation");
 const expectedFrequencies = ["OD", "BD", "TDS", "QDS", "QID", "EOD", "STAT", "CUSTOM"];
 for (const freq of expectedFrequencies) {
   assert.ok(VALID_FREQUENCIES.includes(freq as any), `Frequency ${freq} should be in VALID_FREQUENCIES`);

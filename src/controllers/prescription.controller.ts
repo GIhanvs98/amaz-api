@@ -25,19 +25,19 @@ export const VALID_ROUTES = ["ORAL", "SUPPOSITORY", "IM", "IV", "SC", "OTHER"] a
 export const calcDispenseQty = (item: any): number => {
   // If doctor specified an explicit quantity or dispenseQty (>= 1), honor it directly
   if (item.quantity != null && Number(item.quantity) >= 1) {
-    return parseInt(String(item.quantity), 10);
+    return Math.ceil(Number(item.quantity));
   }
   if (item.dispenseQty != null && Number(item.dispenseQty) >= 1) {
-    return parseInt(String(item.dispenseQty), 10);
+    return Math.ceil(Number(item.dispenseQty));
   }
 
-  // Parse dosage units per administration
+  // Parse dosage units per administration (e.g. 0.5 tablet, 1 tablet, 2 tablets)
   let unitsPerAdmin = 1;
   if (item.dosageAmount) {
     const parsed = parseFloat(String(item.dosageAmount));
-    if (!isNaN(parsed) && parsed > 0) unitsPerAdmin = Math.ceil(parsed);
+    if (!isNaN(parsed) && parsed > 0) unitsPerAdmin = parsed;
   } else if (item.tabletsPerTime) {
-    const parsed = parseInt(String(item.tabletsPerTime), 10);
+    const parsed = parseFloat(String(item.tabletsPerTime));
     if (!isNaN(parsed) && parsed > 0) unitsPerAdmin = parsed;
   }
 
@@ -45,7 +45,7 @@ export const calcDispenseQty = (item: any): number => {
 
   // STAT is an immediate, single one-time dose. Duration does not multiply STAT.
   if (freq === "STAT" || freq.startsWith("STAT")) {
-    return unitsPerAdmin > 0 ? unitsPerAdmin : 1;
+    return Math.max(1, Math.ceil(unitsPerAdmin));
   }
 
   // Parse duration in days
@@ -59,7 +59,7 @@ export const calcDispenseQty = (item: any): number => {
   // EOD (Every other day) - administered alternate days
   if (freq === "EOD" || freq.includes("EVERY OTHER DAY")) {
     const doses = Math.ceil(days / 2);
-    return Math.max(1, doses * unitsPerAdmin);
+    return Math.max(1, Math.ceil(doses * unitsPerAdmin));
   }
 
   let timesPerDay = 1;
@@ -80,17 +80,17 @@ export const calcDispenseQty = (item: any): number => {
     const match = freq.match(/(\d+)\s*X\s*DAY(?:.*?\((\d+)\s*(?:TAB|TABLETS?|CAPS?|PILLS?)\))?/i);
     if (match) {
       if (match[1]) timesPerDay = parseInt(match[1], 10) || timesPerDay;
-      if (match[2]) unitsPerAdmin = parseInt(match[2], 10) || unitsPerAdmin;
+      if (match[2]) unitsPerAdmin = parseFloat(match[2]) || unitsPerAdmin;
     }
   } else if (freq.includes("TABLETS") && freq.includes("TIMES A DAY")) {
     const parts = freq.split("TABLETS,");
-    unitsPerAdmin = parseInt(parts[0]?.trim() || "1", 10) || unitsPerAdmin;
+    unitsPerAdmin = parseFloat(parts[0]?.trim() || "1") || unitsPerAdmin;
     timesPerDay = parseInt(parts[1]?.split("TIMES A DAY")[0]?.trim() || "1", 10) || timesPerDay;
   } else if (/^\d+$/.test(freq)) {
     timesPerDay = parseInt(freq, 10) || timesPerDay;
   }
 
-  const calculated = timesPerDay * unitsPerAdmin * days;
+  const calculated = Math.ceil(timesPerDay * unitsPerAdmin * days);
   return calculated > 0 ? calculated : 1;
 };
 
