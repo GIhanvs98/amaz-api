@@ -276,6 +276,7 @@ model Prescription {
   status        String             @default("PENDING")
   diagnosis     String?
   clinicalNotes String?
+  consultationFee Float?           // Doctor-selected consultation fee for this visit (e.g. 850, 1000, 1200)
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
   items         PrescriptionItem[]
@@ -409,6 +410,7 @@ model User {
   room             Room?               @relation(fields: [roomId], references: [id])
   consultationFee  Float?              @default(2500)
   feeType          String              @default("POST") // UPFRONT or POST
+  feeOptions       Float[]             @default([]) // Configurable pricing tiers for OPD doctors (e.g. 850, 1000, 1200)
   commissionRate   Float?              @default(20) // % Hospital Commission
   bankName         String?             // e.g. "Commercial Bank of Ceylon"
   bankBranch       String?             // e.g. "Tissamaharama"

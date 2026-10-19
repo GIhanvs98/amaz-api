@@ -18,7 +18,8 @@ export class DepartmentController {
               fullName: true,
               specialty: true,
               consultationFee: true,
-              feeType: true
+              feeType: true,
+              ...({ feeOptions: true } as any)
             }
           },
           _count: {
@@ -59,6 +60,7 @@ export class DepartmentController {
           specialty: true,
           consultationFee: true,
           feeType: true,
+          ...({ feeOptions: true } as any),
           departmentId: true
         }
       });
@@ -179,7 +181,7 @@ export class DepartmentController {
   async updateDoctorAssignment(req: Request, res: Response) {
     try {
       const { doctorId } = req.params;
-      const { departmentId, consultationFee, feeType } = req.body;
+      const { departmentId, consultationFee, feeType, feeOptions } = req.body;
 
       const existingUser = await prisma.user.findUnique({ where: { id: doctorId as string }, include: { Role: true } });
       if (!existingUser) {
@@ -190,12 +192,25 @@ export class DepartmentController {
         return res.status(400).json({ error: "Only Doctors can be assigned to a department or have consultation fees" });
       }
 
+      let sanitizedFeeOptions: number[] | undefined = undefined;
+      if (feeOptions !== undefined) {
+        if (Array.isArray(feeOptions)) {
+          sanitizedFeeOptions = feeOptions
+            .map((v: any) => parseFloat(v))
+            .filter((n: number) => !isNaN(n) && n > 0)
+            .sort((a: number, b: number) => a - b);
+        } else {
+          sanitizedFeeOptions = [];
+        }
+      }
+
       const user = await prisma.user.update({
         where: { id: doctorId as string },
         data: {
           ...(departmentId !== undefined && { departmentId: departmentId || null }),
           ...(consultationFee !== undefined && { consultationFee }),
-          ...(feeType !== undefined && { feeType })
+          ...(feeType !== undefined && { feeType }),
+          ...(sanitizedFeeOptions !== undefined && { feeOptions: sanitizedFeeOptions })
         }
       });
 

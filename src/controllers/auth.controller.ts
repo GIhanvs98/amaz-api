@@ -93,6 +93,9 @@ export const login = async (req: Request, res: Response): Promise<void> => {
               include: { Permission: true }
             }
           }
+        },
+        Department: {
+          select: { id: true, name: true }
         }
       }
     });
@@ -140,6 +143,11 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         fullName: user.fullName,
         email: user.email,
         role: user.Role?.name || "Unknown",
+        departmentId: user.departmentId || null,
+        department: user.Department?.name || null,
+        feeOptions: (user as any).feeOptions || [],
+        consultationFee: user.consultationFee ?? 2500,
+        feeType: user.feeType || "POST",
         permissions: user.Role?.RolePermission?.filter((rp: any) => 
           rp.Permission && (rp.Permission.action === "READ" || rp.Permission.action === "ALL")
         ).map((rp: any) => rp.Permission?.resource) || [],
@@ -174,6 +182,9 @@ export const refresh = async (req: Request, res: Response): Promise<void> => {
               include: { Permission: true }
             }
           }
+        },
+        Department: {
+          select: { id: true, name: true }
         }
       }
     });
@@ -190,6 +201,11 @@ export const refresh = async (req: Request, res: Response): Promise<void> => {
         fullName: user.fullName,
         email: user.email,
         role: user.Role?.name || "Unknown",
+        departmentId: user.departmentId || null,
+        department: user.Department?.name || null,
+        feeOptions: (user as any).feeOptions || [],
+        consultationFee: user.consultationFee ?? 2500,
+        feeType: user.feeType || "POST",
         permissions: user.Role?.RolePermission?.filter((rp: any) => 
           rp.Permission && (rp.Permission.action === "READ" || rp.Permission.action === "ALL")
         ).map((rp: any) => rp.Permission?.resource) || [],

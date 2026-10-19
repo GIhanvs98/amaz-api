@@ -64,7 +64,7 @@ export class BillingService {
       });
     }
 
-    // 2.5 Guard against duplicate CONSULTATION charges
+    // 2.5 Guard against duplicate CONSULTATION charges, or update if doctor modified fee
     if (data.department === "CONSULTATION") {
       const existingConsult = await db.invoiceLineItem.findFirst({
         where: {
@@ -73,7 +73,28 @@ export class BillingService {
         }
       });
       if (existingConsult) {
-        console.warn(`[BillingService] Consultation charge already exists for invoice ${invoice.id}. Skipping duplicate.`);
+        // If the fee changed and invoice is still DRAFT, update the consultation line item and invoice totals
+        if (invoice.status === "DRAFT" && (existingConsult.unitPrice !== unitPrice || existingConsult.total !== total)) {
+          const diff = total - existingConsult.total;
+          await db.invoiceLineItem.update({
+            where: { id: existingConsult.id },
+            data: {
+              unitPrice: unitPrice,
+              total: total,
+              description: data.description || existingConsult.description
+            }
+          });
+          await db.invoice.update({
+            where: { id: invoice.id },
+            data: {
+              subtotal: { increment: diff },
+              totalAmount: { increment: diff }
+            }
+          });
+          console.log(`[BillingService] Updated existing consultation fee from ${existingConsult.unitPrice} to ${unitPrice} for invoice ${invoice.id}`);
+        } else {
+          console.warn(`[BillingService] Consultation charge already exists for invoice ${invoice.id}. Skipping duplicate.`);
+        }
         return db.invoice.findUnique({
           where: { id: invoice.id },
           include: { lineItems: true }
