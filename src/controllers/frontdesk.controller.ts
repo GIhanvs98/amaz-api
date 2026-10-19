@@ -53,6 +53,19 @@ export const updateAppointmentStatus = async (req: Request, res: Response) => {
   }
 };
 
+export const cancelAppointment = async (req: Request, res: Response) => {
+  try {
+    const appointmentId = req.params.id as string;
+    const { reason, notes } = req.body;
+    const userId = (req as any).user?.id || 'system';
+
+    const data = await frontdeskService.cancelAppointment(appointmentId, reason, notes, userId);
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
 export const createWalkIn = async (req: Request, res: Response) => {
   try {
     const { doctorId, sessionId, patient, date } = req.body;
