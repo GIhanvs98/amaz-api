@@ -134,6 +134,69 @@ export class BillingController {
       res.status(status).json({ error: error.message || 'Failed to delete invoice' });
     }
   }
+
+  async processRefund(req: Request, res: Response) {
+    try {
+      const { paymentId, invoiceId, amount, reason, remarks, method } = req.body;
+      const userId = (req as any).user?.id;
+
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ error: 'Refund amount must be greater than 0' });
+      }
+
+      if (!reason) {
+        return res.status(400).json({ error: 'Refund reason is required' });
+      }
+
+      let targetPaymentId = paymentId;
+      if (!targetPaymentId && invoiceId) {
+        const found = await prisma.payment.findFirst({
+          where: { invoiceId: String(invoiceId), status: 'COMPLETED' },
+          orderBy: { createdAt: 'desc' }
+        });
+        if (!found) return res.status(404).json({ error: 'No completed payment found for this invoice' });
+        targetPaymentId = found.id;
+      }
+
+      if (!targetPaymentId) {
+        return res.status(400).json({ error: 'paymentId or invoiceId is required' });
+      }
+
+      const refund = await billingService.processRefund(
+        targetPaymentId,
+        Number(amount),
+        reason + (remarks ? ` - ${remarks}` : '')
+      );
+
+      await clearCache("/api/finance/dashboard");
+      await clearCache("/api/admin/metrics");
+
+      res.status(201).json({
+        success: true,
+        refund
+      });
+    } catch (error: any) {
+      console.error('Process Refund Error:', error);
+      res.status(400).json({ error: error.message || 'Failed to process refund' });
+    }
+  }
+
+  async getRefunds(req: Request, res: Response) {
+    try {
+      const { page, limit, search, startDate, endDate } = req.query;
+      const data = await billingService.getRefunds({
+        page: page ? Number(page) : undefined,
+        limit: limit ? Number(limit) : undefined,
+        search: search ? String(search) : undefined,
+        startDate: startDate ? String(startDate) : undefined,
+        endDate: endDate ? String(endDate) : undefined
+      });
+      res.json(data);
+    } catch (error: any) {
+      console.error('Get Refunds Error:', error);
+      res.status(500).json({ error: error.message || 'Failed to get refunds' });
+    }
+  }
 }
 
 export const billingController = new BillingController();

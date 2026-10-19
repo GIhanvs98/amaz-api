@@ -34,6 +34,7 @@ model Department {
   id          String   @id @default(uuid())
   name        String   @unique
   description String?
+  commissionRate Float?  @default(20)
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -331,6 +332,7 @@ model Patient {
   LabRequests  LabRequest[]
   Prescription Prescription[]
   Appointment  Appointment[]
+  ExtraServiceOrders ExtraServiceOrder[]
 
   @@index([phone])
   @@index([fullName])
@@ -385,6 +387,7 @@ model Appointment {
   calledAt         DateTime?
   completedAt      DateTime?
   cancelledAt      DateTime?
+  cancellationReason String?
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
   Payment          Payment?
@@ -444,6 +447,7 @@ model User {
   DoctorPaymentStatements DoctorPaymentStatement[]
   DoctorDailySheets      DoctorDailySheet[]
   EmployeeProfile        EmployeeProfile?
+  ExtraServiceOrders     ExtraServiceOrder[]
 }
 
 model DoctorSchedule {
@@ -555,6 +559,34 @@ model ExtraService {
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  orders      ExtraServiceOrder[]
+}
+
+model ExtraServiceOrder {
+  id              String        @id @default(uuid())
+  orderNumber     String        @unique
+  serviceId       String
+  service         ExtraService  @relation(fields: [serviceId], references: [id])
+  patientId       String
+  patient         Patient       @relation(fields: [patientId], references: [id])
+  doctorId        String?
+  doctor          User?         @relation(fields: [doctorId], references: [id])
+  visitId         String?
+  customPrice     Float?        // Doctor OPD price override
+  finalPrice      Float         // Effective billed price
+  status          String        @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED, CANCELLED
+  notes           String?
+  certificateType String?       // GENERAL, SICK_LEAVE, FITNESS
+  certificateData Json?         // Form fields (leaveDays, diagnosis, fitRemarks, etc.)
+  reportFiles     Json?         // Array of uploaded file objects [{ id, fileName, fileUrl, fileType, fileSize, uploadedAt, uploadedBy }]
+  completedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([patientId])
+  @@index([status])
+  @@index([visitId])
 }
 
 model SystemSetting {
