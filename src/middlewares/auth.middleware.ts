@@ -130,3 +130,75 @@ export const requireRole = (allowedRoles: string[]) => {
   };
 };
 
+export const requireRoleOrPermission = (allowedRoles: string[], action: string, resource: string) => {
+  return async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ message: "Unauthorized" });
+        return;
+      }
+
+      if (!req.user.roleId) {
+        res.status(403).json({ message: "Forbidden: Role mapping missing" });
+        return;
+      }
+
+      let role = null;
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          role = await prisma.role.findUnique({
+            where: { id: req.user.roleId },
+            select: { name: true }
+          });
+          break;
+        } catch (e: any) {
+          retries--;
+          if (retries === 0) throw e;
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
+
+      if (!role) {
+        res.status(403).json({ message: "Forbidden: Role not found" });
+        return;
+      }
+
+      const userRole = role.name.toUpperCase();
+      const normalizedAllowed = allowedRoles.map(r => r.toUpperCase());
+      if (userRole === 'SUPERADMIN' || normalizedAllowed.includes(userRole) || normalizedAllowed.includes('ALL')) {
+        (req as any).roleName = userRole;
+        return next();
+      }
+
+      // Check granular database RolePermission
+      const rolePermission = await prisma.rolePermission.findFirst({
+        where: {
+          roleId: req.user.roleId,
+          Permission: {
+            OR: [
+              { action, resource },
+              { action: "ALL", resource },
+              { action, resource: "ALL" },
+              { action: "ALL", resource: "ALL" },
+            ]
+          }
+        }
+      });
+
+      if (rolePermission) {
+        (req as any).roleName = userRole;
+        return next();
+      }
+
+      res.status(403).json({
+        message: `Forbidden: Requires one of [${allowedRoles.join(', ')}] or [${action} on ${resource}]`
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: "Internal server error during authorization check" });
+    }
+  };
+};
+
+

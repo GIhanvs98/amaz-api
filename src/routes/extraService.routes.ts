@@ -1,4 +1,4 @@
-import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
+import { verifyToken, requireRole, requireRoleOrPermission } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
 import multer from "multer";
 import { extraServiceController } from "../controllers/extraService.controller.js";
@@ -18,26 +18,26 @@ router.use(verifyToken);
 // ==========================================
 // Workstation Procedure Station Routes
 // ==========================================
-router.get("/queue", requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST', 'DOCTOR', 'NURSE']), extraServiceController.getQueue.bind(extraServiceController));
-router.post("/upload", requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST', 'DOCTOR', 'NURSE']), upload.single("file"), extraServiceController.uploadReport.bind(extraServiceController));
-router.patch("/appointments/:id/status", requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST', 'DOCTOR', 'NURSE']), extraServiceController.updateStatus.bind(extraServiceController));
+router.get("/queue", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST', 'DOCTOR', 'NURSE'], 'READ', 'Extra Services'), extraServiceController.getQueue.bind(extraServiceController));
+router.post("/upload", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST', 'DOCTOR', 'NURSE'], 'CREATE', 'Extra Services'), upload.single("file"), extraServiceController.uploadReport.bind(extraServiceController));
+router.patch("/appointments/:id/status", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST', 'DOCTOR', 'NURSE'], 'UPDATE', 'Extra Services'), extraServiceController.updateStatus.bind(extraServiceController));
 
 // ==========================================
 // Catalog Routes
 // ==========================================
 router.get("/", cacheMiddleware(3600), extraServiceController.getServices.bind(extraServiceController));
-router.post("/", requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST']), extraServiceController.createService.bind(extraServiceController));
-router.put("/:id", requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST']), extraServiceController.updateService.bind(extraServiceController));
-router.delete("/:id", requireRole(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST']), extraServiceController.deleteService.bind(extraServiceController));
+router.post("/", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST'], 'CREATE', 'Extra Services Config'), extraServiceController.createService.bind(extraServiceController));
+router.put("/:id", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST'], 'UPDATE', 'Extra Services Config'), extraServiceController.updateService.bind(extraServiceController));
+router.delete("/:id", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'RECEPTIONIST'], 'DELETE', 'Extra Services Config'), extraServiceController.deleteService.bind(extraServiceController));
 
 // ==========================================
 // Order Lifecycle & File Upload Routes
 // ==========================================
-router.post("/orders", requireRole(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'NURSE']), extraServiceOrderController.createOrders);
-router.get("/orders", requireRole(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'LABTECH', 'NURSE']), extraServiceOrderController.getOrders);
-router.get("/orders/:id", requireRole(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'LABTECH', 'NURSE']), extraServiceOrderController.getOrderById);
-router.patch("/orders/:id/status", requireRole(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'LABTECH', 'NURSE']), extraServiceOrderController.updateOrderStatus);
-router.post("/orders/:id/upload", requireRole(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'LABTECH', 'NURSE']), upload.single("file"), extraServiceOrderController.uploadReportFile);
-router.delete("/orders/:id/files/:fileId", requireRole(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST']), extraServiceOrderController.deleteReportFile);
+router.post("/orders", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'NURSE'], 'CREATE', 'Extra Services'), extraServiceOrderController.createOrders);
+router.get("/orders", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'LABTECH', 'NURSE'], 'READ', 'Extra Services'), extraServiceOrderController.getOrders);
+router.get("/orders/:id", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'LABTECH', 'NURSE'], 'READ', 'Extra Services'), extraServiceOrderController.getOrderById);
+router.patch("/orders/:id/status", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'LABTECH', 'NURSE'], 'UPDATE', 'Extra Services'), extraServiceOrderController.updateOrderStatus);
+router.post("/orders/:id/upload", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST', 'LABTECH', 'NURSE'], 'CREATE', 'Extra Services'), upload.single("file"), extraServiceOrderController.uploadReportFile);
+router.delete("/orders/:id/files/:fileId", requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'RECEPTIONIST'], 'DELETE', 'Extra Services'), extraServiceOrderController.deleteReportFile);
 
 export default router;
