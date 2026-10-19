@@ -19,55 +19,79 @@ const withRetry = async <T>(operation: () => Promise<T>, retries = 3, delay = 10
   }
 };
 
+export const VALID_FREQUENCIES = ["OD", "BD", "TDS", "QDS", "QID", "EOD", "STAT", "CUSTOM"] as const;
+export const VALID_ROUTES = ["ORAL", "SUPPOSITORY", "IM", "IV", "SC", "OTHER"] as const;
+
 export const calcDispenseQty = (item: any): number => {
+  // If doctor specified an explicit quantity or dispenseQty (>= 1), honor it directly
+  if (item.quantity != null && Number(item.quantity) >= 1) {
+    return parseInt(String(item.quantity), 10);
+  }
   if (item.dispenseQty != null && Number(item.dispenseQty) >= 1) {
     return parseInt(String(item.dispenseQty), 10);
   }
 
-  let timesPerDay = 1;
-  let tabletsPerTime = 1;
-
-  if (item.timesPerDay) {
-    const parsed = parseInt(String(item.timesPerDay), 10);
-    if (!isNaN(parsed) && parsed > 0) timesPerDay = parsed;
-  }
-  if (item.tabletsPerTime) {
+  // Parse dosage units per administration
+  let unitsPerAdmin = 1;
+  if (item.dosageAmount) {
+    const parsed = parseFloat(String(item.dosageAmount));
+    if (!isNaN(parsed) && parsed > 0) unitsPerAdmin = Math.ceil(parsed);
+  } else if (item.tabletsPerTime) {
     const parsed = parseInt(String(item.tabletsPerTime), 10);
-    if (!isNaN(parsed) && parsed > 0) tabletsPerTime = parsed;
+    if (!isNaN(parsed) && parsed > 0) unitsPerAdmin = parsed;
   }
 
-  const freq = String(item.frequency || "").trim();
-  if (freq) {
-    if (freq.includes("x day")) {
-      const match = freq.match(/(\d+)\s*x\s*day(?:.*?\((\d+)\s*(?:tab|tablets?|caps?|pills?)\))?/i);
-      if (match) {
-        if (match[1]) timesPerDay = parseInt(match[1], 10) || timesPerDay;
-        if (match[2]) tabletsPerTime = parseInt(match[2], 10) || tabletsPerTime;
-      }
-    } else if (freq.includes("tablets") && freq.includes("times a day")) {
-      const parts = freq.split("tablets,");
-      tabletsPerTime = parseInt(parts[0]?.trim() || "1", 10) || tabletsPerTime;
-      timesPerDay = parseInt(parts[1]?.split("times a day")[0]?.trim() || "1", 10) || timesPerDay;
-    } else if (/^\d+$/.test(freq)) {
-      timesPerDay = parseInt(freq, 10) || timesPerDay;
-    } else if (/\b(qds|qid)\b|four times/i.test(freq)) {
-      timesPerDay = 4;
-    } else if (/\b(tds|tid)\b|three times/i.test(freq)) {
-      timesPerDay = 3;
-    } else if (/\b(bd|bid)\b|twice a day/i.test(freq)) {
-      timesPerDay = 2;
-    }
+  const freq = String(item.frequency || "").trim().toUpperCase();
+
+  // STAT is an immediate, single one-time dose. Duration does not multiply STAT.
+  if (freq === "STAT" || freq.startsWith("STAT")) {
+    return unitsPerAdmin > 0 ? unitsPerAdmin : 1;
   }
 
+  // Parse duration in days
   const durStr = String(item.duration || "1").trim();
   const durMatch = durStr.match(/(\d+)/);
   let durMultiplier = 1;
   if (/month/i.test(durStr)) durMultiplier = 30;
   else if (/week/i.test(durStr)) durMultiplier = 7;
-  const duration = (durMatch && durMatch[1] ? parseInt(durMatch[1], 10) : 1) * durMultiplier;
+  const days = Math.max(1, (durMatch && durMatch[1] ? parseInt(durMatch[1], 10) : 1) * durMultiplier);
 
-  const calculated = timesPerDay * tabletsPerTime * duration;
-  return calculated > 0 ? calculated : (item.dispenseQty ? parseInt(String(item.dispenseQty), 10) : 1);
+  // EOD (Every other day) - administered alternate days
+  if (freq === "EOD" || freq.includes("EVERY OTHER DAY")) {
+    const doses = Math.ceil(days / 2);
+    return Math.max(1, doses * unitsPerAdmin);
+  }
+
+  let timesPerDay = 1;
+  if (item.timesPerDay) {
+    const parsed = parseInt(String(item.timesPerDay), 10);
+    if (!isNaN(parsed) && parsed > 0) timesPerDay = parsed;
+  }
+
+  if (freq === "OD" || freq === "ONCE DAILY") {
+    timesPerDay = 1;
+  } else if (freq === "BD" || freq === "BID" || freq === "TWICE DAILY") {
+    timesPerDay = 2;
+  } else if (freq === "TDS" || freq === "TID" || freq === "THREE TIMES DAILY") {
+    timesPerDay = 3;
+  } else if (freq === "QDS" || freq === "QID" || freq === "FOUR TIMES DAILY") {
+    timesPerDay = 4;
+  } else if (freq.includes("X DAY")) {
+    const match = freq.match(/(\d+)\s*X\s*DAY(?:.*?\((\d+)\s*(?:TAB|TABLETS?|CAPS?|PILLS?)\))?/i);
+    if (match) {
+      if (match[1]) timesPerDay = parseInt(match[1], 10) || timesPerDay;
+      if (match[2]) unitsPerAdmin = parseInt(match[2], 10) || unitsPerAdmin;
+    }
+  } else if (freq.includes("TABLETS") && freq.includes("TIMES A DAY")) {
+    const parts = freq.split("TABLETS,");
+    unitsPerAdmin = parseInt(parts[0]?.trim() || "1", 10) || unitsPerAdmin;
+    timesPerDay = parseInt(parts[1]?.split("TIMES A DAY")[0]?.trim() || "1", 10) || timesPerDay;
+  } else if (/^\d+$/.test(freq)) {
+    timesPerDay = parseInt(freq, 10) || timesPerDay;
+  }
+
+  const calculated = timesPerDay * unitsPerAdmin * days;
+  return calculated > 0 ? calculated : 1;
 };
 
 export const getPrescriptionById = async (req: Request, res: Response) => {
@@ -116,11 +140,20 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
       createdAt: prescription.createdAt,
       items: prescription.items.map((i: any) => ({
         id: i.id,
+        prescriptionId: i.prescriptionId,
         drugName: i.drugName,
+        strength: i.strength,
+        dosageAmount: i.dosageAmount,
+        doseUnit: i.doseUnit,
         dosage: i.dosage,
         frequency: i.frequency,
+        route: i.route || "ORAL",
         duration: i.duration,
+        startDate: i.startDate,
+        endDate: i.endDate,
         instructions: i.instructions,
+        quantity: i.quantity,
+        status: i.status || "ACTIVE",
         dispenseQty: calcDispenseQty(i),
         medicineId: i.medicineId,
         medicine: i.medicine ? {
@@ -208,15 +241,28 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
             diagnosis,
             clinicalNotes,
             items: {
-              create: items ? items.map((item: any) => ({
-                medicineId: item.medicineId || null,
-                drugName: item.drugName,
-                dosage: item.dosage,
-                frequency: item.frequency,
-                duration: item.duration,
-                instructions: item.instructions,
-                dispenseQty: calcDispenseQty(item)
-              })) : []
+              create: items ? items.map((item: any) => {
+                const calculatedQty = calcDispenseQty(item);
+                const routeVal = item.route ? String(item.route).trim().toUpperCase() : "ORAL";
+                const freqVal = item.frequency ? String(item.frequency).trim().toUpperCase() : "OD";
+                return {
+                  medicineId: item.medicineId || null,
+                  drugName: item.drugName || item.name || "",
+                  strength: item.strength ? String(item.strength).trim() : null,
+                  dosageAmount: item.dosageAmount != null ? String(item.dosageAmount).trim() : null,
+                  doseUnit: item.doseUnit ? String(item.doseUnit).trim() : null,
+                  dosage: item.dosage || (item.dosageAmount && item.doseUnit ? `${item.dosageAmount} ${item.doseUnit}` : (item.dosageAmount ? String(item.dosageAmount) : "")),
+                  frequency: freqVal,
+                  route: routeVal,
+                  duration: item.duration ? String(item.duration).trim() : null,
+                  startDate: item.startDate ? new Date(item.startDate) : null,
+                  endDate: item.endDate ? new Date(item.endDate) : null,
+                  instructions: item.instructions ? String(item.instructions).trim() : null,
+                  quantity: item.quantity != null ? parseInt(String(item.quantity), 10) : calculatedQty,
+                  dispenseQty: calculatedQty,
+                  status: item.status || "ACTIVE"
+                };
+              }) : []
             }
           },
           include: {
@@ -741,14 +787,26 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
         if (med) medId = med.id;
       }
 
+      const calculatedQty = calcDispenseQty(item);
+      const routeVal = item.route ? String(item.route).trim().toUpperCase() : "ORAL";
+      const freqVal = item.frequency ? String(item.frequency).trim().toUpperCase() : "OD";
+
       processedItems.push({
         medicineId: medId,
         drugName: String(drugName).trim(),
-        dosage: item.dosage || "",
-        frequency: item.frequency || "",
-        duration: item.duration || "",
-        instructions: item.instructions || "",
-        dispenseQty: calcDispenseQty(item)
+        strength: item.strength ? String(item.strength).trim() : null,
+        dosageAmount: item.dosageAmount != null ? String(item.dosageAmount).trim() : null,
+        doseUnit: item.doseUnit ? String(item.doseUnit).trim() : null,
+        dosage: item.dosage || (item.dosageAmount && item.doseUnit ? `${item.dosageAmount} ${item.doseUnit}` : (item.dosageAmount ? String(item.dosageAmount) : "")),
+        frequency: freqVal,
+        route: routeVal,
+        duration: item.duration ? String(item.duration).trim() : null,
+        startDate: item.startDate ? new Date(item.startDate) : null,
+        endDate: item.endDate ? new Date(item.endDate) : null,
+        instructions: item.instructions ? String(item.instructions).trim() : null,
+        quantity: item.quantity != null ? parseInt(String(item.quantity), 10) : calculatedQty,
+        dispenseQty: calculatedQty,
+        status: item.status || "ACTIVE"
       });
     }
     
@@ -864,5 +922,155 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
   } catch (error: any) {
     console.error("Error updating prescription:", error);
     res.status(500).json({ error: "Failed to update prescription", details: error?.message });
+  }
+};
+
+export const addItemToPrescription = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const item = req.body;
+    const rx = (await withRetry(() => (prisma as any).prescription.findUnique({ where: { id } }))) as any;
+    if (!rx) {
+      res.status(404).json({ error: "Prescription not found" });
+      return;
+    }
+    if ((req as any).roleName === 'DOCTOR' && rx.doctorId && rx.doctorId !== (req as any).user?.id) {
+      res.status(403).json({ error: "Forbidden: You can only edit your own prescriptions" });
+      return;
+    }
+    if (rx.status === "DISPENSED") {
+      res.status(400).json({ error: "Cannot add items to a dispensed prescription" });
+      return;
+    }
+    const drugName = item.drugName || item.name;
+    if (!drugName || !String(drugName).trim()) {
+      res.status(400).json({ error: "Medicine / Drug name is required" });
+      return;
+    }
+    let medId = item.medicineId || null;
+    if (!medId) {
+      const med = await withRetry(() => (prisma as any).medicine.findFirst({
+        where: {
+          OR: [
+            { name: { equals: String(drugName).trim(), mode: 'insensitive' } },
+            { genericName: { equals: String(drugName).trim(), mode: 'insensitive' } }
+          ]
+        }
+      })) as any;
+      if (med) medId = med.id;
+    }
+
+    const calculatedQty = calcDispenseQty(item);
+    const routeVal = item.route ? String(item.route).trim().toUpperCase() : "ORAL";
+    const freqVal = item.frequency ? String(item.frequency).trim().toUpperCase() : "OD";
+
+    const createdItem = await withRetry(() => (prisma as any).prescriptionItem.create({
+      data: {
+        prescriptionId: id,
+        medicineId: medId,
+        drugName: String(drugName).trim(),
+        strength: item.strength ? String(item.strength).trim() : null,
+        dosageAmount: item.dosageAmount != null ? String(item.dosageAmount).trim() : null,
+        doseUnit: item.doseUnit ? String(item.doseUnit).trim() : null,
+        dosage: item.dosage || (item.dosageAmount && item.doseUnit ? `${item.dosageAmount} ${item.doseUnit}` : (item.dosageAmount ? String(item.dosageAmount) : "")),
+        frequency: freqVal,
+        route: routeVal,
+        duration: item.duration ? String(item.duration).trim() : null,
+        startDate: item.startDate ? new Date(item.startDate) : null,
+        endDate: item.endDate ? new Date(item.endDate) : null,
+        instructions: item.instructions ? String(item.instructions).trim() : null,
+        quantity: item.quantity != null ? parseInt(String(item.quantity), 10) : calculatedQty,
+        dispenseQty: calculatedQty,
+        status: item.status || "ACTIVE"
+      },
+      include: {
+        medicine: true
+      }
+    }));
+
+    websocketService.broadcast("prescription_updated", { prescriptionId: id, item: createdItem });
+    res.status(201).json(createdItem);
+  } catch (error: any) {
+    console.error("Error adding item to prescription:", error);
+    res.status(500).json({ error: "Failed to add item to prescription" });
+  }
+};
+
+export const updatePrescriptionItem = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id, itemId } = req.params;
+    const item = req.body;
+    const rx = (await withRetry(() => (prisma as any).prescription.findUnique({ where: { id } }))) as any;
+    if (!rx) {
+      res.status(404).json({ error: "Prescription not found" });
+      return;
+    }
+    if ((req as any).roleName === 'DOCTOR' && rx.doctorId && rx.doctorId !== (req as any).user?.id) {
+      res.status(403).json({ error: "Forbidden: You can only edit your own prescriptions" });
+      return;
+    }
+    if (rx.status === "DISPENSED") {
+      res.status(400).json({ error: "Cannot edit items on a dispensed prescription" });
+      return;
+    }
+
+    const calculatedQty = calcDispenseQty(item);
+    const updatedItem = await withRetry(() => (prisma as any).prescriptionItem.update({
+      where: { id: itemId },
+      data: {
+        drugName: item.drugName ? String(item.drugName).trim() : undefined,
+        strength: item.strength !== undefined ? (item.strength ? String(item.strength).trim() : null) : undefined,
+        dosageAmount: item.dosageAmount !== undefined ? (item.dosageAmount != null ? String(item.dosageAmount).trim() : null) : undefined,
+        doseUnit: item.doseUnit !== undefined ? (item.doseUnit ? String(item.doseUnit).trim() : null) : undefined,
+        dosage: item.dosage !== undefined ? item.dosage : (item.dosageAmount && item.doseUnit ? `${item.dosageAmount} ${item.doseUnit}` : undefined),
+        frequency: item.frequency ? String(item.frequency).trim().toUpperCase() : undefined,
+        route: item.route ? String(item.route).trim().toUpperCase() : undefined,
+        duration: item.duration !== undefined ? (item.duration ? String(item.duration).trim() : null) : undefined,
+        startDate: item.startDate !== undefined ? (item.startDate ? new Date(item.startDate) : null) : undefined,
+        endDate: item.endDate !== undefined ? (item.endDate ? new Date(item.endDate) : null) : undefined,
+        instructions: item.instructions !== undefined ? (item.instructions ? String(item.instructions).trim() : null) : undefined,
+        quantity: item.quantity !== undefined ? (item.quantity != null ? parseInt(String(item.quantity), 10) : calculatedQty) : undefined,
+        dispenseQty: calculatedQty,
+        status: item.status !== undefined ? item.status : undefined
+      },
+      include: {
+        medicine: true
+      }
+    }));
+
+    websocketService.broadcast("prescription_updated", { prescriptionId: id, item: updatedItem });
+    res.json(updatedItem);
+  } catch (error: any) {
+    console.error("Error updating prescription item:", error);
+    res.status(500).json({ error: "Failed to update prescription item" });
+  }
+};
+
+export const deletePrescriptionItem = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id, itemId } = req.params;
+    const rx = (await withRetry(() => (prisma as any).prescription.findUnique({ where: { id } }))) as any;
+    if (!rx) {
+      res.status(404).json({ error: "Prescription not found" });
+      return;
+    }
+    if ((req as any).roleName === 'DOCTOR' && rx.doctorId && rx.doctorId !== (req as any).user?.id) {
+      res.status(403).json({ error: "Forbidden: You can only edit your own prescriptions" });
+      return;
+    }
+    if (rx.status === "DISPENSED") {
+      res.status(400).json({ error: "Cannot delete items from a dispensed prescription" });
+      return;
+    }
+
+    await withRetry(() => (prisma as any).prescriptionItem.delete({
+      where: { id: itemId }
+    }));
+
+    websocketService.broadcast("prescription_updated", { prescriptionId: id, deletedItemId: itemId });
+    res.json({ success: true, message: "Medicine item deleted successfully" });
+  } catch (error: any) {
+    console.error("Error deleting prescription item:", error);
+    res.status(500).json({ error: "Failed to delete prescription item" });
   }
 };

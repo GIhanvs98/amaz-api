@@ -291,12 +291,21 @@ model PrescriptionItem {
   prescriptionId String
   medicineId     String?
   drugName       String
-  dosage         String?
-  frequency      String?
-  duration       String?
-  instructions   String?
-  dispenseQty    Int          @default(0)
+  strength       String?      // e.g. "500mg", "10mg/5ml"
+  dosageAmount   String?      // e.g. "1", "2"
+  doseUnit       String?      // e.g. "tablet", "capsule", "mg", "ml"
+  dosage         String?      // Maintained for backward compatibility: e.g. "1 tablet (500mg)"
+  frequency      String?      // Canonical: "OD", "BD", "TDS", "QDS", "EOD", "STAT", "CUSTOM"
+  route          String?      @default("ORAL") // Canonical: "ORAL", "SUPPOSITORY", "IM", "IV", "SC", "OTHER"
+  duration       String?      // e.g. "5 days"
+  startDate      DateTime?    // Schedule start date
+  endDate        DateTime?    // Schedule end date
+  instructions   String?      // Timing / clinical instructions
+  dispenseQty    Int          @default(0) // Total quantity to dispense
+  quantity       Int?         // Explicit quantity alias
+  status         String       @default("ACTIVE") // ACTIVE, DISPENSED, CANCELLED
   createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @default(now()) @updatedAt
   medicine       Medicine?    @relation(fields: [medicineId], references: [id])
   prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
 }
