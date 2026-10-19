@@ -321,6 +321,31 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
                 unitPrice: effectiveFee
               }, tx);
             }
+          } else if (effectiveFee) {
+            // If already exists in a DRAFT invoice, update price to match doctor custom fee
+            const draftInv = await tx.invoice.findFirst({
+              where: { visitId: { in: visitIds }, status: "DRAFT" }
+            });
+            if (draftInv) {
+              await tx.invoiceLineItem.updateMany({
+                where: { invoiceId: draftInv.id, department: "CONSULTATION" },
+                data: {
+                  unitPrice: Number(effectiveFee),
+                  total: Number(effectiveFee)
+                }
+              });
+              const remainingItems = await tx.invoiceLineItem.findMany({
+                where: { invoiceId: draftInv.id }
+              });
+              const newSubtotal = remainingItems.reduce((acc: number, item: any) => acc + item.total, 0);
+              await tx.invoice.update({
+                where: { id: draftInv.id },
+                data: {
+                  subtotal: newSubtotal,
+                  totalAmount: Math.max(0, newSubtotal - (draftInv.discountAmount || 0))
+                }
+              });
+            }
           }
 
           if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
@@ -335,31 +360,6 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
                 quantity: 1,
                 unitPrice: targetPrice
               }, tx);
-            }
-          } else if (customConsultationFee !== undefined && customConsultationFee !== null && !isNaN(Number(customConsultationFee))) {
-            // If already exists in a DRAFT invoice, update price to match doctor custom fee
-            const draftInv = await tx.invoice.findFirst({
-              where: { visitId: { in: visitIds }, status: "DRAFT" }
-            });
-            if (draftInv) {
-              await tx.invoiceLineItem.updateMany({
-                where: { invoiceId: draftInv.id, department: "CONSULTATION" },
-                data: {
-                  unitPrice: Number(customConsultationFee),
-                  total: Number(customConsultationFee)
-                }
-              });
-              const remainingItems = await tx.invoiceLineItem.findMany({
-                where: { invoiceId: draftInv.id }
-              });
-              const newSubtotal = remainingItems.reduce((acc: number, item: any) => acc + item.total, 0);
-              await tx.invoice.update({
-                where: { id: draftInv.id },
-                data: {
-                  subtotal: newSubtotal,
-                  totalAmount: Math.max(0, newSubtotal - (draftInv.discountAmount || 0))
-                }
-              });
             }
           }
           // NOTE: Appointment status is NOT changed here. The doctor must explicitly
@@ -947,6 +947,30 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
                   unitPrice: effectiveFee
                 }, tx);
               }
+            } else if (effectiveFee) {
+              const draftInv = await tx.invoice.findFirst({
+                where: { visitId: { in: visitIds }, status: "DRAFT" }
+              });
+              if (draftInv) {
+                await tx.invoiceLineItem.updateMany({
+                  where: { invoiceId: draftInv.id, department: "CONSULTATION" },
+                  data: {
+                    unitPrice: Number(effectiveFee),
+                    total: Number(effectiveFee)
+                  }
+                });
+                const remainingItems = await tx.invoiceLineItem.findMany({
+                  where: { invoiceId: draftInv.id }
+                });
+                const newSubtotal = remainingItems.reduce((acc: number, item: any) => acc + item.total, 0);
+                await tx.invoice.update({
+                  where: { id: draftInv.id },
+                  data: {
+                    subtotal: newSubtotal,
+                    totalAmount: Math.max(0, newSubtotal - (draftInv.discountAmount || 0))
+                  }
+                });
+              }
             }
 
             if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
@@ -962,30 +986,6 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
                   unitPrice: targetPrice
                 }, tx);
               }
-            }
-          } else if (customConsultationFee !== undefined && customConsultationFee !== null && !isNaN(Number(customConsultationFee))) {
-            const draftInv = await tx.invoice.findFirst({
-              where: { visitId: { in: visitIds }, status: "DRAFT" }
-            });
-            if (draftInv) {
-              await tx.invoiceLineItem.updateMany({
-                where: { invoiceId: draftInv.id, department: "CONSULTATION" },
-                data: {
-                  unitPrice: Number(customConsultationFee),
-                  total: Number(customConsultationFee)
-                }
-              });
-              const remainingItems = await tx.invoiceLineItem.findMany({
-                where: { invoiceId: draftInv.id }
-              });
-              const newSubtotal = remainingItems.reduce((acc: number, item: any) => acc + item.total, 0);
-              await tx.invoice.update({
-                where: { id: draftInv.id },
-                data: {
-                  subtotal: newSubtotal,
-                  totalAmount: Math.max(0, newSubtotal - (draftInv.discountAmount || 0))
-                }
-              });
             }
           }
         }
