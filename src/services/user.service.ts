@@ -27,9 +27,10 @@ export class UserService {
    * Update basic profile details
    */
   async updateProfile(userId: string, data: { fullName?: string; email?: string; specialty?: string; roomNumber?: string; roomId?: string }) {
-    // Check if email is being changed and already exists
+    let normalizedEmail: string | undefined = undefined;
     if (data.email) {
-      const existing = await prisma.user.findUnique({ where: { email: data.email } });
+      normalizedEmail = data.email.trim().toLowerCase();
+      const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
       if (existing && existing.id !== userId) {
         throw new Error('Email already in use');
       }
@@ -67,7 +68,7 @@ export class UserService {
 
     const updateData: any = {};
     if (data.fullName !== undefined) updateData.fullName = data.fullName;
-    if (data.email !== undefined) updateData.email = data.email;
+    if (normalizedEmail !== undefined) updateData.email = normalizedEmail;
     if (data.specialty !== undefined) updateData.specialty = data.specialty || null;
     if (finalRoomId !== undefined) updateData.roomId = finalRoomId;
 
