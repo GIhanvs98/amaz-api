@@ -76,7 +76,7 @@ export class DepartmentController {
    */
   async createDepartment(req: Request, res: Response) {
     try {
-      const { name, description, isActive } = req.body;
+      const { name, description, commissionRate, isActive } = req.body;
       
       if (!name || name.trim() === "") {
         return res.status(400).json({ error: "Department name is required" });
@@ -94,6 +94,7 @@ export class DepartmentController {
         data: {
           name,
           description,
+          commissionRate: commissionRate !== undefined && commissionRate !== null ? parseFloat(commissionRate) : 20,
           isActive: isActive !== undefined ? isActive : true
         },
         include: {
@@ -115,7 +116,7 @@ export class DepartmentController {
   async updateDepartment(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { name, description, isActive } = req.body;
+      const { name, description, commissionRate, isActive } = req.body;
 
       if (name !== undefined && name.trim() === "") {
         return res.status(400).json({ error: "Department name cannot be empty" });
@@ -123,7 +124,12 @@ export class DepartmentController {
 
       const department = await prisma.department.update({
         where: { id: id as string },
-        data: { name, description, isActive },
+        data: {
+          ...(name !== undefined ? { name } : {}),
+          ...(description !== undefined ? { description } : {}),
+          ...(commissionRate !== undefined ? { commissionRate: commissionRate !== null ? parseFloat(commissionRate) : null } : {}),
+          ...(isActive !== undefined ? { isActive } : {})
+        },
         include: {
           Users: {
             select: {

@@ -180,7 +180,7 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
 
 export const createPrescription = async (req: Request, res: Response): Promise<void> => {
   try {
-    let { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items, consultationFee } = req.body;
+    let { patientId, patientName, visitId, doctorId, doctorName, diagnosis, clinicalNotes, items, consultationFee, customConsultationFee } = req.body;
 
     if (visitId) {
       const apptRecord = await prisma.appointment.findUnique({
@@ -298,20 +298,29 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
             }
           });
 
-          // Add or update billing charge for POST-fee doctors using the selected or configured fee
-          const targetConsultationFee = (consultationFee !== undefined && Number(consultationFee) > 0)
-            ? Number(consultationFee)
-            : (doctorUser.consultationFee ?? 2500);
+          const doctor = await tx.user.findUnique({
+            where: { id: doctorId },
+            select: { consultationFee: true, feeType: true, fullName: true }
+          });
 
-          if (doctorUser.feeType === "POST" || !doctorUser.feeType) {
-            await billingService.addCharge({
-              visitId,
-              patientId,
-              department: "CONSULTATION",
-              description: `Doctor Consultation Fee (Post) - Dr. ${secureDoctorName}`,
-              quantity: 1,
-              unitPrice: targetConsultationFee
-            }, tx);
+          const effectiveFee = (consultationFee !== undefined && Number(consultationFee) > 0)
+            ? Number(consultationFee)
+            : ((customConsultationFee !== undefined && customConsultationFee !== null && !isNaN(Number(customConsultationFee)))
+              ? Number(customConsultationFee)
+              : (doctorUser.consultationFee ?? doctor?.consultationFee ?? 2500));
+
+          if (!existingConsultation) {
+            // Add billing charge for POST-fee doctors
+            if (doctorUser.feeType === "POST" || !doctorUser.feeType || doctor?.feeType === "POST") {
+              await billingService.addCharge({
+                visitId,
+                patientId,
+                department: "CONSULTATION",
+                description: `Doctor Consultation Fee (Post) - Dr. ${secureDoctorName}`,
+                quantity: 1,
+                unitPrice: effectiveFee
+              }, tx);
+            }
           }
 
           if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
@@ -326,6 +335,31 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
                 quantity: 1,
                 unitPrice: targetPrice
               }, tx);
+            }
+          } else if (customConsultationFee !== undefined && customConsultationFee !== null && !isNaN(Number(customConsultationFee))) {
+            // If already exists in a DRAFT invoice, update price to match doctor custom fee
+            const draftInv = await tx.invoice.findFirst({
+              where: { visitId: { in: visitIds }, status: "DRAFT" }
+            });
+            if (draftInv) {
+              await tx.invoiceLineItem.updateMany({
+                where: { invoiceId: draftInv.id, department: "CONSULTATION" },
+                data: {
+                  unitPrice: Number(customConsultationFee),
+                  total: Number(customConsultationFee)
+                }
+              });
+              const remainingItems = await tx.invoiceLineItem.findMany({
+                where: { invoiceId: draftInv.id }
+              });
+              const newSubtotal = remainingItems.reduce((acc: number, item: any) => acc + item.total, 0);
+              await tx.invoice.update({
+                where: { id: draftInv.id },
+                data: {
+                  subtotal: newSubtotal,
+                  totalAmount: Math.max(0, newSubtotal - (draftInv.discountAmount || 0))
+                }
+              });
             }
           }
           // NOTE: Appointment status is NOT changed here. The doctor must explicitly
@@ -759,7 +793,7 @@ export const deletePrescription = async (req: Request, res: Response): Promise<v
 export const updatePrescription = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { diagnosis, clinicalNotes, items, consultationFee } = req.body;
+    const { diagnosis, clinicalNotes, items, consultationFee, customConsultationFee } = req.body;
     
     // Check if it exists and what its status is
     const rx = await withRetry(() => (prisma as any).prescription.findUnique({
@@ -860,6 +894,11 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
           }
         });
 
+        const doctor = rx.doctorId ? await tx.user.findUnique({
+          where: { id: rx.doctorId },
+          select: { id: true, feeType: true, consultationFee: true, fullName: true }
+        }) : null;
+
         // Ensure consultation billing line item is present if not already added
         let bookingRef: string | null = null;
         if (rx.visitId) {
@@ -893,40 +932,63 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
             });
             const effectiveFee = (consultationFee !== undefined && Number(consultationFee) > 0)
               ? Number(consultationFee)
-              : (rx.consultationFee ?? doctor?.consultationFee ?? 2500);
+              : ((customConsultationFee !== undefined && customConsultationFee !== null && !isNaN(Number(customConsultationFee)))
+                ? Number(customConsultationFee)
+                : (rx.consultationFee ?? doctor?.consultationFee ?? 2500));
 
-            if (doctor?.feeType === "POST" || !doctor?.feeType) {
-              await billingService.addCharge({
-                visitId: rx.visitId,
-                patientId: rx.patientId,
-                department: "CONSULTATION",
-                description: `Doctor Consultation Fee (Post) - Dr. ${rx.doctorName || doctor?.fullName || ''}`.trim(),
-                quantity: 1,
-                unitPrice: effectiveFee
-              }, tx);
+            if (!existingConsultation) {
+              if (doctor?.feeType === "POST" || !doctor?.feeType) {
+                await billingService.addCharge({
+                  visitId: rx.visitId,
+                  patientId: rx.patientId,
+                  department: "CONSULTATION",
+                  description: `Doctor Consultation Fee (Post) - Dr. ${rx.doctorName || doctor?.fullName || ''}`.trim(),
+                  quantity: 1,
+                  unitPrice: effectiveFee
+                }, tx);
+              }
             }
-          }
 
-          if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
-            for (const svc of req.body.extraServices) {
-              const targetPrice = Number(svc.customPrice !== undefined ? svc.customPrice : (svc.price ?? 0));
-              await billingService.addCharge({
-                visitId: rx.visitId,
-                patientId: rx.patientId,
-                department: "EXTRA_SERVICE",
-                referenceId: svc.id,
-                description: `Extra Service: ${svc.title}`,
-                quantity: 1,
-                unitPrice: targetPrice
-              }, tx);
+            if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
+              for (const svc of req.body.extraServices) {
+                const targetPrice = Number(svc.customPrice !== undefined ? svc.customPrice : (svc.price ?? 0));
+                await billingService.addCharge({
+                  visitId: rx.visitId,
+                  patientId: rx.patientId,
+                  department: "EXTRA_SERVICE",
+                  referenceId: svc.id,
+                  description: `Extra Service: ${svc.title}`,
+                  quantity: 1,
+                  unitPrice: targetPrice
+                }, tx);
+              }
+            }
+          } else if (customConsultationFee !== undefined && customConsultationFee !== null && !isNaN(Number(customConsultationFee))) {
+            const draftInv = await tx.invoice.findFirst({
+              where: { visitId: { in: visitIds }, status: "DRAFT" }
+            });
+            if (draftInv) {
+              await tx.invoiceLineItem.updateMany({
+                where: { invoiceId: draftInv.id, department: "CONSULTATION" },
+                data: {
+                  unitPrice: Number(customConsultationFee),
+                  total: Number(customConsultationFee)
+                }
+              });
+              const remainingItems = await tx.invoiceLineItem.findMany({
+                where: { invoiceId: draftInv.id }
+              });
+              const newSubtotal = remainingItems.reduce((acc: number, item: any) => acc + item.total, 0);
+              await tx.invoice.update({
+                where: { id: draftInv.id },
+                data: {
+                  subtotal: newSubtotal,
+                  totalAmount: Math.max(0, newSubtotal - (draftInv.discountAmount || 0))
+                }
+              });
             }
           }
         }
-
-        const doctor = rx.doctorId ? await tx.user.findUnique({
-          where: { id: rx.doctorId },
-          select: { id: true, feeType: true, consultationFee: true, fullName: true }
-        }) : null;
 
         const visitLrs = rx.visitId ? await tx.labRequest.findMany({
           where: { visitId: rx.visitId },
