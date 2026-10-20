@@ -52,9 +52,37 @@ export const extraServiceOrderController = {
         const targetVisitId = item.visitId || visitId || null;
         const targetDoctorId = item.doctorId || assignedDoctorId;
 
-        const service = await prisma.extraService.findUnique({
-          where: { id: targetServiceId }
-        });
+        let service = null;
+        if (targetServiceId && !targetServiceId.startsWith("cert-")) {
+          service = await prisma.extraService.findUnique({
+            where: { id: targetServiceId }
+          }).catch(() => null);
+        }
+
+        // If not found by ID (e.g. virtual certificate or custom procedure title), resolve or create fallback ExtraService
+        if (!service) {
+          const serviceTitle = item.certificateType 
+            ? `Medical Certificate (${item.certificateType})`
+            : (item.title || item.notes || "Clinical Extra Service");
+            
+          service = await prisma.extraService.findFirst({
+            where: { title: { equals: serviceTitle, mode: "insensitive" } }
+          });
+
+          if (!service) {
+            const defaultBarcode = `${Date.now()}`.slice(-10);
+            service = await prisma.extraService.create({
+              data: {
+                title: serviceTitle,
+                description: item.notes || "Standard clinical extra service / certificate",
+                price: (item.customPrice !== undefined && item.customPrice !== null) ? Number(item.customPrice) : 650,
+                barcode: defaultBarcode
+              }
+            }).catch(async () => {
+              return await prisma.extraService.findFirst({ where: { isActive: true } });
+            });
+          }
+        }
 
         if (!service) {
           continue;
@@ -69,7 +97,7 @@ export const extraServiceOrderController = {
         const createdOrder = await prisma.extraServiceOrder.create({
           data: {
             orderNumber,
-            serviceId: targetServiceId,
+            serviceId: service.id,
             patientId: targetPatientId,
             doctorId: targetDoctorId,
             visitId: targetVisitId,

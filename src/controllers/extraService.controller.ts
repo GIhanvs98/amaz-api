@@ -140,17 +140,37 @@ export const extraServiceController = {
   getQueue: async (req: Request, res: Response) => {
     try {
       const { startOfDay, endOfDay } = getTimezoneBoundaries();
-      const appointments = await prisma.appointment.findMany({
-        where: {
-          department: "EXTRA_SERVICE",
-          appointmentDate: { gte: startOfDay, lte: endOfDay }
-        },
-        include: {
-          Patient: true,
-          room: true
-        },
-        orderBy: { createdAt: 'desc' }
-      });
+
+      const [appointments, extraOrders] = await Promise.all([
+        prisma.appointment.findMany({
+          where: {
+            department: "EXTRA_SERVICE",
+            appointmentDate: { gte: startOfDay, lte: endOfDay }
+          },
+          include: {
+            Patient: true,
+            room: true
+          },
+          orderBy: { createdAt: 'desc' }
+        }),
+        prisma.extraServiceOrder.findMany({
+          where: {
+            createdAt: { gte: startOfDay, lte: endOfDay }
+          },
+          include: {
+            service: {
+              include: {
+                room: true
+              }
+            },
+            patient: true,
+            doctor: {
+              select: { id: true, fullName: true, specialty: true }
+            }
+          },
+          orderBy: { createdAt: 'desc' }
+        })
+      ]);
 
       // Gather invoices for these visits to pull specific service items
       const visitIds = appointments.map(a => a.id).concat(appointments.map(a => a.bookingReference).filter(Boolean) as string[]);
@@ -167,7 +187,7 @@ export const extraServiceController = {
         }
       });
 
-      const items = appointments.map(appt => {
+      const apptItems = appointments.map(appt => {
         const matchedInvoice = invoices.find(inv => 
           inv.visitId === appt.id || (appt.bookingReference && inv.visitId === appt.bookingReference)
         );
@@ -195,11 +215,52 @@ export const extraServiceController = {
           fileType: appt.fileType,
           notes: appt.notes,
           appointmentDate: appt.appointmentDate,
-          completedAt: appt.completedAt
+          completedAt: appt.completedAt,
+          source: "APPOINTMENT"
         };
       });
 
-      res.json(items);
+      const orderItems = extraOrders.map(order => {
+        const reportFiles = Array.isArray(order.reportFiles) ? (order.reportFiles as any[]) : [];
+        const latestReport = reportFiles[reportFiles.length - 1];
+
+        return {
+          id: order.id,
+          tokenNumber: order.orderNumber,
+          bookingReference: order.visitId || order.orderNumber,
+          status: order.status,
+          serviceTitle: order.service?.title || (order.certificateType ? `Certificate (${order.certificateType})` : "Clinical Service"),
+          services: [{
+            description: order.service?.title || "Extra Service",
+            unitPrice: order.finalPrice,
+            quantity: 1
+          }],
+          roomNumber: order.service?.room?.roomNumber || "EXT-01",
+          patient: {
+            id: order.patient.id,
+            fullName: order.patient.fullName,
+            phone: order.patient.phone,
+            gender: order.patient.gender,
+            age: order.patient.ageFallback
+          },
+          reportUrl: latestReport?.fileUrl || null,
+          fileName: latestReport?.fileName || null,
+          fileType: latestReport?.fileType || null,
+          notes: order.notes,
+          appointmentDate: order.createdAt,
+          completedAt: order.completedAt,
+          source: "ORDER",
+          doctorId: order.doctorId,
+          doctorName: order.doctor?.fullName
+        };
+      });
+
+      // Combine both appointment-based walk-ins and doctor-ordered procedures into unified workstation queue
+      const combinedItems = [...apptItems, ...orderItems].sort((a, b) => 
+        new Date(b.appointmentDate).getTime() - new Date(a.appointmentDate).getTime()
+      );
+
+      res.json(combinedItems);
     } catch (e: any) {
       console.error("Failed to fetch extra services queue:", e);
       res.status(500).json({ error: e.message });
@@ -235,28 +296,66 @@ export const extraServiceController = {
         reportUrl = `https://storage.amazhospital.com/${s3Key}`;
       }
 
-      // Mark the appointment as COMPLETED with report details
-      const updated = await prisma.appointment.update({
-        where: { id: appointmentId },
-        data: {
-          reportUrl,
-          fileName: file.originalname,
-          fileType: file.mimetype || 'application/octet-stream',
-          notes: notes ? String(notes).trim() : undefined,
-          status: "COMPLETED",
-          completedAt: new Date()
-        },
-        include: {
-          Patient: true,
-          room: true
-        }
-      });
+      // Try updating Appointment first
+      try {
+        const updated = await prisma.appointment.update({
+          where: { id: appointmentId },
+          data: {
+            reportUrl,
+            fileName: file.originalname,
+            fileType: file.mimetype || 'application/octet-stream',
+            notes: notes ? String(notes).trim() : undefined,
+            status: "COMPLETED",
+            completedAt: new Date()
+          },
+          include: {
+            Patient: true,
+            room: true
+          }
+        });
 
-      await clearCache('*extra-services*');
-      res.json({
-        success: true,
-        data: updated
-      });
+        await clearCache('*extra-services*');
+        return res.json({
+          success: true,
+          data: updated
+        });
+      } catch (apptErr) {
+        // Fallback: update ExtraServiceOrder
+        const fileObj = {
+          id: crypto.randomUUID(),
+          fileName: file.originalname,
+          fileUrl: reportUrl,
+          fileType: file.mimetype || 'application/octet-stream',
+          fileSize: file.size,
+          uploadedAt: new Date().toISOString()
+        };
+
+        const existingOrder = await prisma.extraServiceOrder.findUnique({
+          where: { id: appointmentId }
+        });
+
+        const currentFiles = Array.isArray(existingOrder?.reportFiles) ? (existingOrder!.reportFiles as any[]) : [];
+
+        const updatedOrder = await prisma.extraServiceOrder.update({
+          where: { id: appointmentId },
+          data: {
+            reportFiles: [...currentFiles, fileObj],
+            status: "COMPLETED",
+            completedAt: new Date(),
+            notes: notes ? String(notes).trim() : existingOrder?.notes
+          },
+          include: {
+            patient: true,
+            service: true
+          }
+        });
+
+        await clearCache('*extra-services*');
+        return res.json({
+          success: true,
+          data: updatedOrder
+        });
+      }
     } catch (e: any) {
       console.error("Failed to upload extra service report:", e);
       res.status(500).json({ error: e.message });
@@ -268,20 +367,38 @@ export const extraServiceController = {
       const id = req.params.id as string;
       const { status } = req.body;
 
-      const updated = await prisma.appointment.update({
-        where: { id },
-        data: {
-          status: status || "COMPLETED",
-          ...(status === "COMPLETED" ? { completedAt: new Date() } : {})
-        },
-        include: {
-          Patient: true,
-          room: true
-        }
-      });
+      try {
+        const updated = await prisma.appointment.update({
+          where: { id },
+          data: {
+            status: status || "COMPLETED",
+            ...(status === "COMPLETED" ? { completedAt: new Date() } : {})
+          },
+          include: {
+            Patient: true,
+            room: true
+          }
+        });
 
-      await clearCache('*extra-services*');
-      res.json({ success: true, data: updated });
+        await clearCache('*extra-services*');
+        return res.json({ success: true, data: updated });
+      } catch (apptErr) {
+        // Fallback: update ExtraServiceOrder
+        const updatedOrder = await prisma.extraServiceOrder.update({
+          where: { id },
+          data: {
+            status: status || "COMPLETED",
+            ...(status === "COMPLETED" ? { completedAt: new Date() } : {})
+          },
+          include: {
+            patient: true,
+            service: true
+          }
+        });
+
+        await clearCache('*extra-services*');
+        return res.json({ success: true, data: updatedOrder });
+      }
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
