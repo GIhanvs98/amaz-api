@@ -17,6 +17,7 @@ export const barcodeController = {
 
       const isNumeric10 = /^\d{10}$/.test(code);
       const isShortToken = /^\d{1,3}$/.test(code);
+      const isAlphanumericToken = /^[A-Za-z]{1,4}-\d{1,4}$/i.test(code);
       const isPatientId = code.startsWith("PT-") || code.startsWith("pt-");
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(code);
 
@@ -24,7 +25,7 @@ export const barcodeController = {
       // 1. FAST PATH: Check Appointment / Master Visit Barcode
       // 10-digit barcodes, 1-3 digit tokens, and patient IDs are visits 99% of the time.
       // =========================================================================
-      if (isNumeric10 || isShortToken || isPatientId || isUUID || code.length >= 8) {
+      if (isNumeric10 || isShortToken || isAlphanumericToken || isPatientId || isUUID || code.length >= 8) {
         const appointmentOrConditions: any[] = [
           { bookingReference: code },
           { id: code }
@@ -34,6 +35,13 @@ export const barcodeController = {
           appointmentOrConditions.push({
             tokenNumber: code.padStart(2, "0"),
             appointmentDate: { gte: startOfDay, lte: endOfDay },
+            status: { not: "CANCELLED" }
+          });
+        }
+
+        if (isAlphanumericToken) {
+          appointmentOrConditions.push({
+            tokenNumber: { equals: code, mode: "insensitive" },
             status: { not: "CANCELLED" }
           });
         }
@@ -381,6 +389,35 @@ export const barcodeController = {
       });
       if (extraService) {
         return res.json({ type: "EXTRA_SERVICE", data: extraService });
+      }
+
+      // =========================================================================
+      // 4b. Check Extra Service Order (by orderNumber, id, or visitId)
+      // =========================================================================
+      const isExtraOrderCode = code.startsWith("EXS-") || code.startsWith("exs-") || isUUID || code.length >= 8;
+      if (isExtraOrderCode) {
+        const extraOrder = await prisma.extraServiceOrder.findFirst({
+          where: {
+            OR: [
+              { orderNumber: { equals: code, mode: "insensitive" } },
+              { id: code },
+              ...(code.length >= 8 && !isUUID ? [{ id: { startsWith: code } }] : [])
+            ]
+          },
+          include: {
+            service: { include: { room: true } },
+            patient: true,
+            doctor: true
+          }
+        });
+
+        if (extraOrder) {
+          return res.json({
+            type: "EXTRA_SERVICE_ORDER",
+            masterBarcode: extraOrder.visitId || extraOrder.orderNumber,
+            data: extraOrder
+          });
+        }
       }
 
       // =========================================================================
