@@ -26,25 +26,35 @@ export class BillingService {
     if (data.invoiceId) {
       invoice = await db.invoice.findUnique({ where: { id: data.invoiceId } });
     } else if (data.visitId) {
-      invoice = await db.invoice.findFirst({
-        where: { visitId: data.visitId, status: "DRAFT" }
+      let bookingRef: string | null = null;
+      const currentAppt = await db.appointment.findFirst({
+        where: {
+          OR: [
+            { id: data.visitId },
+            { bookingReference: data.visitId }
+          ]
+        },
+        select: { id: true, bookingReference: true }
       });
-      if (!invoice) {
-        const currentAppt = await db.appointment.findUnique({
-          where: { id: data.visitId },
-          select: { bookingReference: true }
-        });
-        if (currentAppt?.bookingReference) {
-          const siblingAppts = await db.appointment.findMany({
-            where: { bookingReference: currentAppt.bookingReference },
-            select: { id: true }
-          });
-          const siblingIds = siblingAppts.map((a: any) => a.id);
-          invoice = await db.invoice.findFirst({
-            where: { visitId: { in: siblingIds }, status: "DRAFT" }
-          });
-        }
+
+      if (currentAppt?.bookingReference) {
+        bookingRef = currentAppt.bookingReference;
+      } else {
+        bookingRef = data.visitId;
       }
+
+      let allVisitIds = [data.visitId];
+      if (bookingRef) {
+        const siblingAppts = await db.appointment.findMany({
+          where: { bookingReference: bookingRef },
+          select: { id: true }
+        });
+        allVisitIds = Array.from(new Set([data.visitId, bookingRef, ...siblingAppts.map((a: any) => a.id)]));
+      }
+
+      invoice = await db.invoice.findFirst({
+        where: { visitId: { in: allVisitIds }, status: "DRAFT" }
+      });
     } else if (data.patientId) {
        invoice = await db.invoice.findFirst({
         where: { patientId: data.patientId, status: "DRAFT" }
@@ -227,30 +237,55 @@ export class BillingService {
         include: { lineItems: true, payments: true }
       });
     } else if (query.visitId) {
-      let inv = await prisma.invoice.findFirst({
-        where: { visitId: query.visitId, status: "DRAFT" },
+      let bookingRef: string | null = null;
+      const appt = await prisma.appointment.findFirst({
+        where: {
+          OR: [
+            { id: query.visitId },
+            { bookingReference: query.visitId }
+          ]
+        },
+        select: { id: true, bookingReference: true }
+      });
+
+      if (appt?.bookingReference) {
+        bookingRef = appt.bookingReference;
+      } else {
+        bookingRef = query.visitId;
+      }
+
+      let allVisitIds = [query.visitId];
+      if (bookingRef) {
+        const siblingAppts = await prisma.appointment.findMany({
+          where: { bookingReference: bookingRef },
+          select: { id: true }
+        });
+        allVisitIds = Array.from(new Set([query.visitId, bookingRef, ...siblingAppts.map((a: any) => a.id)]));
+      }
+
+      const draftInvoices = await prisma.invoice.findMany({
+        where: { visitId: { in: allVisitIds }, status: "DRAFT" },
         include: { lineItems: true, payments: true }
       });
 
-      if (!inv) {
-        const appt = await prisma.appointment.findUnique({
-          where: { id: query.visitId },
-          select: { bookingReference: true }
-        });
-        if (appt?.bookingReference) {
-          const siblingAppts = await prisma.appointment.findMany({
-            where: { bookingReference: appt.bookingReference },
-            select: { id: true }
-          });
-          const siblingIds = siblingAppts.map((a: any) => a.id);
-          inv = await prisma.invoice.findFirst({
-            where: { visitId: { in: siblingIds }, status: "DRAFT" },
-            include: { lineItems: true, payments: true }
-          });
-        }
+      if (draftInvoices.length === 0) {
+        return null;
+      }
+      if (draftInvoices.length === 1) {
+        return draftInvoices[0];
       }
 
-      return inv;
+      // Merge multiple draft invoices in memory into one consolidated invoice
+      const allLineItems = draftInvoices.flatMap(inv => inv.lineItems || []);
+      const allPayments = draftInvoices.flatMap(inv => inv.payments || []);
+      const totalAmount = allLineItems.reduce((sum, li) => sum + (Number(li.total) || 0), 0);
+      return {
+        ...draftInvoices[0],
+        lineItems: allLineItems,
+        payments: allPayments,
+        subtotal: totalAmount,
+        totalAmount: totalAmount
+      };
     }
     throw new Error("Must provide invoiceId or visitId");
   }

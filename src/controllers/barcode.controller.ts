@@ -169,8 +169,8 @@ export const barcodeController = {
             ])
           ).filter(Boolean) as string[];
 
-          // PARALLEL EXECUTION: Fetch Invoices, Prescriptions, LabRequests, and Paid Status concurrently
-          const [invoices, prescriptions, labRequests, paidInvoice] = await Promise.all([
+          // PARALLEL EXECUTION: Fetch Invoices, Prescriptions, LabRequests, ExtraServiceOrders, and Paid Status concurrently
+          const [invoices, prescriptions, labRequests, extraServiceOrders, paidInvoice] = await Promise.all([
             prisma.invoice.findMany({
               where: {
                 visitId: { in: allVisitIdentifiers },
@@ -231,6 +231,21 @@ export const barcodeController = {
               },
               orderBy: { requestedAt: "desc" }
             }),
+            prisma.extraServiceOrder.findMany({
+              where: {
+                OR: [
+                  { visitId: { in: allVisitIdentifiers } },
+                  {
+                    patientId: appointment.patientId,
+                    createdAt: { gte: startOfDay, lte: endOfDay }
+                  }
+                ]
+              },
+              include: {
+                service: { include: { room: true } }
+              },
+              orderBy: { createdAt: "desc" }
+            }),
             prisma.invoice.findFirst({
               where: {
                 visitId: { in: allVisitIdentifiers },
@@ -242,11 +257,40 @@ export const barcodeController = {
 
           // In-memory non-destructive draft invoice coalescing (zero DB row locks / deletions on GET)
           let mergedInvoice: any = null;
-          if (invoices.length > 0) {
-            const allLineItems = invoices.flatMap(inv => inv.lineItems || []);
+          let allLineItems = invoices.flatMap(inv => inv.lineItems || []);
+
+          // Ensure any extraServiceOrders not yet in invoice line items are represented
+          for (const order of extraServiceOrders) {
+            const alreadyInInvoice = allLineItems.some(
+              (li: any) => li.referenceId === order.id || li.description.includes(order.orderNumber)
+            );
+            if (!alreadyInInvoice && order.status !== "CANCELLED") {
+              const orderPrice = order.finalPrice ?? order.service?.price ?? 0;
+              const synthItem: any = {
+                id: `synth-${order.id}`,
+                invoiceId: invoices[0]?.id || `draft-${appointment.bookingReference || appointment.id}`,
+                department: "EXTRA_SERVICE",
+                description: `Extra Service: ${order.service?.title || 'Service'}${order.certificateType ? ` (${order.certificateType})` : ''}`,
+                quantity: 1,
+                unitPrice: orderPrice,
+                total: orderPrice,
+                referenceId: order.id,
+                createdAt: order.createdAt || new Date()
+              };
+              allLineItems.push(synthItem);
+            }
+          }
+
+          if (allLineItems.length > 0) {
             const calculatedTotal = allLineItems.reduce((sum: number, li: any) => sum + (li.total || 0), 0);
+            const baseInvoice = invoices[0] || {
+              id: `draft-${appointment.bookingReference || appointment.id}`,
+              visitId: appointment.bookingReference || appointment.id,
+              patientId: appointment.patientId,
+              status: "DRAFT"
+            };
             mergedInvoice = {
-              ...invoices[0],
+              ...baseInvoice,
               lineItems: allLineItems,
               subtotal: calculatedTotal,
               totalAmount: calculatedTotal
@@ -256,7 +300,7 @@ export const barcodeController = {
           const consultationPaid = !!paidInvoice;
 
           const extraServiceItems = (mergedInvoice?.lineItems || []).filter(
-            (li: any) => li.department === "EXTRA_SERVICE" || li.department === "SERVICE"
+            (li: any) => li.department === "EXTRA_SERVICE" || li.department === "SERVICE" || li.department === "OTHER"
           );
 
           const consultAppt = allAppointments.find(a => a.department === "CONSULTATION") || appointment;
@@ -269,11 +313,18 @@ export const barcodeController = {
             roomNumber: a.room?.roomNumber || "LAB"
           }));
 
-          const extraServiceTokensSummary = extraServiceAppts.map(a => ({
-            tokenNumber: a.tokenNumber,
-            roomId: a.roomId,
-            roomNumber: a.room?.roomNumber || "PROCEDURE"
-          }));
+          const extraServiceTokensSummary = [
+            ...extraServiceAppts.map(a => ({
+              tokenNumber: a.tokenNumber,
+              roomId: a.roomId,
+              roomNumber: a.room?.roomNumber || "PROCEDURE"
+            })),
+            ...extraServiceOrders.filter(o => !extraServiceAppts.some(a => a.id === o.visitId)).map(o => ({
+              tokenNumber: o.orderNumber,
+              roomId: o.service?.roomId || null,
+              roomNumber: o.service?.room?.roomNumber || "PROCEDURE"
+            }))
+          ];
 
           const masterBarcode = appointment.bookingReference || appointment.tokenNumber;
 
@@ -286,7 +337,10 @@ export const barcodeController = {
               tokens: {
                 consultation: consultAppt?.tokenNumber || null,
                 lab: labAppts.map(a => a.tokenNumber).join(", ") || null,
-                extraService: extraServiceAppts.map(a => a.tokenNumber).join(", ") || null,
+                extraService: [
+                  ...extraServiceAppts.map(a => a.tokenNumber),
+                  ...extraServiceOrders.map(o => o.orderNumber)
+                ].filter(Boolean).join(", ") || null,
                 labList: labTokensSummary,
                 extraServiceList: extraServiceTokensSummary
               },
@@ -307,6 +361,7 @@ export const barcodeController = {
               })),
               labRequests,
               extraServices: extraServiceItems,
+              extraServiceOrders,
               consultationPaid
             }
           });

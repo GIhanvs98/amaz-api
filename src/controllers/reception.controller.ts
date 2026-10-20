@@ -814,7 +814,7 @@ export const generateToken = async (req: Request, res: Response) => {
             ? Number(customServicePrices[svc.id]) 
             : svc.price;
           lineItems.push({
-            department: "OTHER",
+            department: "EXTRA_SERVICE",
             referenceId: svc.id,
             description: `Extra Service: ${svc.title}`,
             quantity: 1,
@@ -1149,12 +1149,20 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       }
     }
 
+    const allVisitIdentifiers = Array.from(
+      new Set([
+        ...allApptIds,
+        appointment.bookingReference,
+        ...allApptsForPatient.map(a => a.bookingReference).filter(Boolean)
+      ])
+    ).filter(Boolean) as string[];
+
     let mergedInvoice: any = null;
 
     await prisma.$transaction(async (tx) => {
       let invoices = await tx.invoice.findMany({
         where: {
-          visitId: { in: allApptIds },
+          visitId: { in: allVisitIdentifiers },
           status: "DRAFT"
         },
         include: { lineItems: true }
@@ -1171,7 +1179,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       // Check if consultation fee was already paid
       const existingConsultPaid = await tx.invoice.findFirst({
         where: {
-          visitId: { in: allApptIds },
+          visitId: { in: allVisitIdentifiers },
           status: "PAID",
           lineItems: { some: { department: "CONSULTATION" } }
         }
