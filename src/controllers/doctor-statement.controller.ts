@@ -41,7 +41,7 @@ export const getDoctorStatements = async (req: Request, res: Response) => {
 // POST /api/finance/doctor-statements/generate
 export const generateDoctorStatements = async (req: Request, res: Response) => {
   try {
-    const { periodStart, periodEnd, doctorId, commissionRate: inputCommissionRate } = req.body;
+    const { periodStart, periodEnd, doctorId, commissionRate: inputCommissionRate, commissionType: inputCommissionType } = req.body;
     const authUser = (req as any).user;
 
     if (!periodStart || !periodEnd) {
@@ -52,8 +52,6 @@ export const generateDoctorStatements = async (req: Request, res: Response) => {
     start.setHours(0, 0, 0, 0);
     const end = new Date(periodEnd);
     end.setHours(23, 59, 59, 999);
-
-    const defaultCommissionRate = inputCommissionRate !== undefined ? parseFloat(inputCommissionRate) : 15; // 15% hospital commission
 
     // 1. Find doctors (either specific or all active doctors with specialties)
     const doctorWhere: any = { isActive: true };
@@ -127,9 +125,15 @@ export const generateDoctorStatements = async (req: Request, res: Response) => {
         },
       });
 
-      const commissionRate = defaultCommissionRate;
-      const hospitalCommission = Math.round(totalCollected * (commissionRate / 100) * 100) / 100;
-      const netDoctorPayment = Math.round((totalCollected - hospitalCommission) * 100) / 100;
+      const commissionType = inputCommissionType || doc.commissionType || "PERCENTAGE";
+      const commissionRate = inputCommissionRate !== undefined ? parseFloat(inputCommissionRate) : (doc.commissionRate ?? (commissionType === "FLAT" ? 500 : 15));
+      let hospitalCommission = 0;
+      if (commissionType === "FLAT") {
+        hospitalCommission = Math.min(totalCollected, commissionRate * totalConsultations);
+      } else {
+        hospitalCommission = Math.round(totalCollected * (commissionRate / 100) * 100) / 100;
+      }
+      const netDoctorPayment = Math.max(0, Math.round((totalCollected - hospitalCommission) * 100) / 100);
 
       if (existing) {
         if (existing.status === "DRAFT") {
@@ -139,6 +143,7 @@ export const generateDoctorStatements = async (req: Request, res: Response) => {
               totalConsultations,
               totalRevenue: totalCollected,
               commissionRate,
+              commissionType,
               hospitalCommission,
               netDoctorPayment,
             },
@@ -155,6 +160,7 @@ export const generateDoctorStatements = async (req: Request, res: Response) => {
             totalConsultations,
             totalRevenue: totalCollected,
             commissionRate,
+            commissionType,
             hospitalCommission,
             netDoctorPayment,
             status: "DRAFT",

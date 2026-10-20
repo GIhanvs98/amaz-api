@@ -95,7 +95,8 @@ export class LabController {
   async getPendingRequests(req: Request, res: Response) {
     try {
       const doctorId = req.query.doctorId as string | undefined;
-      const requests = await labService.getPendingRequests(doctorId);
+      const type = req.query.type as string | undefined;
+      const requests = await labService.getPendingRequests(doctorId, type);
       res.json(requests);
     } catch (error: any) {
       res.status(500).json({ error: error.message });
@@ -249,6 +250,44 @@ export class LabController {
     } catch (error: any) {
       console.error("uploadReportPdf error:", error);
       res.status(400).json({ error: error.message });
+    }
+  }
+
+  async getOutsourceDailyReports(req: Request, res: Response) {
+    try {
+      const { date, center, search } = req.query;
+      const data = await labService.getOutsourceDailyReports(
+        date as string | undefined,
+        center as string | undefined,
+        search as string | undefined
+      );
+      res.json({ success: true, data });
+    } catch (error: any) {
+      console.error("getOutsourceDailyReports error:", error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  }
+
+  async updateOutsourceStatus(req: Request, res: Response) {
+    try {
+      const { requestId } = req.params;
+      const { status, reportUrl, handedOverBy, withoutReport } = req.body;
+
+      if (!status) {
+        return res.status(400).json({ success: false, error: "Status is required" });
+      }
+
+      const updated = await labService.updateOutsourceStatus(requestId as string, status, {
+        reportUrl,
+        handedOverBy: handedOverBy || (req as any).user?.fullName || "Staff",
+        withoutReport
+      });
+
+      await clearCache('*lab*');
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      console.error("updateOutsourceStatus error:", error);
+      res.status(400).json({ success: false, error: error.message });
     }
   }
 }

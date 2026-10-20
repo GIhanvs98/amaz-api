@@ -60,6 +60,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
       sessionName = "All Day",
       consultationFee: customFee,
       commissionRate: customRate,
+      commissionType: customCommissionType,
       otherAdjustments = 0,
       remarks,
       patientItems: manualItems
@@ -86,10 +87,22 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
       ? parseFloat(customFee)
       : defaultDoctorFee;
 
-    const defaultCommissionRate = doctor.commissionRate ?? 20; // Default 20%
+    const effectiveCommissionType = (customCommissionType || doctor.commissionType || "PERCENTAGE").toUpperCase();
+    const defaultCommissionRate = doctor.commissionRate ?? (effectiveCommissionType === "FLAT" ? 500 : 20);
     const effectiveCommissionRate = customRate !== undefined && customRate !== null && customRate !== ""
       ? parseFloat(customRate)
       : defaultCommissionRate;
+
+    const calcHospitalAndDoctorShare = (fee: number) => {
+      let hospitalShare = 0;
+      if (effectiveCommissionType === "FLAT") {
+        hospitalShare = Math.min(fee, effectiveCommissionRate);
+      } else {
+        hospitalShare = Math.round(fee * (effectiveCommissionRate / 100) * 100) / 100;
+      }
+      const doctorShare = Math.max(0, Math.round((fee - hospitalShare) * 100) / 100);
+      return { hospitalShare, doctorShare };
+    };
 
     // Build patient item roster
     let itemsToSave: {
@@ -109,8 +122,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
       // Use provided patient items
       itemsToSave = manualItems.map((item: any) => {
         const itemFee = parseFloat(item.consultationFee) || effectiveFee;
-        const hospitalShare = Math.round(itemFee * (effectiveCommissionRate / 100) * 100) / 100;
-        const doctorShare = Math.round((itemFee - hospitalShare) * 100) / 100;
+        const { hospitalShare, doctorShare } = calcHospitalAndDoctorShare(itemFee);
         const rawMethod = (item.collectionMethod || "CASH").toUpperCase();
         const isCardOrBank = rawMethod.includes("CARD") || rawMethod.includes("BANK") || rawMethod.includes("TRANSFER") || rawMethod.includes("VISA") || rawMethod.includes("MASTER") || rawMethod.includes("QR") || rawMethod.includes("ONLINE");
         const collectionMethod = isCardOrBank ? "CARD" : "CASH";
@@ -165,8 +177,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
           );
           const itemFee =
             consultLi?.total || inv?.totalAmount || apt.Payment?.amount || effectiveFee;
-          const hospitalShare = Math.round(itemFee * (effectiveCommissionRate / 100) * 100) / 100;
-          const doctorShare = Math.round((itemFee - hospitalShare) * 100) / 100;
+          const { hospitalShare, doctorShare } = calcHospitalAndDoctorShare(itemFee);
 
           const pMethod = (inv?.payments?.[0]?.method || apt.Payment?.method || "CASH").toUpperCase();
           const isCardOrBank = pMethod.includes("CARD") || pMethod.includes("BANK") || pMethod.includes("TRANSFER") || pMethod.includes("VISA") || pMethod.includes("MASTER") || pMethod.includes("QR") || pMethod.includes("ONLINE");
@@ -190,8 +201,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
         const count = parseInt(req.body.totalPatients, 10) || 0;
         for (let i = 1; i <= count; i++) {
           const itemFee = effectiveFee;
-          const hospitalShare = Math.round(itemFee * (effectiveCommissionRate / 100) * 100) / 100;
-          const doctorShare = Math.round((itemFee - hospitalShare) * 100) / 100;
+          const { hospitalShare, doctorShare } = calcHospitalAndDoctorShare(itemFee);
           itemsToSave.push({
             patientName: `Patient #${i}`,
             consultationFee: itemFee,
@@ -207,9 +217,9 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
 
     const totalPatients = itemsToSave.length;
     const totalRevenue = itemsToSave.reduce((sum, it) => sum + it.consultationFee, 0);
-    const hospitalCommission = Math.round(totalRevenue * (effectiveCommissionRate / 100) * 100) / 100;
+    const hospitalCommission = itemsToSave.reduce((sum, it) => sum + it.hospitalShare, 0);
     const adjustments = parseFloat(otherAdjustments) || 0;
-    const netDoctorPayment = Math.round((totalRevenue - hospitalCommission - adjustments) * 100) / 100;
+    const netDoctorPayment = Math.max(0, Math.round((totalRevenue - hospitalCommission - adjustments) * 100) / 100);
 
     const cashRevenue = itemsToSave.filter(it => it.collectionMethod === "CASH").reduce((s, it) => s + it.consultationFee, 0);
     const cardRevenue = itemsToSave.filter(it => it.collectionMethod !== "CASH").reduce((s, it) => s + it.consultationFee, 0);
@@ -234,6 +244,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
             consultationFee: effectiveFee,
             totalRevenue,
             commissionRate: effectiveCommissionRate,
+            commissionType: effectiveCommissionType,
             hospitalCommission,
             otherAdjustments: adjustments,
             netDoctorPayment,
@@ -258,6 +269,7 @@ export const syncOrCreateDailySheet = async (req: Request, res: Response) => {
             consultationFee: effectiveFee,
             totalRevenue,
             commissionRate: effectiveCommissionRate,
+            commissionType: effectiveCommissionType,
             hospitalCommission,
             otherAdjustments: adjustments,
             netDoctorPayment,
@@ -314,6 +326,8 @@ export const getDailySheets = async (req: Request, res: Response) => {
             fullName: true,
             email: true,
             specialty: true,
+            commissionRate: true,
+            commissionType: true,
             Role: { select: { name: true } },
             Department: { select: { name: true } }
           }
@@ -344,6 +358,7 @@ export const getDailySheetById = async (req: Request, res: Response) => {
             specialty: true,
             consultationFee: true,
             commissionRate: true,
+            commissionType: true,
             Role: { select: { name: true } },
             Department: { select: { name: true } }
           }
@@ -653,7 +668,8 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
     });
     if (!doctor) return;
 
-    const commissionRate = doctor.commissionRate ?? 20;
+    const commissionType = (doctor.commissionType || "PERCENTAGE").toUpperCase();
+    const commissionRate = doctor.commissionRate ?? (commissionType === "FLAT" ? 500 : 20);
 
     // Find any invoice paid for this appointment
     const invoice = await prisma.invoice.findFirst({
@@ -675,8 +691,13 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
       }
     }
 
-    const hospitalShare = Math.round(consultationFee * (commissionRate / 100) * 100) / 100;
-    const doctorShare = Math.round((consultationFee - hospitalShare) * 100) / 100;
+    let hospitalShare = 0;
+    if (commissionType === "FLAT") {
+      hospitalShare = Math.min(consultationFee, commissionRate);
+    } else {
+      hospitalShare = Math.round(consultationFee * (commissionRate / 100) * 100) / 100;
+    }
+    const doctorShare = Math.max(0, Math.round((consultationFee - hospitalShare) * 100) / 100);
 
     // Detect payment method (Cash vs Card/Bank)
     const aptWithPayment = await prisma.appointment.findUnique({
@@ -710,6 +731,7 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
           sessionName: "All Day",
           consultationFee,
           commissionRate,
+          commissionType,
           status: "DRAFT"
         },
         include: {
@@ -767,7 +789,12 @@ export async function recordCompletedConsultationInDailySheet(appointmentId: str
 
     const totalPatients = allItems.length;
     const totalRevenue = allItems.reduce((sum, it) => sum + it.consultationFee, 0);
-    const totalHospitalCommission = Math.round(totalRevenue * (sheet.commissionRate / 100) * 100) / 100;
+    let totalHospitalCommission = 0;
+    if (sheet.commissionType === "FLAT") {
+      totalHospitalCommission = allItems.reduce((sum, it) => sum + (it.hospitalShare || 0), 0);
+    } else {
+      totalHospitalCommission = Math.round(totalRevenue * (sheet.commissionRate / 100) * 100) / 100;
+    }
     const netDoctorPayment = Math.max(0, totalRevenue - totalHospitalCommission - sheet.otherAdjustments);
 
     const cashRevenue = allItems.filter(it => (it.collectionMethod || "CASH") === "CASH").reduce((s, it) => s + it.consultationFee, 0);
@@ -880,6 +907,7 @@ export const getDoctorEarningsSummary = async (req: Request, res: Response) => {
         doctorName: doctor.fullName,
         specialty: doctor.specialty || "Doctor",
         commissionRate: doctor.commissionRate ?? 20,
+        commissionType: doctor.commissionType || "PERCENTAGE",
         todayDoctorShare: todayShare,
         todayRevenue,
         todayCommission,

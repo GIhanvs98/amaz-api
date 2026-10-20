@@ -35,6 +35,7 @@ model Department {
   name        String   @unique
   description String?
   commissionRate Float?  @default(20)
+  commissionType String? @default("PERCENTAGE") // PERCENTAGE or FLAT
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -195,6 +196,8 @@ model LabTest {
   room               Room?    @relation(fields: [roomId], references: [id])
   isOutsideTest      Boolean  @default(false)
   hospitalCommission Float?   @default(0)
+  commissionType     String?  @default("FLAT")
+  outsourceCost      Float?   @default(0)
   outsourcedCenter   String?
   isActive           Boolean  @default(true)
   createdAt          DateTime @default(now())
@@ -217,14 +220,17 @@ model LabTestBiomarker {
 }
 
 model LabRequest {
-  id          String   @id @default(uuid())
-  patientId   String
-  doctorId    String?
-  status      String   @default("PENDING")
-  requestedAt DateTime @default(now())
-  priority    String   @default("ROUTINE")
-  reportUrl   String?
-  visitId     String?
+  id              String    @id @default(uuid())
+  patientId       String
+  doctorId        String?
+  status          String    @default("PENDING")
+  outsourceStatus String?   @default("SAMPLE_COLLECTED")
+  handedOverAt    DateTime?
+  handedOverBy    String?
+  requestedAt     DateTime  @default(now())
+  priority        String    @default("ROUTINE")
+  reportUrl       String?
+  visitId         String?
 
   Patient Patient          @relation(fields: [patientId], references: [id])
   Visit   Appointment?     @relation(fields: [visitId], references: [id])
@@ -234,6 +240,7 @@ model LabRequest {
   @@index([patientId])
   @@index([status])
   @@index([visitId])
+  @@index([outsourceStatus])
 }
 
 model LabRequestItem {
@@ -430,7 +437,8 @@ model User {
   consultationFee  Float?              @default(2500)
   feeType          String              @default("POST") // UPFRONT or POST
   feeOptions       Float[]             @default([]) // Configurable pricing tiers for OPD doctors (e.g. 850, 1000, 1200)
-  commissionRate   Float?              @default(20) // % Hospital Commission
+  commissionRate   Float?              @default(20) // % or flat LKR Hospital Commission
+  commissionType   String?             @default("PERCENTAGE") // PERCENTAGE or FLAT
   bankName         String?             // e.g. "Commercial Bank of Ceylon"
   bankBranch       String?             // e.g. "Tissamaharama"
   bankAccountNumber String?            // Account Number
@@ -802,6 +810,7 @@ model DoctorPaymentStatement {
   totalConsultations Int       @default(0)
   totalRevenue       Float     @default(0)
   commissionRate     Float     @default(15) // e.g. 15% hospital commission
+  commissionType     String    @default("PERCENTAGE") // PERCENTAGE or FLAT
   hospitalCommission Float     @default(0)
   otherAdjustments   Float     @default(0)
   netDoctorPayment   Float     @default(0)
@@ -886,7 +895,8 @@ model DoctorDailySheet {
   totalPatients      Int                     @default(0)
   consultationFee    Float                   @default(0)
   totalRevenue       Float                   @default(0)
-  commissionRate     Float                   @default(20) // e.g. 20%
+  commissionRate     Float                   @default(20) // e.g. 20% or flat rate
+  commissionType     String                  @default("PERCENTAGE") // PERCENTAGE or FLAT
   hospitalCommission Float                   @default(0)
   otherAdjustments   Float                   @default(0)
   netDoctorPayment   Float                   @default(0)

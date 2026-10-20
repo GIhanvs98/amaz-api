@@ -19,6 +19,8 @@ export class DepartmentController {
               specialty: true,
               consultationFee: true,
               feeType: true,
+              commissionRate: true,
+              commissionType: true,
               ...({ feeOptions: true } as any)
             }
           },
@@ -60,6 +62,8 @@ export class DepartmentController {
           specialty: true,
           consultationFee: true,
           feeType: true,
+          commissionRate: true,
+          commissionType: true,
           ...({ feeOptions: true } as any),
           departmentId: true
         }
@@ -76,7 +80,7 @@ export class DepartmentController {
    */
   async createDepartment(req: Request, res: Response) {
     try {
-      const { name, description, commissionRate, isActive } = req.body;
+      const { name, description, commissionRate, commissionType, isActive } = req.body;
       
       if (!name || name.trim() === "") {
         return res.status(400).json({ error: "Department name is required" });
@@ -95,6 +99,7 @@ export class DepartmentController {
           name,
           description,
           commissionRate: commissionRate !== undefined && commissionRate !== null ? parseFloat(commissionRate) : 20,
+          commissionType: commissionType || "PERCENTAGE",
           isActive: isActive !== undefined ? isActive : true
         },
         include: {
@@ -116,7 +121,7 @@ export class DepartmentController {
   async updateDepartment(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { name, description, commissionRate, isActive } = req.body;
+      const { name, description, commissionRate, commissionType, isActive } = req.body;
 
       if (name !== undefined && name.trim() === "") {
         return res.status(400).json({ error: "Department name cannot be empty" });
@@ -128,6 +133,7 @@ export class DepartmentController {
           ...(name !== undefined ? { name } : {}),
           ...(description !== undefined ? { description } : {}),
           ...(commissionRate !== undefined ? { commissionRate: commissionRate !== null ? parseFloat(commissionRate) : null } : {}),
+          ...(commissionType !== undefined ? { commissionType: commissionType || "PERCENTAGE" } : {}),
           ...(isActive !== undefined ? { isActive } : {})
         },
         include: {
@@ -187,7 +193,7 @@ export class DepartmentController {
   async updateDoctorAssignment(req: Request, res: Response) {
     try {
       const { doctorId } = req.params;
-      const { departmentId, consultationFee, feeType, feeOptions } = req.body;
+      const { departmentId, consultationFee, feeType, feeOptions, commissionRate, commissionType } = req.body;
 
       const existingUser = await prisma.user.findUnique({ where: { id: doctorId as string }, include: { Role: true } });
       if (!existingUser) {
@@ -216,7 +222,9 @@ export class DepartmentController {
           ...(departmentId !== undefined && { departmentId: departmentId || null }),
           ...(consultationFee !== undefined && { consultationFee }),
           ...(feeType !== undefined && { feeType }),
-          ...(sanitizedFeeOptions !== undefined && { feeOptions: sanitizedFeeOptions })
+          ...(sanitizedFeeOptions !== undefined && { feeOptions: sanitizedFeeOptions }),
+          ...(commissionRate !== undefined && { commissionRate: commissionRate !== null ? parseFloat(commissionRate) : 20 }),
+          ...(commissionType !== undefined && { commissionType: commissionType || "PERCENTAGE" })
         }
       });
 

@@ -1605,7 +1605,8 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
                   fullName: true,
                   specialty: true,
                   consultationFee: true,
-                  commissionRate: true
+                  commissionRate: true,
+                  commissionType: true
                 }
               }
             }
@@ -1655,7 +1656,8 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
                 fullName: true,
                 specialty: true,
                 consultationFee: true,
-                commissionRate: true
+                commissionRate: true,
+                commissionType: true
               }
             }
           }
@@ -1736,6 +1738,7 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
       patientCount: number;
       totalFee: number;
       commissionRate: number;
+      commissionType?: string;
       hospitalCommission: number;
       netDoctorPayment: number;
     }>();
@@ -1753,7 +1756,8 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
           specialty: doc.specialty || "General",
           patientCount: 0,
           totalFee: 0,
-          commissionRate: doc.commissionRate ?? 20,
+          commissionRate: doc.commissionRate ?? (doc.commissionType === "FLAT" ? 500 : 20),
+          commissionType: doc.commissionType || "PERCENTAGE",
           hospitalCommission: 0,
           netDoctorPayment: 0
         };
@@ -1775,6 +1779,7 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
             patientCount: 0,
             totalFee: 0,
             commissionRate: 20,
+            commissionType: "PERCENTAGE",
             hospitalCommission: 0,
             netDoctorPayment: 0
           };
@@ -1786,8 +1791,13 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
     });
 
     const doctorPayments = Array.from(doctorMap.values()).map(d => {
-      const hospComm = Math.round(d.totalFee * (d.commissionRate / 100) * 100) / 100;
-      const netDoc = Math.round((d.totalFee - hospComm) * 100) / 100;
+      let hospComm = 0;
+      if (d.commissionType === "FLAT") {
+        hospComm = Math.min(d.totalFee, (d.commissionRate ?? 500) * d.patientCount);
+      } else {
+        hospComm = Math.round(d.totalFee * (d.commissionRate / 100) * 100) / 100;
+      }
+      const netDoc = Math.max(0, Math.round((d.totalFee - hospComm) * 100) / 100);
       return {
         ...d,
         hospitalCommission: hospComm,

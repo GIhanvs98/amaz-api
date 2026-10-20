@@ -87,6 +87,7 @@ export const getStaff = async (req: Request, res: Response) => {
       consultationFee: s.consultationFee,
       feeType: s.feeType,
       commissionRate: s.commissionRate,
+      commissionType: s.commissionType || "PERCENTAGE",
       deviceUserId: s.EmployeeProfile?.deviceMapping?.deviceUserId || null
     }));
     
@@ -98,7 +99,7 @@ export const getStaff = async (req: Request, res: Response) => {
 
 export const createStaff = async (req: Request, res: Response) => {
   try {
-    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, commissionRate, deviceUserId } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, commissionRate, commissionType, deviceUserId } = req.body;
     
     if (!name || !email || !password || !roleName) {
       return res.status(400).json({ success: false, error: "Name, email, password, and roleName are required" });
@@ -131,7 +132,8 @@ export const createStaff = async (req: Request, res: Response) => {
         departmentId: departmentId || null,
         consultationFee: consultationFee ? parseFloat(consultationFee) : null,
         feeType: feeType || "POST",
-        commissionRate: commissionRate !== undefined && commissionRate !== null ? parseFloat(commissionRate) : 20
+        commissionRate: commissionRate !== undefined && commissionRate !== null ? parseFloat(commissionRate) : 20,
+        commissionType: commissionType || "PERCENTAGE"
       },
       include: { Role: true, Department: true }
     });
@@ -174,7 +176,7 @@ export const createStaff = async (req: Request, res: Response) => {
 export const updateStaff = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, commissionRate, deviceUserId } = req.body;
+    const { name, email, password, roleName, specialty, roomId, title, departmentId, consultationFee, feeType, commissionRate, commissionType, deviceUserId } = req.body;
     
     let roleId;
     let foundRoleName;
@@ -210,6 +212,7 @@ export const updateStaff = async (req: Request, res: Response) => {
     if (consultationFee !== undefined) data.consultationFee = consultationFee ? parseFloat(consultationFee) : null;
     if (feeType !== undefined) data.feeType = feeType || "POST";
     if (commissionRate !== undefined) data.commissionRate = commissionRate !== null ? parseFloat(commissionRate) : 20;
+    if (commissionType !== undefined) data.commissionType = commissionType || "PERCENTAGE";
 
     const updatedStaff = await prisma.user.update({
       where: { id: id as string },

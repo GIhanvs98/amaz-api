@@ -37,6 +37,8 @@ export class LabService {
     roomNumber?: string;
     isOutsideTest?: boolean;
     hospitalCommission?: number;
+    commissionType?: string;
+    outsourceCost?: number;
     outsourcedCenter?: string;
   }) {
     let targetRoomId = data.roomId;
@@ -55,6 +57,8 @@ export class LabService {
         roomId: targetRoomId || undefined,
         isOutsideTest: Boolean(data.isOutsideTest),
         hospitalCommission: data.hospitalCommission !== undefined ? parseFloat(String(data.hospitalCommission)) : 0,
+        commissionType: data.commissionType || "FLAT",
+        outsourceCost: data.outsourceCost !== undefined ? parseFloat(String(data.outsourceCost)) : 0,
         outsourcedCenter: data.outsourcedCenter || null
       },
       include: {
@@ -75,6 +79,8 @@ export class LabService {
     roomNumber?: string;
     isOutsideTest?: boolean;
     hospitalCommission?: number;
+    commissionType?: string;
+    outsourceCost?: number;
     outsourcedCenter?: string;
     isActive?: boolean;
   }) {
@@ -87,6 +93,8 @@ export class LabService {
     if (data.isActive !== undefined) updateData.isActive = data.isActive;
     if (data.isOutsideTest !== undefined) updateData.isOutsideTest = Boolean(data.isOutsideTest);
     if (data.hospitalCommission !== undefined) updateData.hospitalCommission = parseFloat(String(data.hospitalCommission));
+    if (data.commissionType !== undefined) updateData.commissionType = data.commissionType;
+    if (data.outsourceCost !== undefined) updateData.outsourceCost = parseFloat(String(data.outsourceCost));
     if (data.outsourcedCenter !== undefined) updateData.outsourcedCenter = data.outsourcedCenter;
 
     if (data.roomId !== undefined) {
@@ -231,17 +239,31 @@ export class LabService {
   /**
    * Get pending lab requests for the technicians
    */
-  async getPendingRequests(doctorId?: string) {
+  async getPendingRequests(doctorId?: string, type?: string) {
+    const whereClause: any = {
+      status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] }
+    };
+
+    if (doctorId) {
+      whereClause.OR = [
+        { doctorId },
+        { Visit: { doctorId } }
+      ];
+    }
+
+    if (type === "OUTSIDE") {
+      whereClause.items = {
+        some: { LabTest: { isOutsideTest: true } }
+      };
+    } else if (type === "IN_HOUSE" || !type) {
+      // Default for technicians' workbench: only in-house hospital tests
+      whereClause.items = {
+        some: { LabTest: { isOutsideTest: false } }
+      };
+    }
+
     return withRetry(() => prisma.labRequest.findMany({
-      where: doctorId
-        ? {
-            status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] },
-            OR: [
-              { doctorId },
-              { Visit: { doctorId } }
-            ]
-          }
-        : { status: { in: ["PENDING", "SAVED", "IN_PROGRESS"] } },
+      where: whereClause,
       include: {
         items: {
           include: { LabTest: { include: { biomarkers: { orderBy: { orderIndex: 'asc' } }, room: true } } }
@@ -868,6 +890,208 @@ export class LabService {
         if (presignedUrl) report.reportUrl = presignedUrl;
       }
       return report;
+    });
+  }
+
+  /**
+   * Fetch daily outsource lab tests and expected reports with center filtering & profit calculations
+   */
+  async getOutsourceDailyReports(dateStr?: string, centerFilter?: string, searchStr?: string) {
+    return withRetry(async () => {
+      const targetDate = dateStr ? new Date(dateStr) : undefined;
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+      const cleanSearch = (searchStr || "").trim();
+
+      // Base date condition (today / selected date)
+      const dateCondition: any = {
+        requestedAt: { gte: startOfDay, lte: endOfDay },
+        items: {
+          some: {
+            LabTest: {
+              isOutsideTest: true
+            }
+          }
+        }
+      };
+
+      // Search condition across all dates by barcode / bookingReference / token / patient
+      const searchCondition = cleanSearch ? {
+        items: {
+          some: {
+            LabTest: {
+              isOutsideTest: true
+            }
+          }
+        },
+        OR: [
+          { Visit: { bookingReference: { contains: cleanSearch, mode: 'insensitive' as const } } },
+          { Visit: { tokenNumber: { contains: cleanSearch, mode: 'insensitive' as const } } },
+          { Patient: { fullName: { contains: cleanSearch, mode: 'insensitive' as const } } },
+          { Patient: { phone: { contains: cleanSearch } } },
+          { id: { contains: cleanSearch, mode: 'insensitive' as const } }
+        ]
+      } : null;
+
+      const whereClause = searchCondition ? searchCondition : dateCondition;
+
+      // Find all matching outsource lab requests
+      const requests = await prisma.labRequest.findMany({
+        where: whereClause,
+        include: {
+          Patient: true,
+          Visit: {
+            include: { User: true }
+          },
+          items: {
+            include: {
+              LabTest: true
+            }
+          }
+        },
+        orderBy: { requestedAt: "desc" }
+      });
+
+      let items: any[] = [];
+      let totalExpected = 0;
+      let reportsReceived = 0;
+      let handedOver = 0;
+      let totalProfit = 0;
+      let totalCustomerRevenue = 0;
+      let totalOutsourceCost = 0;
+      let asiriCount = 0;
+      let ruhunuCount = 0;
+
+      for (const req of requests) {
+        for (const it of req.items) {
+          const lt = it.LabTest;
+          if (!lt?.isOutsideTest) continue;
+
+          const centerName = lt.outsourcedCenter || "Asiri Laboratories";
+
+          // Center filter check
+          if (centerFilter && centerFilter !== "ALL") {
+            if (!centerName.toLowerCase().includes(centerFilter.toLowerCase())) {
+              continue;
+            }
+          }
+
+          // Count centers
+          const cLower = centerName.toLowerCase();
+          if (cLower.includes("asiri")) asiriCount++;
+          else if (cLower.includes("ruhunu")) ruhunuCount++;
+
+          // Pricing and profit calculations
+          const actualCost = lt.outsourceCost !== null && lt.outsourceCost !== undefined
+            ? lt.outsourceCost
+            : (it.price || lt.price || 0) * 0.75; // fallback 75% cost if unset
+
+          let hospitalMarkup = lt.hospitalCommission || 0;
+          if (lt.commissionType === "PERCENTAGE" && hospitalMarkup > 0) {
+            hospitalMarkup = (actualCost * hospitalMarkup) / 100;
+          }
+
+          const customerPrice = it.price || lt.price || (actualCost + hospitalMarkup);
+          const profit = Math.max(0, customerPrice - actualCost);
+
+          const currentStatus = req.outsourceStatus || (req.status === "COMPLETED" ? "REPORT_RECEIVED" : "SAMPLE_COLLECTED");
+
+          totalExpected++;
+          if (currentStatus === "REPORT_RECEIVED" || currentStatus === "HANDED_OVER") {
+            reportsReceived++;
+          }
+          if (currentStatus === "HANDED_OVER") {
+            handedOver++;
+          }
+          totalProfit += profit;
+          totalCustomerRevenue += customerPrice;
+          totalOutsourceCost += actualCost;
+
+          items.push({
+            id: it.id,
+            requestId: req.id,
+            tokenNumber: req.Visit?.tokenNumber || req.id.slice(0, 6).toUpperCase(),
+            bookingReference: req.Visit?.bookingReference,
+            requestedAt: req.requestedAt,
+            patient: {
+              id: req.Patient?.id,
+              fullName: req.Patient?.fullName || "Patient",
+              phone: req.Patient?.phone,
+              age: req.Patient?.ageFallback,
+              gender: req.Patient?.gender
+            },
+            doctorName: req.Visit?.User?.fullName || "OPD Doctor",
+            testId: lt.id,
+            testName: lt.name,
+            testCode: lt.code,
+            category: lt.category || "External Pathology",
+            outsourcedCenter: centerName,
+            outsourceCost: actualCost,
+            commissionType: lt.commissionType || "FLAT",
+            hospitalMarkup,
+            customerPrice,
+            profit,
+            status: currentStatus,
+            reportUrl: req.reportUrl,
+            handedOverAt: req.handedOverAt,
+            handedOverBy: req.handedOverBy
+          });
+        }
+      }
+
+      return {
+        summary: {
+          totalExpected,
+          reportsReceived,
+          handedOver,
+          totalProfit,
+          totalCustomerRevenue,
+          totalOutsourceCost,
+          asiriCount,
+          ruhunuCount
+        },
+        items
+      };
+    });
+  }
+
+  /**
+   * Update lifecycle status of an outsource lab test
+   */
+  async updateOutsourceStatus(
+    requestId: string,
+    outsourceStatus: "SAMPLE_COLLECTED" | "SENT_TO_LAB" | "REPORT_RECEIVED" | "HANDED_OVER",
+    options?: {
+      reportUrl?: string;
+      handedOverBy?: string;
+      withoutReport?: boolean;
+    }
+  ) {
+    return withRetry(async () => {
+      const updateData: any = {
+        outsourceStatus
+      };
+
+      if (options?.reportUrl) {
+        updateData.reportUrl = options.reportUrl;
+      }
+
+      if (outsourceStatus === "HANDED_OVER") {
+        updateData.handedOverAt = new Date();
+        updateData.handedOverBy = options?.handedOverBy || "Staff";
+        updateData.status = "COMPLETED";
+      } else if (outsourceStatus === "REPORT_RECEIVED") {
+        // Can optionally mark status as SAVED or keep in progress
+        updateData.status = "SAVED";
+      }
+
+      return prisma.labRequest.update({
+        where: { id: requestId },
+        data: updateData,
+        include: {
+          Patient: true,
+          items: { include: { LabTest: true } }
+        }
+      });
     });
   }
 }

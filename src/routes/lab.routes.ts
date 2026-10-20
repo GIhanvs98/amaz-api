@@ -74,4 +74,11 @@ router.post('/requests/:requestId/publish', labController.publishReport.bind(lab
 // POST /api/lab/requests/:requestId/upload-pdf
 router.post('/requests/:requestId/upload-pdf', upload.single('pdf'), labController.uploadReportPdf.bind(labController));
 
+// Outsource Lab Management Endpoints
+// GET /api/lab/outsource/daily
+router.get('/outsource/daily', labController.getOutsourceDailyReports.bind(labController));
+
+// PUT /api/lab/outsource/:requestId/status
+router.put('/outsource/:requestId/status', labController.updateOutsourceStatus.bind(labController));
+
 export default router;
