@@ -94,6 +94,12 @@ export const extraServiceOrderController = {
 
         const orderNumber = `EXS-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
 
+        const isCertificate = Boolean(item.certificateType || item.certificateData);
+        const resolvedStatus = item.status 
+          ? String(item.status).toUpperCase() 
+          : (isCertificate ? "COMPLETED" : "PENDING");
+        const isCompleted = resolvedStatus === "COMPLETED";
+
         const createdOrder = await prisma.extraServiceOrder.create({
           data: {
             orderNumber,
@@ -103,7 +109,8 @@ export const extraServiceOrderController = {
             visitId: targetVisitId,
             customPrice: (item.customPrice !== undefined && item.customPrice !== null) ? Number(item.customPrice) : null,
             finalPrice: effectivePrice,
-            status: "PENDING",
+            status: resolvedStatus,
+            completedAt: isCompleted ? new Date() : null,
             notes: item.notes || null,
             certificateType: item.certificateType || null,
             certificateData: item.certificateData || null,
@@ -377,15 +384,15 @@ export const extraServiceOrderController = {
       const existingFiles = Array.isArray(order.reportFiles) ? (order.reportFiles as any[]) : [];
       const updatedFiles = [...existingFiles, newReportFile];
 
-      const autoComplete = req.body?.autoComplete === "true" || req.body?.autoComplete === true;
-      const newStatus = autoComplete ? "COMPLETED" : (order.status === "PENDING" ? "IN_PROGRESS" : order.status);
+      // Report upload automatically completes the procedure/order
+      const newStatus = "COMPLETED";
 
       const updated = await prisma.extraServiceOrder.update({
         where: { id },
         data: {
           reportFiles: updatedFiles,
           status: newStatus,
-          completedAt: newStatus === "COMPLETED" ? (order.completedAt || new Date()) : order.completedAt
+          completedAt: order.completedAt || new Date()
         },
         include: {
           service: true,
