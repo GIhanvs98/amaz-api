@@ -15,11 +15,11 @@ export const getDoctors = async (req: Request, res: Response) => {
 
 export const getAvailability = async (req: Request, res: Response) => {
   try {
-    const { doctorId, date } = req.query;
+    const { doctorId, date, sessionId } = req.query;
     if (!doctorId || !date) {
       return res.status(400).json({ success: false, error: "doctorId and date are required" });
     }
-    const availability = await BookingService.getAvailability(doctorId as string, date as string);
+    const availability = await BookingService.getAvailability(doctorId as string, date as string, sessionId as string | undefined);
     res.json({ success: true, data: availability });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -54,11 +54,11 @@ export const getAvailableDates = async (req: Request, res: Response) => {
 
 export const bookPhoneToken = async (req: Request, res: Response) => {
   try {
-    const { phone, fullName, doctorId, date, tokenNumber } = req.body;
+    const { phone, fullName, doctorId, date, tokenNumber, sessionId } = req.body;
     if (!phone || !fullName || !doctorId || !date) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
-    const token = await BookingService.bookPhoneToken(phone, fullName, doctorId, date, tokenNumber);
+    const token = await BookingService.bookPhoneToken(phone, fullName, doctorId, date, tokenNumber, sessionId);
     res.status(201).json({ success: true, data: token });
   } catch (error: any) {
     res.status(400).json({ success: false, error: error.message });
@@ -77,25 +77,41 @@ export const markArrived = async (req: Request, res: Response) => {
 
 export const getTodayAppointments = async (req: Request, res: Response) => {
   try {
-    const { date, doctorId } = req.query;
-    const targetDate = date ? new Date(date as string) : new Date();
-    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+    const { date, startDate, endDate, doctorId, bookingType } = req.query;
 
-    // Query all appointments for the specified date
-    const whereClause: any = {
-      appointmentDate: { gte: startOfDay, lte: endOfDay }
-    };
-    if (doctorId) {
-      whereClause.doctorId = doctorId;
+    const whereClause: any = {};
+
+    if (startDate && endDate) {
+      const { startOfDay } = getTimezoneBoundaries(new Date(startDate as string));
+      const { endOfDay } = getTimezoneBoundaries(new Date(endDate as string));
+      whereClause.appointmentDate = { gte: startOfDay, lte: endOfDay };
+    } else if (date) {
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(new Date(date as string));
+      whereClause.appointmentDate = { gte: startOfDay, lte: endOfDay };
+    } else {
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(new Date());
+      whereClause.appointmentDate = { gte: startOfDay, lte: endOfDay };
+    }
+
+    if (doctorId && doctorId !== 'ALL' && doctorId !== '') {
+      whereClause.doctorId = doctorId as string;
+    }
+
+    if (bookingType && bookingType !== 'ALL' && bookingType !== '') {
+      whereClause.bookingType = bookingType as string;
     }
 
     const tokens = await prisma.appointment.findMany({
       where: whereClause,
       include: {
         Patient: true,
-        User: true
+        User: true,
+        Session: true
       },
-      orderBy: { tokenNumber: 'asc' }
+      orderBy: [
+        { appointmentDate: 'asc' },
+        { tokenNumber: 'asc' }
+      ]
     });
     res.json({ success: true, data: tokens });
   } catch (error: any) {

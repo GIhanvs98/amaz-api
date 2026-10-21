@@ -331,6 +331,7 @@ export const generateToken = async (req: Request, res: Response) => {
       patientPhone, 
       ageFallback, 
       doctorId, 
+      sessionId: requestedSessionId,
       doctorName, 
       testIds, 
       customLabPrices, 
@@ -415,21 +416,30 @@ export const generateToken = async (req: Request, res: Response) => {
       });
 
       const dayOfWeek = startOfDay.getDay();
-      const session = await prisma.doctorScheduleSession.findFirst({
-        where: {
-          dayOfWeek: dayOfWeek,
-          isActive: true,
-          schedule: {
-            doctorId: doctorId,
-            validFrom: { lte: endOfDay },
-            OR: [
-              { validUntil: null },
-              { validUntil: { gte: startOfDay } }
-            ]
-          }
-        },
-        include: { room: true }
-      });
+      let session = null;
+      if (requestedSessionId) {
+        session = await prisma.doctorScheduleSession.findUnique({
+          where: { id: requestedSessionId },
+          include: { room: true }
+        });
+      }
+      if (!session) {
+        session = await prisma.doctorScheduleSession.findFirst({
+          where: {
+            dayOfWeek: dayOfWeek,
+            isActive: true,
+            schedule: {
+              doctorId: doctorId,
+              validFrom: { lte: endOfDay },
+              OR: [
+                { validUntil: null },
+                { validUntil: { gte: startOfDay } }
+              ]
+            }
+          },
+          include: { room: true }
+        });
+      }
 
       doctorRoomNumber = todayAttendance?.room?.roomNumber || session?.room?.roomNumber || doctorDetails?.room?.roomNumber || null;
     }
@@ -491,23 +501,27 @@ export const generateToken = async (req: Request, res: Response) => {
 
       let sessionId = null;
       if (dept === "CONSULTATION" && docId) {
-        const dayOfWeek = startOfDay.getDay();
-        const session = await prisma.doctorScheduleSession.findFirst({
-          where: {
-            dayOfWeek: dayOfWeek,
-            isActive: true,
-            schedule: {
-              doctorId: docId,
-              validFrom: { lte: endOfDay },
-              OR: [
-                { validUntil: null },
-                { validUntil: { gte: startOfDay } }
-              ]
+        if (requestedSessionId) {
+          sessionId = requestedSessionId;
+        } else {
+          const dayOfWeek = startOfDay.getDay();
+          const session = await prisma.doctorScheduleSession.findFirst({
+            where: {
+              dayOfWeek: dayOfWeek,
+              isActive: true,
+              schedule: {
+                doctorId: docId,
+                validFrom: { lte: endOfDay },
+                OR: [
+                  { validUntil: null },
+                  { validUntil: { gte: startOfDay } }
+                ]
+              }
             }
+          });
+          if (session) {
+            sessionId = session.id;
           }
-        });
-        if (session) {
-          sessionId = session.id;
         }
       }
 
