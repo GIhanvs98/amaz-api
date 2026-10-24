@@ -112,6 +112,54 @@ export class BillingService {
       }
     }
 
+    // 2.6 Guard against duplicate charges by referenceId OR duplicate medical certificates on this invoice
+    const isCertItem = data.department === "EXTRA_SERVICE" && Boolean(data.description?.toLowerCase().includes("certificate"));
+    if (data.referenceId || isCertItem) {
+      const existingItem = await db.invoiceLineItem.findFirst({
+        where: {
+          invoiceId: invoice.id,
+          OR: [
+            ...(data.referenceId ? [{ referenceId: data.referenceId }] : []),
+            ...(isCertItem ? [
+              {
+                department: "EXTRA_SERVICE",
+                description: { contains: "Certificate", mode: "insensitive" }
+              }
+            ] : [])
+          ]
+        }
+      });
+
+      if (existingItem) {
+        if (invoice.status === "DRAFT" && (existingItem.unitPrice !== unitPrice || existingItem.total !== total || existingItem.description !== data.description)) {
+          const diff = total - existingItem.total;
+          await db.invoiceLineItem.update({
+            where: { id: existingItem.id },
+            data: {
+              unitPrice: unitPrice,
+              total: total,
+              description: data.description || existingItem.description,
+              referenceId: data.referenceId || existingItem.referenceId
+            }
+          });
+          await db.invoice.update({
+            where: { id: invoice.id },
+            data: {
+              subtotal: { increment: diff },
+              totalAmount: { increment: diff }
+            }
+          });
+          console.log(`[BillingService] Updated existing item ${existingItem.id} price to ${unitPrice} on invoice ${invoice.id}`);
+        } else {
+          console.warn(`[BillingService] Charge already exists on invoice ${invoice.id} for ref ${data.referenceId || data.description}. Skipping duplicate.`);
+        }
+        return db.invoice.findUnique({
+          where: { id: invoice.id },
+          include: { lineItems: true }
+        });
+      }
+    }
+
     // 3. Add the line item
     const lineItem = await db.invoiceLineItem.create({
       data: {

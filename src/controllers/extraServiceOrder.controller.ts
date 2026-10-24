@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { billingService } from "../services/billing.service.js";
 import { S3Service } from "../services/s3.service.js";
+import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -100,52 +101,132 @@ export const extraServiceOrderController = {
           : (isCertificate ? "COMPLETED" : "PENDING");
         const isCompleted = resolvedStatus === "COMPLETED";
 
-        const createdOrder = await prisma.extraServiceOrder.create({
-          data: {
-            orderNumber,
-            serviceId: service.id,
-            patientId: targetPatientId,
-            doctorId: targetDoctorId,
-            visitId: targetVisitId,
-            customPrice: (item.customPrice !== undefined && item.customPrice !== null) ? Number(item.customPrice) : null,
-            finalPrice: effectivePrice,
-            status: resolvedStatus,
-            completedAt: isCompleted ? new Date() : null,
-            notes: item.notes || null,
-            certificateType: item.certificateType || null,
-            certificateData: item.certificateData || null,
-            reportFiles: []
-          },
-          include: {
-            service: true,
-            patient: {
-              select: {
-                id: true,
-                patientId: true,
-                fullName: true,
-                phone: true,
-                gender: true,
-                ageFallback: true
-              }
+        let createdOrder: any = null;
+
+        // Idempotency: If this is a medical certificate for the patient today, check for existing active order
+        if (isCertificate && targetPatientId) {
+          const { startOfDay, endOfDay } = getTimezoneBoundaries();
+          const existingCertOrder = await prisma.extraServiceOrder.findFirst({
+            where: {
+              patientId: targetPatientId,
+              status: { not: "CANCELLED" },
+              OR: [
+                ...(item.id ? [{ id: item.id }] : []),
+                {
+                  certificateType: item.certificateType || undefined,
+                  createdAt: { gte: startOfDay, lte: endOfDay }
+                }
+              ]
             },
-            doctor: {
-              select: {
-                id: true,
-                fullName: true,
-                specialty: true
+            include: {
+              service: true,
+              patient: {
+                select: {
+                  id: true,
+                  patientId: true,
+                  fullName: true,
+                  phone: true,
+                  gender: true,
+                  ageFallback: true
+                }
+              },
+              doctor: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  specialty: true
+                }
               }
             }
-          }
-        });
+          });
 
-        // If visitId is available, immediately add a billing charge into the patient's draft invoice
+          if (existingCertOrder) {
+            createdOrder = await prisma.extraServiceOrder.update({
+              where: { id: existingCertOrder.id },
+              data: {
+                customPrice: (item.customPrice !== undefined && item.customPrice !== null) ? Number(item.customPrice) : existingCertOrder.customPrice,
+                finalPrice: effectivePrice,
+                certificateData: item.certificateData || existingCertOrder.certificateData,
+                notes: item.notes || existingCertOrder.notes,
+                doctorId: targetDoctorId || existingCertOrder.doctorId,
+                visitId: targetVisitId || existingCertOrder.visitId,
+                completedAt: isCompleted ? (existingCertOrder.completedAt || new Date()) : existingCertOrder.completedAt
+              },
+              include: {
+                service: true,
+                patient: {
+                  select: {
+                    id: true,
+                    patientId: true,
+                    fullName: true,
+                    phone: true,
+                    gender: true,
+                    ageFallback: true
+                  }
+                },
+                doctor: {
+                  select: {
+                    id: true,
+                    fullName: true,
+                    specialty: true
+                  }
+                }
+              }
+            });
+          }
+        }
+
+        if (!createdOrder) {
+          createdOrder = await prisma.extraServiceOrder.create({
+            data: {
+              orderNumber,
+              serviceId: service.id,
+              patientId: targetPatientId,
+              doctorId: targetDoctorId,
+              visitId: targetVisitId,
+              customPrice: (item.customPrice !== undefined && item.customPrice !== null) ? Number(item.customPrice) : null,
+              finalPrice: effectivePrice,
+              status: resolvedStatus,
+              completedAt: isCompleted ? new Date() : null,
+              notes: item.notes || null,
+              certificateType: item.certificateType || null,
+              certificateData: item.certificateData || null,
+              reportFiles: []
+            },
+            include: {
+              service: true,
+              patient: {
+                select: {
+                  id: true,
+                  patientId: true,
+                  fullName: true,
+                  phone: true,
+                  gender: true,
+                  ageFallback: true
+                }
+              },
+              doctor: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  specialty: true
+                }
+              }
+            }
+          });
+        }
+
+        // If visitId is available, immediately add or update billing charge in patient's draft invoice
         if (targetVisitId) {
           try {
+            const certSuffix = item.certificateType && !service.title.includes(`(${item.certificateType})`)
+              ? ` (${item.certificateType})`
+              : "";
             await billingService.addCharge({
               visitId: targetVisitId,
               patientId: targetPatientId,
               department: "EXTRA_SERVICE",
-              description: service.title + (item.certificateType ? ` (${item.certificateType})` : ""),
+              description: `${service.title}${certSuffix}`,
               quantity: 1,
               unitPrice: effectivePrice,
               referenceId: createdOrder.id

@@ -257,20 +257,37 @@ export const barcodeController = {
 
           // In-memory non-destructive draft invoice coalescing (zero DB row locks / deletions on GET)
           let mergedInvoice: any = null;
-          let allLineItems = invoices.flatMap(inv => inv.lineItems || []);
+          let rawLineItems = invoices.flatMap(inv => inv.lineItems || []);
+
+          // Deduplicate already existing invoice line items by referenceId or id
+          const uniqueLineItemMap = new Map<string, any>();
+          for (const li of rawLineItems) {
+            const key = li.referenceId ? `ref-${li.referenceId}` : (li.id ? `id-${li.id}` : `desc-${li.description}`);
+            if (!uniqueLineItemMap.has(key)) {
+              uniqueLineItemMap.set(key, li);
+            }
+          }
+          let allLineItems = Array.from(uniqueLineItemMap.values());
 
           // Ensure any extraServiceOrders not yet in invoice line items are represented
           for (const order of extraServiceOrders) {
+            const isCert = Boolean(order.certificateType || order.service?.title?.toLowerCase().includes("certificate"));
             const alreadyInInvoice = allLineItems.some(
-              (li: any) => li.referenceId === order.id || li.description.includes(order.orderNumber)
+              (li: any) =>
+                li.referenceId === order.id ||
+                (order.orderNumber && li.description?.includes(order.orderNumber)) ||
+                (isCert && li.department === "EXTRA_SERVICE" && li.description?.toLowerCase().includes("certificate"))
             );
             if (!alreadyInInvoice && order.status !== "CANCELLED") {
               const orderPrice = order.finalPrice ?? order.service?.price ?? 0;
+              const certSuffix = order.certificateType && !order.service?.title?.includes(`(${order.certificateType})`)
+                ? ` (${order.certificateType})`
+                : '';
               const synthItem: any = {
                 id: `synth-${order.id}`,
                 invoiceId: invoices[0]?.id || `draft-${appointment.bookingReference || appointment.id}`,
                 department: "EXTRA_SERVICE",
-                description: `Extra Service: ${order.service?.title || 'Service'}${order.certificateType ? ` (${order.certificateType})` : ''}`,
+                description: `${order.service?.title || 'Service'}${certSuffix}`,
                 quantity: 1,
                 unitPrice: orderPrice,
                 total: orderPrice,
