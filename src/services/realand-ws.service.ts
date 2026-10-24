@@ -138,8 +138,18 @@ class RealandWsService {
       const punchTime = isNaN(new Date(cleanTime).getTime()) ? new Date() : new Date(cleanTime);
 
       if (deviceUserId) {
+        const rawDeviceUserId = String(deviceUserId).trim();
+        const unpaddedId = rawDeviceUserId.replace(/^0+/, "") || "0";
+        const padded18 = unpaddedId.padStart(18, "0");
+
         const mapping = await prisma.deviceUserMapping.findFirst({
-          where: { deviceUserId: String(deviceUserId) },
+          where: {
+            OR: [
+              { deviceUserId: rawDeviceUserId },
+              { deviceUserId: unpaddedId },
+              { deviceUserId: padded18 }
+            ]
+          },
           include: { employee: true }
         });
 
