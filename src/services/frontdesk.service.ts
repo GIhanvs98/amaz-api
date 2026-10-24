@@ -960,7 +960,7 @@ export class FrontdeskService {
               title: true
             }
           },
-          DoctorScheduleSession: {
+          Session: {
             select: {
               id: true,
               sessionName: true,
@@ -1026,7 +1026,7 @@ export class FrontdeskService {
             dateOfBirth: apt.Patient.dateOfBirth
           } : null,
           doctor: apt.User,
-          session: apt.DoctorScheduleSession,
+          session: apt.Session,
           payment: paymentRecord ? {
             id: paymentRecord.id,
             amount: paymentRecord.amount,
