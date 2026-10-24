@@ -21,12 +21,22 @@ export function getTimezoneBoundaries(date: Date = new Date(), timezone: string 
   
   const startOfDayTz = new Date(`${year}-${month}-${day}T00:00:00.000${offsetString}`);
   const endOfDayTz = new Date(`${year}-${month}-${day}T23:59:59.999${offsetString}`);
-
   const firstDayOfMonthTz = new Date(`${year}-${month}-01T00:00:00.000${offsetString}`);
+
+  // Weekday in target timezone (0=Sun, 1=Mon, ..., 6=Sat)
+  const weekdayFormatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short' });
+  const weekdayStr = weekdayFormatter.format(date);
+  const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const dayOfWeek = dayMap[weekdayStr] !== undefined ? dayMap[weekdayStr] : startOfDayTz.getDay();
 
   return {
     startOfDay: startOfDayTz,
     endOfDay: endOfDayTz,
-    firstDayOfMonth: firstDayOfMonthTz
+    firstDayOfMonth: firstDayOfMonthTz,
+    dayOfWeek
   };
+}
+
+export function getColomboDayOfWeek(date: Date = new Date()): number {
+  return getTimezoneBoundaries(date, 'Asia/Colombo').dayOfWeek;
 }

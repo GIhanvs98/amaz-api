@@ -60,8 +60,7 @@ export class BookingService {
   static async getAvailability(doctorId: string, date: string, sessionId?: string) {
     return withRetry(async () => {
       const targetDate = new Date(date);
-      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
-      const dayOfWeek = startOfDay.getDay();
+      const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
 
       const allSessions = await prisma.doctorScheduleSession.findMany({
         where: { 
@@ -257,8 +256,7 @@ export class BookingService {
 
   static async bookPhoneToken(phone: string, fullName: string, doctorId: string, date: string, selectedTokenNumber?: number, sessionId?: string) {
     const targetDate = new Date(date);
-    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
-    const dayOfWeek = startOfDay.getDay();
+    const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
 
     let retries = 0;
     while (retries < 3) {

@@ -413,13 +413,12 @@ export const generateToken = async (req: Request, res: Response) => {
     if (doctorId) {
       doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true } });
       const targetDate = date ? new Date(date) : new Date();
-      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+      const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
       const todayAttendance = await prisma.doctorAttendance.findFirst({
         where: { doctorId: doctorId, date: { gte: startOfDay, lte: endOfDay } },
         include: { room: true }
       });
 
-      const dayOfWeek = startOfDay.getDay();
       let session = null;
       if (requestedSessionId) {
         session = await prisma.doctorScheduleSession.findUnique({
@@ -499,7 +498,7 @@ export const generateToken = async (req: Request, res: Response) => {
       requestedTokenNumber?: number
     ) => {
       const targetDate = date ? new Date(date) : new Date();
-      const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
+      const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
 
       let token = null;
 
@@ -508,7 +507,6 @@ export const generateToken = async (req: Request, res: Response) => {
         if (requestedSessionId) {
           sessionId = requestedSessionId;
         } else {
-          const dayOfWeek = startOfDay.getDay();
           const session = await prisma.doctorScheduleSession.findFirst({
             where: {
               dayOfWeek: dayOfWeek,

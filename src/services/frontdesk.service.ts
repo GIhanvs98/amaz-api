@@ -16,10 +16,7 @@ export class FrontdeskService {
     
     // Parse it as a local date by appending T00:00:00
     const targetDate = new Date(`${localDateStr}T00:00:00`);
-    const startOfDay = new Date(targetDate);
-    const endOfDay = new Date(targetDate);
-    endOfDay.setHours(23, 59, 59, 999);
-    const dayOfWeek = startOfDay.getDay(); // 0=Sun, 1=Mon...
+    const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
 
     // Find all doctors
     const doctors = await prisma.user.findMany({

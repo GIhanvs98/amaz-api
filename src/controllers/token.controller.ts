@@ -25,8 +25,7 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
 
     // Determine target date and timezone boundaries
     const targetDate = appointmentDate ? new Date(appointmentDate) : new Date();
-    const { startOfDay, endOfDay } = getTimezoneBoundaries(targetDate);
-    const dayOfWeek = startOfDay.getDay();
+    const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
 
     // Check if the doctor has an active schedule for the target day
     const activeSessions = await prisma.doctorScheduleSession.findMany({
