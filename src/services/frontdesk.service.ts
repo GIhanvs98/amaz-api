@@ -948,7 +948,7 @@ export class FrontdeskService {
               fullName: true,
               phone: true,
               gender: true,
-              age: true,
+              ageFallback: true,
               dateOfBirth: true
             }
           },
@@ -1017,7 +1017,14 @@ export class FrontdeskService {
           cancellationReason: apt.cancellationReason,
           cancelledAt: apt.cancelledAt,
           createdAt: apt.createdAt,
-          patient: apt.Patient,
+          patient: apt.Patient ? {
+            id: apt.Patient.id,
+            fullName: apt.Patient.fullName,
+            phone: apt.Patient.phone,
+            gender: apt.Patient.gender,
+            age: apt.Patient.ageFallback,
+            dateOfBirth: apt.Patient.dateOfBirth
+          } : null,
           doctor: apt.User,
           session: apt.DoctorScheduleSession,
           payment: paymentRecord ? {
