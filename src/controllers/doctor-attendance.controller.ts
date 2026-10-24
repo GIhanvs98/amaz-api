@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { NotificationService } from "../services/notification.service.js";
+import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
 
 export const markDoctorArrived = async (req: Request, res: Response) => {
   try {
@@ -60,10 +61,12 @@ export const getDoctorsTodayStatus = async (req: Request, res: Response) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     const doctors = await prisma.user.findMany({
-      where: { Role: { name: "Doctor" } },
+      where: { Role: { name: { equals: "Doctor", mode: "insensitive" } }, isActive: true },
       select: {
         id: true,
         fullName: true,
+        specialty: true,
+        Department: { select: { name: true } },
         DoctorAttendance: {
           where: { date: { gte: startOfDay, lte: endOfDay } },
           orderBy: { date: 'desc' },
@@ -72,14 +75,18 @@ export const getDoctorsTodayStatus = async (req: Request, res: Response) => {
       }
     });
 
+    const mapped = doctors.map(d => ({
+      id: d.id,
+      fullName: d.fullName,
+      specialty: d.specialty,
+      department: d.Department?.name,
+      status: d.DoctorAttendance[0]?.status ?? "SCHEDULED",
+      arrivedAt: d.DoctorAttendance[0]?.arrivedAt ?? null
+    }));
+
     res.json({
       success: true,
-      data: doctors.map(d => ({
-        id: d.id,
-        fullName: d.fullName,
-        status: d.DoctorAttendance[0]?.status ?? "SCHEDULED",
-        arrivedAt: d.DoctorAttendance[0]?.arrivedAt ?? null
-      }))
+      data: sortDoctorsWithOpdFirst(mapped)
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });

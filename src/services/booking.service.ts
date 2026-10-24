@@ -4,6 +4,7 @@ import { NotificationService } from "./notification.service.js";
 import { websocketService } from "./websocket.service.js";
 import { SMSService } from "./sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
+import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
 
 export class BookingService {
   static async getDoctors() {
@@ -34,7 +35,7 @@ export class BookingService {
         }
       });
 
-                  return doctors.map(doc => {
+      const mapped = doctors.map(doc => {
         const todayAttendance = doc.DoctorAttendance[0];
         return {
           id: doc.id,
@@ -51,6 +52,8 @@ export class BookingService {
           outTime: todayAttendance?.leftAt ? new Date(todayAttendance.leftAt).toISOString() : undefined
         };
       });
+
+      return sortDoctorsWithOpdFirst(mapped);
     });
   }
 

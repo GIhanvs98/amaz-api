@@ -8,6 +8,7 @@ import { SMSService } from "../services/sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
 import { generateIdentityKey } from "../utils/identity.util.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
+import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
 
 export const openShift = async (req: Request, res: Response) => {
   try {
@@ -235,7 +236,7 @@ export const getActiveDoctors = async (req: Request, res: Response) => {
   try {
     const doctors = await prisma.user.findMany({
       where: {
-        Role: { name: 'DOCTOR' },
+        Role: { name: { equals: 'Doctor', mode: 'insensitive' } },
         departmentId: { not: null }, // Only doctors actively assigned to a department
         isActive: true
       },
@@ -244,11 +245,14 @@ export const getActiveDoctors = async (req: Request, res: Response) => {
         fullName: true,
         specialty: true,
         consultationFee: true,
-        feeType: true
+        feeType: true,
+        Department: {
+          select: { name: true }
+        }
       }
     });
 
-    res.json({ success: true, data: doctors });
+    res.json({ success: true, data: sortDoctorsWithOpdFirst(doctors) });
   } catch (error: any) {
     console.error("Error fetching active doctors:", error);
     res.status(500).json({ success: false, error: error.message });

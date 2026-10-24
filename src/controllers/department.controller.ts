@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { clearCache } from "../middlewares/cache.middleware.js";
+import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
 
 
 export class DepartmentController {
@@ -68,7 +69,7 @@ export class DepartmentController {
           departmentId: true
         }
       });
-      res.json(doctors);
+      res.json(sortDoctorsWithOpdFirst(doctors));
     } catch (error: any) {
       console.error("Get Doctors Error:", error);
       res.status(500).json({ error: "Failed to fetch doctors" });

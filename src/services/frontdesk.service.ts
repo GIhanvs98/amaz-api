@@ -5,6 +5,7 @@ import { billingService } from './billing.service.js';
 import { generateMRN } from '../utils/mrn.util.js';
 import { generateIdentityKey } from '../utils/identity.util.js';
 import { getTimezoneBoundaries } from '../lib/dateUtils.js';
+import { sortDoctorsWithOpdFirst } from '../utils/doctor-utils.js';
 
 export class FrontdeskService {
   // 1. Get Doctor Status & Sessions for a given date
@@ -59,7 +60,7 @@ export class FrontdeskService {
       orderBy: { updatedAt: 'desc' }
     });
 
-    return doctors.map((doc: any) => {
+    const mapped = doctors.map((doc: any) => {
       const docAttendance = attendance.find((a: any) => a.doctorId === doc.id);
       const docSchedule = schedules.find((s: any) => s.doctorId === doc.id);
       
@@ -76,6 +77,8 @@ export class FrontdeskService {
         currentlyServing: currentToken ? (currentToken.tokenNumber.includes('-') ? parseInt(currentToken.tokenNumber.split('-')[1] || "0", 10) : currentToken.tokenNumber) : null
       };
     });
+
+    return sortDoctorsWithOpdFirst(mapped);
   }
 
   // 2. Update Doctor Attendance
