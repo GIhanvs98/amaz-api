@@ -330,6 +330,9 @@ export class BookingService {
         });
       }
 
+      const lockString = `CONSULTATION_${session.id}_${startOfDay.toISOString()}`;
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, lockString);
+
       const existingTokens = await tx.appointment.findMany({
         where: { sessionId: session.id, appointmentDate: { gte: startOfDay, lte: endOfDay } },
         select: { id: true, tokenNumber: true, status: true }
@@ -354,9 +357,12 @@ export class BookingService {
           if (!isInactive) {
             throw new Error(`Token ${selectedTokenNumber} is already booked for this session`);
           }
-          // Recycle inactive slot
-          return await tx.appointment.update({
-            where: { id: existingRow.id },
+          // Atomically claim inactive slot
+          const updateCount = await tx.appointment.updateMany({
+            where: {
+              id: existingRow.id,
+              status: { in: ["CANCELLED", "NO_SHOW"] }
+            },
             data: {
               patientId: patient.id,
               doctorId: doctorId,
@@ -367,7 +373,13 @@ export class BookingService {
               cancelledAt: null,
               checkedInAt: null,
               bookedAt: new Date()
-            },
+            }
+          });
+          if (updateCount.count === 0) {
+            throw new Error(`Token ${selectedTokenNumber} was just booked by another user.`);
+          }
+          return await tx.appointment.findUniqueOrThrow({
+            where: { id: existingRow.id },
             include: { User: true }
           });
         }
@@ -375,9 +387,12 @@ export class BookingService {
         while (bookedNums.has(chosenNum) && chosenNum <= session.tokenCapacity) {
           const row = existingByNum.get(chosenNum);
           if (row && (row.status === "CANCELLED" || row.status === "NO_SHOW")) {
-            // Recycle inactive slot
-            return await tx.appointment.update({
-              where: { id: row.id },
+            // Atomically claim inactive slot
+            const updateCount = await tx.appointment.updateMany({
+              where: {
+                id: row.id,
+                status: { in: ["CANCELLED", "NO_SHOW"] }
+              },
               data: {
                 patientId: patient.id,
                 doctorId: doctorId,
@@ -388,9 +403,14 @@ export class BookingService {
                 cancelledAt: null,
                 checkedInAt: null,
                 bookedAt: new Date()
-              },
-              include: { User: true }
+              }
             });
+            if (updateCount.count > 0) {
+              return await tx.appointment.findUniqueOrThrow({
+                where: { id: row.id },
+                include: { User: true }
+              });
+            }
           }
           chosenNum++;
         }

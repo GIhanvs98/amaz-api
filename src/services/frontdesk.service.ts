@@ -481,44 +481,36 @@ export class FrontdeskService {
       });
     }
 
-    let apt;
-    let retries = 0;
-    while (retries < 5) {
-      try {
-        // Find next available token across ALL bookings for the session (Phone + Walk-in)
-        const existing = await prisma.appointment.findMany({
-          where: { sessionId, appointmentDate: { gte: startOfDay, lte: endOfDay } }
-        });
-        
-        const existingByNum = new Map<number, any>();
-        const bookedNums = new Set<number>();
-        existing.forEach(t => {
-          const num = parseInt(t.tokenNumber.replace(/\D/g, ''), 10);
-          if (!isNaN(num)) {
-            bookedNums.add(num);
-            existingByNum.set(num, t);
-          }
-        });
+    const apt = await prisma.$transaction(async (tx) => {
+      // Deterministic session lock
+      const lockString = `CONSULTATION_${sessionId}_${startOfDay.toISOString()}`;
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, lockString);
 
-        let nextAvailable = 1;
-        while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
-          const row = existingByNum.get(nextAvailable);
-          if (row && (row.status === "CANCELLED" || row.status === "NO_SHOW")) {
-            // Can recycle this slot
-            break;
-          }
-          nextAvailable++;
+      // Find next available token across ALL bookings for the session (Phone + Walk-in)
+      const existing = await tx.appointment.findMany({
+        where: { sessionId, appointmentDate: { gte: startOfDay, lte: endOfDay } }
+      });
+      
+      const existingByNum = new Map<number, any>();
+      const bookedNums = new Set<number>();
+      existing.forEach(t => {
+        const num = parseInt(t.tokenNumber.replace(/\D/g, ''), 10);
+        if (!isNaN(num)) {
+          bookedNums.add(num);
+          existingByNum.set(num, t);
         }
-        
-        if (nextAvailable > session.tokenCapacity) {
-          throw new Error("No slots available for this date");
-        }
-        const nextTokenNumberStr = nextAvailable.toString().padStart(2, "0");
+      });
 
-        const existingSlot = existingByNum.get(nextAvailable);
-        if (existingSlot && (existingSlot.status === "CANCELLED" || existingSlot.status === "NO_SHOW")) {
-          apt = await prisma.appointment.update({
-            where: { id: existingSlot.id },
+      let nextAvailable = 1;
+      while (bookedNums.has(nextAvailable) && nextAvailable <= session.tokenCapacity) {
+        const row = existingByNum.get(nextAvailable);
+        if (row && (row.status === "CANCELLED" || row.status === "NO_SHOW")) {
+          // Attempt atomic claim
+          const updateCount = await tx.appointment.updateMany({
+            where: {
+              id: row.id,
+              status: { in: ['CANCELLED', 'NO_SHOW'] }
+            },
             data: {
               doctorId,
               patientId: patient.id,
@@ -531,30 +523,32 @@ export class FrontdeskService {
               bookedAt: new Date()
             }
           });
-        } else {
-          apt = await prisma.appointment.create({
-            data: {
-              doctorId,
-              patientId: patient.id,
-              sessionId,
-              tokenNumber: nextTokenNumberStr,
-              appointmentDate: startOfDay,
-              status: 'BOOKED', // Walk-ins start as BOOKED until they pay at Cashier
-              bookingType: 'WALK_IN'
-            }
-          });
+          if (updateCount.count > 0) {
+            return await tx.appointment.findUniqueOrThrow({ where: { id: row.id } });
+          }
         }
-        break; // Success, exit loop
-      } catch (error: any) {
-        if ((error.code === 'P2002' || error.message?.includes("Unique constraint failed")) && retries < 4) {
-          retries++;
-          continue; // Retry on token collision
-        }
-        throw error;
+        nextAvailable++;
       }
-    }
-    
-    if (!apt) throw new Error("Failed to create appointment after retries.");
+      
+      if (nextAvailable > session.tokenCapacity) {
+        throw new Error("No slots available for this date");
+      }
+      const nextTokenNumberStr = nextAvailable.toString().padStart(2, "0");
+
+      return await tx.appointment.create({
+        data: {
+          doctorId,
+          patientId: patient.id,
+          sessionId,
+          tokenNumber: nextTokenNumberStr,
+          appointmentDate: startOfDay,
+          status: 'BOOKED', // Walk-ins start as BOOKED until they pay at Cashier
+          bookingType: 'WALK_IN'
+        }
+      });
+    }, {
+      timeout: 10000
+    });
 
     await prisma.activityLog.create({
       data: {

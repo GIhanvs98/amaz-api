@@ -488,8 +488,7 @@ export const generateToken = async (req: Request, res: Response) => {
       }
     }
 
-    // Helper to robustly generate a single token
-    // Helper to robustly generate a single token
+    // Helper to robustly generate a single token with pg_advisory_xact_lock and atomic recycling
     const generateSpecificToken = async (
       dept: string,
       docId: string | null,
@@ -499,8 +498,6 @@ export const generateToken = async (req: Request, res: Response) => {
     ) => {
       const targetDate = date ? new Date(date) : new Date();
       const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
-
-      let token = null;
 
       let sessionId = null;
       if (dept === "CONSULTATION" && docId) {
@@ -533,156 +530,157 @@ export const generateToken = async (req: Request, res: Response) => {
         return prefix ? `${prefix}-${padded}` : padded;
       };
 
-      // 1. Fetch all existing appointments for this session/date regardless of status
-      const existingAppts = await prisma.appointment.findMany({
-        where: {
-          appointmentDate: { gte: startOfDay, lte: endOfDay },
-          ...(sessionId ? { sessionId } : {
-            department: dept,
-            ...(roomId ? { roomId } : { doctorId: docId || null })
-          })
-        },
-        select: { id: true, tokenNumber: true, status: true }
-      });
+      // Wrap allocation in an atomic interactive transaction with PostgreSQL advisory lock
+      return await prisma.$transaction(async (tx) => {
+        // Deterministic lock string hashed to int64 by PostgreSQL hashtext
+        const lockString = sessionId
+          ? `CONSULTATION_${sessionId}_${startOfDay.toISOString()}`
+          : `${dept}_${roomId || 'DEFAULT'}_${startOfDay.toISOString()}`;
 
-      const existingByToken = new Map<string, any>();
-      const usedInts = new Set<number>();
-      existingAppts.forEach(a => {
-        existingByToken.set(a.tokenNumber, a);
-        const match = a.tokenNumber.match(/\d+/);
-        if (match) {
-          usedInts.add(parseInt(match[0], 10));
-        }
-      });
+        // Acquire transaction-level advisory lock (released automatically on commit/rollback)
+        await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, lockString);
 
-      if (requestedTokenNumber) {
-        const tokenDisplay = formatTokenNumber(requestedTokenNumber);
-        const existingRow = existingByToken.get(tokenDisplay);
-
-        if (existingRow) {
-          const isInactive = existingRow.status === "CANCELLED" || existingRow.status === "NO_SHOW";
-          if (!isInactive) {
-            throw new Error(`Token ${requestedTokenNumber} for ${dept} is already booked.`);
-          }
-
-          // Safely recycle the inactive slot without violating unique constraint
-          token = await prisma.appointment.update({
-            where: { id: existingRow.id },
-            data: {
-              patientId: patient!.id,
-              doctorId: docId || null,
-              sessionId: sessionId,
-              roomId: roomId || null,
+        // Fetch all existing appointments for this session/date under lock
+        const existingAppts = await tx.appointment.findMany({
+          where: {
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            ...(sessionId ? { sessionId } : {
               department: dept,
-              status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-              bookingType: bookingType || "WALK_IN",
-              bookingReference: sharedRefNo,
-              calledAt: null,
-              completedAt: null,
-              cancelledAt: null,
-              checkedInAt: null,
-              bookedAt: new Date()
+              ...(roomId ? { roomId } : { doctorId: docId || null })
+            })
+          },
+          select: { id: true, tokenNumber: true, status: true }
+        });
+
+        const existingByToken = new Map<string, any>();
+        const usedInts = new Set<number>();
+        existingAppts.forEach(a => {
+          existingByToken.set(a.tokenNumber, a);
+          const match = a.tokenNumber.match(/\d+/);
+          if (match) {
+            usedInts.add(parseInt(match[0], 10));
+          }
+        });
+
+        // 1. If explicit token requested
+        if (requestedTokenNumber) {
+          const tokenDisplay = formatTokenNumber(requestedTokenNumber);
+          const existingRow = existingByToken.get(tokenDisplay);
+
+          if (existingRow) {
+            const isInactive = existingRow.status === "CANCELLED" || existingRow.status === "NO_SHOW";
+            if (!isInactive) {
+              throw new Error(`Token ${requestedTokenNumber} for ${dept} is already booked.`);
             }
-          });
-          return token;
+
+            // Atomic conditional update on inactive slot
+            const updateCount = await tx.appointment.updateMany({
+              where: {
+                id: existingRow.id,
+                status: { in: ["CANCELLED", "NO_SHOW"] }
+              },
+              data: {
+                patientId: patient!.id,
+                doctorId: docId || null,
+                sessionId: sessionId,
+                roomId: roomId || null,
+                department: dept,
+                status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+                bookingType: bookingType || "WALK_IN",
+                bookingReference: sharedRefNo,
+                calledAt: null,
+                completedAt: null,
+                cancelledAt: null,
+                checkedInAt: null,
+                bookedAt: new Date()
+              }
+            });
+
+            if (updateCount.count === 0) {
+              throw new Error(`Token ${requestedTokenNumber} was claimed by another operator.`);
+            }
+
+            return await tx.appointment.findUniqueOrThrow({ where: { id: existingRow.id } });
+          }
+
+          // Create new token
+          try {
+            return await tx.appointment.create({
+              data: {
+                tokenNumber: tokenDisplay,
+                patientId: patient!.id,
+                doctorId: docId || null,
+                sessionId: sessionId,
+                roomId: roomId || null,
+                department: dept,
+                status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+                bookingType: bookingType || "WALK_IN",
+                appointmentDate: startOfDay,
+                bookingReference: sharedRefNo
+              }
+            });
+          } catch (err: any) {
+            if (err.code === "P2002" || err.message?.includes("Unique constraint failed")) {
+              throw new Error(`Token ${requestedTokenNumber} for ${dept} was just reserved by another booking.`);
+            }
+            throw err;
+          }
         }
 
-        try {
-          token = await prisma.appointment.create({
-            data: {
-              tokenNumber: tokenDisplay,
-              patientId: patient!.id,
-              doctorId: docId || null,
-              sessionId: sessionId,
-              roomId: roomId || null,
-              department: dept,
-              status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-              bookingType: bookingType || "WALK_IN",
-              appointmentDate: startOfDay,
-              bookingReference: sharedRefNo
-            }
-          });
-          return token;
-        } catch (err: any) {
-          if (err.code === "P2002" || err.message?.includes("Unique constraint failed")) {
-            throw new Error(`Token ${requestedTokenNumber} for ${dept} was just reserved by another booking.`);
-          }
-          throw err;
-        }
-      }
+        // 2. Auto-assign next available token
+        let nextTokenInt = 1;
+        while (usedInts.has(nextTokenInt)) {
+          const checkDisplay = formatTokenNumber(nextTokenInt);
+          const row = existingByToken.get(checkDisplay);
+          if (row && (row.status === "CANCELLED" || row.status === "NO_SHOW")) {
+            // Found reusable slot - atomically claim it
+            const updateCount = await tx.appointment.updateMany({
+              where: {
+                id: row.id,
+                status: { in: ["CANCELLED", "NO_SHOW"] }
+              },
+              data: {
+                patientId: patient!.id,
+                doctorId: docId || null,
+                sessionId: sessionId,
+                roomId: roomId || null,
+                department: dept,
+                status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+                bookingType: bookingType || "WALK_IN",
+                bookingReference: sharedRefNo,
+                calledAt: null,
+                completedAt: null,
+                cancelledAt: null,
+                checkedInAt: null,
+                bookedAt: new Date()
+              }
+            });
 
-      // Auto-assign: Find the next smallest positive integer not in usedInts
-      let nextTokenInt = 1;
-      while (usedInts.has(nextTokenInt)) {
-        nextTokenInt++;
-      }
-
-      let attempts = 0;
-      while (!token && attempts < 50) {
-        const tokenDisplay = formatTokenNumber(nextTokenInt);
-        const existingRow = existingByToken.get(tokenDisplay);
-
-        if (existingRow) {
-          const isInactive = existingRow.status === "CANCELLED" || existingRow.status === "NO_SHOW";
-          if (isInactive) {
-            try {
-              token = await prisma.appointment.update({
-                where: { id: existingRow.id },
-                data: {
-                  patientId: patient!.id,
-                  doctorId: docId || null,
-                  sessionId: sessionId,
-                  roomId: roomId || null,
-                  department: dept,
-                  status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-                  bookingType: bookingType || "WALK_IN",
-                  bookingReference: sharedRefNo,
-                  calledAt: null,
-                  completedAt: null,
-                  cancelledAt: null,
-                  checkedInAt: null,
-                  bookedAt: new Date()
-                }
-              });
-              break;
-            } catch {
-              // Retry on race
+            if (updateCount.count > 0) {
+              return await tx.appointment.findUniqueOrThrow({ where: { id: row.id } });
             }
           }
-          usedInts.add(nextTokenInt);
           nextTokenInt++;
-          attempts++;
-          continue;
         }
 
-        try {
-          token = await prisma.appointment.create({
-            data: {
-              tokenNumber: tokenDisplay,
-              patientId: patient!.id,
-              doctorId: docId || null,
-              sessionId: sessionId,
-              roomId: roomId || null,
-              department: dept,
-              status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
-              bookingType: bookingType || "WALK_IN",
-              appointmentDate: startOfDay,
-              bookingReference: sharedRefNo
-            }
-          });
-        } catch (e: any) {
-          if (e.code === "P2002" || e.message?.includes("Unique constraint failed")) {
-            usedInts.add(nextTokenInt);
-            nextTokenInt++;
-            attempts++;
-          } else {
-            throw e;
+        const finalDisplay = formatTokenNumber(nextTokenInt);
+        return await tx.appointment.create({
+          data: {
+            tokenNumber: finalDisplay,
+            patientId: patient!.id,
+            doctorId: docId || null,
+            sessionId: sessionId,
+            roomId: roomId || null,
+            department: dept,
+            status: dept === "LAB" ? "WAITING_FOR_LAB_TEST" : "BOOKED",
+            bookingType: bookingType || "WALK_IN",
+            appointmentDate: startOfDay,
+            bookingReference: sharedRefNo
           }
-        }
-      }
-      
-      if (!token) throw new Error(`Failed to generate token for ${dept}`);
-      return token;
+        });
+      }, {
+        timeout: 10000
+      });
     };
 
     const tokensToGenerate: {
