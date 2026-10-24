@@ -155,9 +155,112 @@ export const generateToken = async (req: Request, res: Response): Promise<void> 
   }
 };
 
+export const getDoctorTodaySessions = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { doctorId, date } = req.query;
+
+    if (!doctorId) {
+      res.status(400).json({ error: "doctorId query parameter is required" });
+      return;
+    }
+
+    const targetDate = date ? new Date(date as string) : new Date();
+    const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
+
+    // Fetch active schedule sessions for doctor for this dayOfWeek
+    const sessions = await prisma.doctorScheduleSession.findMany({
+      where: {
+        schedule: {
+          doctorId: doctorId as string,
+          validFrom: { lte: endOfDay },
+          OR: [
+            { validUntil: null },
+            { validUntil: { gte: startOfDay } }
+          ]
+        },
+        dayOfWeek: dayOfWeek,
+        isActive: true
+      },
+      include: {
+        room: true
+      },
+      orderBy: {
+        startTime: 'asc'
+      }
+    });
+
+    // Current Colombo time string HH:MM
+    const colomboFormatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Colombo",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    });
+    const currentColomboTime = colomboFormatter.format(new Date());
+
+    // Aggregate appointment counts for each session today
+    const sessionsWithCounts = await Promise.all(
+      sessions.map(async (sess) => {
+        const counts = await prisma.appointment.groupBy({
+          by: ['status'],
+          where: {
+            sessionId: sess.id,
+            appointmentDate: { gte: startOfDay, lte: endOfDay }
+          },
+          _count: { id: true }
+        });
+
+        let booked = 0;
+        let completed = 0;
+        let cancelled = 0;
+
+        counts.forEach(c => {
+          if (c.status === 'COMPLETED' || c.status === 'PRESCRIPTION_ISSUED') {
+            completed += c._count.id;
+          } else if (c.status === 'CANCELLED' || c.status === 'NO_SHOW') {
+            cancelled += c._count.id;
+          } else {
+            booked += c._count.id;
+          }
+        });
+
+        const isCurrent = currentColomboTime >= sess.startTime && currentColomboTime <= sess.endTime;
+        const isPast = currentColomboTime > sess.endTime;
+        const isUpcoming = currentColomboTime < sess.startTime;
+
+        return {
+          id: sess.id,
+          sessionName: sess.sessionName || `${sess.startTime} - ${sess.endTime}`,
+          startTime: sess.startTime,
+          endTime: sess.endTime,
+          roomNumber: sess.room?.roomNumber || "N/A",
+          roomName: sess.room?.description || sess.room?.roomNumber || "",
+          tokenCapacity: sess.tokenCapacity,
+          bookedCount: booked,
+          completedCount: completed,
+          cancelledCount: cancelled,
+          totalAppointments: booked + completed,
+          isCurrent,
+          isPast,
+          isUpcoming
+        };
+      })
+    );
+
+    res.status(200).json({
+      success: true,
+      currentColomboTime,
+      sessions: sessionsWithCounts
+    });
+  } catch (error) {
+    console.error("Error fetching doctor today sessions:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
 export const getDoctorQueue = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { doctorId } = req.query;
+    const { doctorId, sessionId } = req.query;
 
     if (!doctorId) {
       res.status(400).json({ error: "doctorId query parameter is required" });
@@ -166,15 +269,26 @@ export const getDoctorQueue = async (req: Request, res: Response): Promise<void>
 
     const { startOfDay, endOfDay } = getTimezoneBoundaries();
 
-    // Query ONLY tokens scheduled for today
+    const whereClause: any = {
+      doctorId: doctorId as string,
+      appointmentDate: { gte: startOfDay, lte: endOfDay },
+      status: { in: ['BOOKED', 'WAITING', 'WAITING_FOR_LAB_TEST', 'IN_PROGRESS'] }
+    };
+
+    if (sessionId && sessionId !== "ALL") {
+      whereClause.sessionId = sessionId as string;
+    }
+
+    // Query tokens scheduled for today with session isolation
     const appointments = await prisma.appointment.findMany({
-      where: {
-        doctorId: doctorId as string,
-        appointmentDate: { gte: startOfDay, lte: endOfDay },
-        status: { in: ['BOOKED', 'WAITING', 'WAITING_FOR_LAB_TEST', 'IN_PROGRESS'] }
-      },
+      where: whereClause,
       include: {
         Patient: true,
+        Session: {
+          include: {
+            room: true
+          }
+        }
       },
       orderBy: {
         createdAt: 'asc'
