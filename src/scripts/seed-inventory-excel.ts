@@ -1,5 +1,6 @@
 import path from "path";
-import * as xlsx from "xlsx";
+import xlsxPkg from "xlsx";
+const xlsx = (xlsxPkg as any).readFile ? (xlsxPkg as any) : ((xlsxPkg as any).default || xlsxPkg);
 import { prisma } from "../lib/prisma.js";
 
 // Normalize categories into clean title case
