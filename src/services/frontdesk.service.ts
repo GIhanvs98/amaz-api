@@ -885,4 +885,278 @@ export class FrontdeskService {
     });
     return leave;
   }
+
+  // 10. Booking Management, Cancellation & Full Refund Service
+  async searchBookingsForManagement(params: {
+    search?: string;
+    date?: string;
+    doctorId?: string;
+    status?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(1, Number(params.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(params.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const where: any = {};
+
+    if (params.date) {
+      const { startOfDay, endOfDay } = getTimezoneBoundaries(params.date);
+      where.appointmentDate = {
+        gte: startOfDay,
+        lte: endOfDay
+      };
+    }
+
+    if (params.doctorId && params.doctorId !== 'ALL') {
+      where.doctorId = params.doctorId;
+    }
+
+    if (params.status && params.status !== 'ALL') {
+      if (params.status === 'ACTIVE') {
+        where.status = { in: ['SCHEDULED', 'CONFIRMED', 'WAITING', 'IN_CONSULTATION'] };
+      } else if (params.status === 'CANCELLED') {
+        where.status = 'CANCELLED';
+      } else if (params.status === 'COMPLETED') {
+        where.status = 'COMPLETED';
+      } else {
+        where.status = params.status;
+      }
+    }
+
+    if (params.search && params.search.trim()) {
+      const term = params.search.trim();
+      where.OR = [
+        { tokenNumber: { contains: term, mode: 'insensitive' } },
+        { bookingReference: { contains: term, mode: 'insensitive' } },
+        { Patient: { fullName: { contains: term, mode: 'insensitive' } } },
+        { Patient: { phone: { contains: term } } }
+      ];
+    }
+
+    const [appointments, total] = await Promise.all([
+      prisma.appointment.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: [{ appointmentDate: 'desc' }, { tokenNumber: 'asc' }],
+        include: {
+          Patient: {
+            select: {
+              id: true,
+              fullName: true,
+              phone: true,
+              gender: true,
+              age: true,
+              dateOfBirth: true
+            }
+          },
+          User: {
+            select: {
+              id: true,
+              fullName: true,
+              specialty: true,
+              title: true
+            }
+          },
+          DoctorScheduleSession: {
+            select: {
+              id: true,
+              sessionName: true,
+              startTime: true,
+              endTime: true
+            }
+          },
+          Payment: {
+            include: {
+              refunds: true
+            }
+          }
+        }
+      }),
+      prisma.appointment.count({ where })
+    ]);
+
+    // For each appointment, resolve invoice if direct Payment is not present
+    const enriched = await Promise.all(
+      appointments.map(async (apt) => {
+        let paymentRecord = apt.Payment;
+        let invoiceRecord: any = null;
+
+        if (!paymentRecord) {
+          const inv = await prisma.invoice.findFirst({
+            where: {
+              OR: [
+                { visitId: apt.id },
+                ...(apt.bookingReference ? [{ visitId: apt.bookingReference }] : [])
+              ]
+            },
+            include: {
+              payments: {
+                include: { refunds: true }
+              }
+            }
+          });
+          if (inv) {
+            invoiceRecord = inv;
+            paymentRecord = inv.payments?.[0] || null;
+          }
+        }
+
+        const totalPaid = paymentRecord?.amount || invoiceRecord?.totalAmount || 0;
+        const totalRefunded = paymentRecord?.refunds?.reduce((sum: number, r: any) => sum + r.amount, 0) || 0;
+        const refundableAmount = Math.max(0, totalPaid - totalRefunded);
+
+        return {
+          id: apt.id,
+          tokenNumber: apt.tokenNumber,
+          bookingReference: apt.bookingReference,
+          appointmentDate: apt.appointmentDate,
+          status: apt.status,
+          cancellationReason: apt.cancellationReason,
+          cancelledAt: apt.cancelledAt,
+          createdAt: apt.createdAt,
+          patient: apt.Patient,
+          doctor: apt.User,
+          session: apt.DoctorScheduleSession,
+          payment: paymentRecord ? {
+            id: paymentRecord.id,
+            amount: paymentRecord.amount,
+            method: paymentRecord.method,
+            status: paymentRecord.status,
+            refunds: paymentRecord.refunds
+          } : null,
+          invoice: invoiceRecord ? {
+            id: invoiceRecord.id,
+            status: invoiceRecord.status,
+            totalAmount: invoiceRecord.totalAmount
+          } : null,
+          totalPaid,
+          totalRefunded,
+          refundableAmount,
+          isRefunded: totalRefunded > 0 && refundableAmount === 0
+        };
+      })
+    );
+
+    return {
+      appointments: enriched,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit)
+    };
+  }
+
+  async cancelAndRefundAppointment(
+    appointmentId: string,
+    options: {
+      reason: string;
+      notes?: string;
+      processRefund?: boolean;
+      refundAmount?: number;
+      shiftId?: string;
+      userId?: string;
+    }
+  ) {
+    const apt = await prisma.appointment.findUnique({
+      where: { id: appointmentId },
+      include: {
+        Patient: true,
+        User: true,
+        Payment: {
+          include: { refunds: true }
+        }
+      }
+    });
+
+    if (!apt) throw new Error("Appointment not found");
+
+    const effectiveReason = options.reason ? `${options.reason}${options.notes ? ` - ${options.notes}` : ''}` : (options.notes || "Cancelled at Front Desk");
+
+    // 1. Mark appointment as CANCELLED
+    const updatedApt = await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: {
+        status: "CANCELLED",
+        cancelledAt: new Date(),
+        cancellationReason: effectiveReason
+      },
+      include: { Patient: true, User: true }
+    });
+
+    // 2. Resolve Payment / Invoice
+    let paymentRecord = apt.Payment;
+    let invoiceRecord: any = null;
+
+    if (!paymentRecord) {
+      invoiceRecord = await prisma.invoice.findFirst({
+        where: {
+          OR: [
+            { visitId: appointmentId },
+            ...(apt.bookingReference ? [{ visitId: apt.bookingReference }] : [])
+          ]
+        },
+        include: {
+          payments: {
+            include: { refunds: true }
+          }
+        }
+      });
+      if (invoiceRecord && invoiceRecord.payments?.length > 0) {
+        paymentRecord = invoiceRecord.payments[0];
+      }
+    }
+
+    let refundRecord: any = null;
+    let actualRefundAmount = 0;
+
+    // 3. Process Financial Refund if requested and payment exists
+    if (options.processRefund && paymentRecord && paymentRecord.status !== 'REFUNDED') {
+      const alreadyRefunded = paymentRecord.refunds?.reduce((sum: number, r: any) => sum + r.amount, 0) || 0;
+      const maxRefundable = Math.max(0, paymentRecord.amount - alreadyRefunded);
+
+      if (maxRefundable > 0) {
+        actualRefundAmount = options.refundAmount && options.refundAmount > 0
+          ? Math.min(options.refundAmount, maxRefundable)
+          : maxRefundable;
+
+        refundRecord = await billingService.processRefund(
+          paymentRecord.id,
+          actualRefundAmount,
+          `Booking Cancellation: ${effectiveReason}`,
+          options.shiftId
+        );
+      }
+    }
+
+    if (options.userId) {
+      try {
+        await prisma.activityLog.create({
+          data: {
+            entityType: 'Appointment',
+            entityId: appointmentId,
+            action: 'APPOINTMENT_CANCEL_REFUND',
+            description: `Token #${apt.tokenNumber} cancelled. Refunded: LKR ${actualRefundAmount}. Reason: ${effectiveReason}`,
+            userId: options.userId
+          }
+        });
+      } catch (logErr) {
+        console.warn("Could not log activity for cancelAndRefundAppointment:", logErr);
+      }
+    }
+
+    // Broadcast WebSocket updates
+    websocketService.broadcast('TOKEN_STATUS_UPDATED', { sessionId: apt.sessionId, appointment: updatedApt });
+    websocketService.broadcast('APPOINTMENT_CANCELLED', { appointmentId, tokenNumber: apt.tokenNumber });
+
+    return {
+      success: true,
+      appointment: updatedApt,
+      refund: refundRecord,
+      refundedAmount: actualRefundAmount,
+      reason: effectiveReason
+    };
+  }
 }
+

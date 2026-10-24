@@ -176,3 +176,42 @@ export const updateDoctorLeaveStatus = async (req: Request, res: Response) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+export const searchBookings = async (req: Request, res: Response) => {
+  try {
+    const { search, date, doctorId, status, page, limit } = req.query;
+    const data = await frontdeskService.searchBookingsForManagement({
+      search: search as string,
+      date: date as string,
+      doctorId: doctorId as string,
+      status: status as string,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined
+    });
+    res.json({ success: true, ...data });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const cancelAndRefundBooking = async (req: Request, res: Response) => {
+  try {
+    const appointmentId = req.params.id as string;
+    const { reason, notes, processRefund, refundAmount, shiftId } = req.body;
+    const userId = (req as any).user?.id || 'system';
+
+    const data = await frontdeskService.cancelAndRefundAppointment(appointmentId, {
+      reason,
+      notes,
+      processRefund: processRefund === true || processRefund === 'true',
+      refundAmount: refundAmount ? Number(refundAmount) : undefined,
+      shiftId,
+      userId
+    });
+
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+

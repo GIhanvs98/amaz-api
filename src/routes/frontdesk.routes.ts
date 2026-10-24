@@ -21,8 +21,10 @@ router.get('/rooms/matrix', roomController.getRoomMatrix.bind(roomController));
 
 // Tokens & Appointments
 router.get('/sessions/:sessionId/tokens', frontdeskController.getSessionTokens);
+router.get('/bookings/search', frontdeskController.searchBookings);
 router.put('/appointments/:id/status', frontdeskController.updateAppointmentStatus);
 router.post('/appointments/:id/cancel', frontdeskController.cancelAppointment);
+router.post('/bookings/:id/cancel-refund', frontdeskController.cancelAndRefundBooking);
 router.post('/appointments/walk-in', frontdeskController.createWalkIn);
 
 // Audit / Activity
