@@ -910,18 +910,21 @@ export const generateToken = async (req: Request, res: Response) => {
     }
 
     if (patientPhone && !patientPhone.startsWith('WALKIN')) {
+      const masterBookingRef = generatedTokens[0]?.refNo || (typeof sharedRefNo !== 'undefined' ? sharedRefNo : 'N/A');
+      const formattedApptDate = (date ? new Date(date) : new Date()).toLocaleDateString('en-GB');
+
+      const { templateName, variables } = SMSService.buildVisitTokenNotification(
+        patient.fullName,
+        formattedApptDate,
+        masterBookingRef,
+        generatedTokens
+      );
+
       await NotificationService.sendTemplatedSMS(
         patient.id,
         patientPhone,
-        'APPOINTMENT_BOOKED',
-        {
-          patientName: patient.fullName,
-          doctorName: (generatedTokens.map(t => t.doctorName).filter(Boolean).join(", ") || "Consultant").replace(/^Dr\.?\s*/i, ""),
-          appointmentDate: new Date().toLocaleDateString('en-GB'),
-          tokenNumber: generatedTokens.map(t => t.tokenNumber).join(", "),
-          bookingRef: generatedTokens[0]?.refNo || (typeof sharedRefNo !== 'undefined' ? sharedRefNo : 'N/A'),
-          hospitalName: "AMAZ Hospital"
-        }
+        templateName,
+        variables
       ).catch(console.error);
     }
 

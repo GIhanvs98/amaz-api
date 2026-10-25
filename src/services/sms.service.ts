@@ -80,6 +80,65 @@ export class SMSService {
   }
 
   /**
+   * Builds canonical template name and variables for appointment/visit tokens
+   */
+  public static buildVisitTokenNotification(
+    patientName: string,
+    appointmentDate: string,
+    masterBookingRef: string,
+    tokens: Array<{
+      tokenNumber: string;
+      department: string;
+      doctorName?: string | null;
+      roomNumber?: string | null;
+    }>
+  ): { templateName: string; variables: Record<string, string> } {
+    const firstToken = tokens[0];
+    const isSingleDoc = tokens.length === 1 && firstToken?.department === 'CONSULTATION';
+
+    if (isSingleDoc && firstToken) {
+      const doc = (firstToken.doctorName || 'General Physician').replace(/^Dr\.?\s*/i, '');
+      return {
+        templateName: 'APPOINTMENT_BOOKED',
+        variables: {
+          patientName,
+          doctorName: doc,
+          tokenNumber: String(firstToken.tokenNumber),
+          appointmentDate,
+          bookingRef: masterBookingRef,
+          hospitalName: 'AMAZ Hospital'
+        }
+      };
+    }
+
+    const tokenDetails = tokens.map(t => {
+      if (t.department === 'CONSULTATION') {
+        const doc = (t.doctorName || 'Doctor').replace(/^Dr\.?\s*/i, '');
+        const room = t.roomNumber ? ` - Room ${t.roomNumber}` : '';
+        return `Consultation #${t.tokenNumber} (Dr. ${doc}${room})`;
+      } else if (t.department === 'LAB') {
+        const room = t.roomNumber ? ` (${t.roomNumber})` : '';
+        return `Lab #${t.tokenNumber}${room}`;
+      } else if (t.department === 'EXTRA_SERVICE') {
+        const room = t.roomNumber ? ` (${t.roomNumber})` : '';
+        return `Service #${t.tokenNumber}${room}`;
+      }
+      return `#${t.tokenNumber}`;
+    }).join('; ');
+
+    return {
+      templateName: 'VISIT_TOKENS_BOOKED',
+      variables: {
+        patientName,
+        tokenDetails,
+        appointmentDate,
+        bookingRef: masterBookingRef,
+        hospitalName: 'AMAZ Hospital'
+      }
+    };
+  }
+
+  /**
    * Sends the queue token SMS based on the provided template
    */
   public static async sendTokenSMS(

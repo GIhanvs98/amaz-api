@@ -4,6 +4,7 @@ import { NotificationService } from "./notification.service.js";
 import { websocketService } from "./websocket.service.js";
 import { SMSService } from "./sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
+import { generateIdentityKey } from "../utils/identity.util.js";
 import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
 
 export class BookingService {
@@ -313,21 +314,41 @@ export class BookingService {
         throw new Error("No slots available for this date");
       }
 
-      let patient = await tx.patient.findFirst({
-        where: { phone, fullName }
-      });
-
-      if (patient) {
-        if (patient.fullName !== fullName) {
-          patient = await tx.patient.update({
-            where: { id: patient.id },
-            data: { fullName }
-          });
-        }
-      } else {
-        patient = await tx.patient.create({
-          data: { phone, fullName, patientId: await generateMRN(tx) }
+      let patient = null;
+      const identityKey = generateIdentityKey(fullName, phone);
+      if (identityKey) {
+        patient = await tx.patient.findUnique({ where: { identityKey } });
+      }
+      if (!patient) {
+        patient = await tx.patient.findFirst({
+          where: { phone, fullName: { equals: fullName, mode: "insensitive" } }
         });
+      }
+
+      if (!patient) {
+        patient = await tx.patient.create({
+          data: {
+            phone,
+            fullName,
+            identityKey: identityKey || null,
+            patientId: await generateMRN(tx)
+          }
+        });
+      }
+
+      let sharedRefNo = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+      const existingPhoneBooking = await tx.appointment.findFirst({
+        where: {
+          patientId: patient.id,
+          bookingType: "PHONE",
+          status: "BOOKED",
+          appointmentDate: { gte: startOfDay, lte: endOfDay },
+          bookingReference: { not: null }
+        },
+        orderBy: { createdAt: 'desc' }
+      });
+      if (existingPhoneBooking?.bookingReference) {
+        sharedRefNo = existingPhoneBooking.bookingReference;
       }
 
       const lockString = `CONSULTATION_${session.id}_${startOfDay.toISOString()}`;
@@ -368,6 +389,7 @@ export class BookingService {
               doctorId: doctorId,
               status: "BOOKED",
               bookingType: "PHONE",
+              bookingReference: sharedRefNo,
               calledAt: null,
               completedAt: null,
               cancelledAt: null,
@@ -398,6 +420,7 @@ export class BookingService {
                 doctorId: doctorId,
                 status: "BOOKED",
                 bookingType: "PHONE",
+                bookingReference: sharedRefNo,
                 calledAt: null,
                 completedAt: null,
                 cancelledAt: null,
@@ -429,7 +452,8 @@ export class BookingService {
           appointmentDate: startOfDay,
           sessionId: session.id,
           status: "BOOKED",
-          bookingType: "PHONE"
+          bookingType: "PHONE",
+          bookingReference: sharedRefNo
         },
         include: {
           User: true

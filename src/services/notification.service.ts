@@ -52,12 +52,17 @@ export class NotificationService {
         if (templateName === 'APPOINTMENT_BOOKED') {
           template = {
             id: 'temp', name: 'APPOINTMENT_BOOKED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'AMAZ Hospital: Token #{{tokenNumber}} confirmed for {{patientName}} with Dr. {{doctorName}} on {{appointmentDate}}. Ref: {{bookingRef}}. Inquiries: 0112345678'
+            content: 'AMAZ Hospital: Token #{{tokenNumber}} confirmed for {{patientName}} with Dr. {{doctorName}} on {{appointmentDate}}. Ref: {{bookingRef}}. Inquiries: 0472239090'
+          };
+        } else if (templateName === 'VISIT_TOKENS_BOOKED') {
+          template = {
+            id: 'temp', name: 'VISIT_TOKENS_BOOKED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
+            content: 'AMAZ Hospital: Tokens confirmed for {{patientName}} on {{appointmentDate}}: {{tokenDetails}}. Ref: {{bookingRef}}. Inquiries: 0472239090'
           };
         } else if (templateName === 'DOCTOR_ARRIVED') {
           template = {
             id: 'temp', name: 'DOCTOR_ARRIVED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'AMAZ Hospital: Dr. {{doctorName}} has arrived at Room {{roomNumber}}. Token: #{{tokenNumber}}. Please proceed to the consultation area.'
+            content: 'AMAZ Hospital: Dr. {{doctorName}} has arrived at Room {{roomNumber}}. Token #{{tokenNumber}} for {{patientName}}. Please proceed to the consultation area.'
           };
         } else if (templateName === 'LAB_REPORT_READY') {
           template = {
@@ -72,7 +77,7 @@ export class NotificationService {
         } else if (templateName === 'SESSION_CANCELLED') {
           template = {
             id: 'temp', name: 'SESSION_CANCELLED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'AMAZ Hospital: Appointment with Dr. {{doctorName}} on {{date}} is cancelled ({{reason}}). Inquiries: 0112345678'
+            content: 'AMAZ Hospital: Appointment for {{patientName}} with Dr. {{doctorName}} on {{date}} is cancelled ({{reason}}). Inquiries: 0472239090'
           };
         } else {
           console.warn(`SMS Template ${templateName} not found in DB and no fallback available.`);
