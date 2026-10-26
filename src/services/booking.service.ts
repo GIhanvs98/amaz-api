@@ -472,6 +472,7 @@ export class BookingService {
               appointmentDate: startOfDay.toLocaleDateString('en-GB'),
               tokenNumber: String(token.tokenNumber),
               bookingRef: token.bookingReference || String(token.tokenNumber),
+              barcode: token.bookingReference || String(token.tokenNumber),
               hospitalName: "AMAZ Hospital"
             }
           );

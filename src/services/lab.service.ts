@@ -406,6 +406,7 @@ export class LabService {
             patientName: patient.fullName,
             testProfile,
             referenceNo,
+            barcode: referenceNo,
             reportLink: reportUrl || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reports/${referenceNo}`
           }
         ).catch(console.error);

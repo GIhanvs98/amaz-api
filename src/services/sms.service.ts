@@ -106,6 +106,7 @@ export class SMSService {
           tokenNumber: String(firstToken.tokenNumber),
           appointmentDate,
           bookingRef: masterBookingRef,
+          barcode: masterBookingRef,
           hospitalName: 'AMAZ Hospital'
         }
       };
@@ -133,6 +134,7 @@ export class SMSService {
         tokenDetails,
         appointmentDate,
         bookingRef: masterBookingRef,
+        barcode: masterBookingRef,
         hospitalName: 'AMAZ Hospital'
       }
     };
@@ -155,7 +157,7 @@ export class SMSService {
       hour12: true,
     }).toLowerCase(); // 6:18 pm
 
-    const message = `Ref No: ${refNo}
+    const message = `Barcode: ${refNo}
 Prof. ${doctorName}
 No: ${queueNumber}
 Hospital: ${hospitalName}

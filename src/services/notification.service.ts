@@ -52,12 +52,12 @@ export class NotificationService {
         if (templateName === 'APPOINTMENT_BOOKED') {
           template = {
             id: 'temp', name: 'APPOINTMENT_BOOKED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'AMAZ Hospital: Token #{{tokenNumber}} confirmed for {{patientName}} with Dr. {{doctorName}} on {{appointmentDate}}. Ref: {{bookingRef}}. Inquiries: 0472239090'
+            content: 'AMAZ Hospital: Token #{{tokenNumber}} confirmed for {{patientName}} with Dr. {{doctorName}} on {{appointmentDate}}. Barcode: {{bookingRef}}'
           };
         } else if (templateName === 'VISIT_TOKENS_BOOKED') {
           template = {
             id: 'temp', name: 'VISIT_TOKENS_BOOKED', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'AMAZ Hospital: Tokens confirmed for {{patientName}} on {{appointmentDate}}: {{tokenDetails}}. Ref: {{bookingRef}}. Inquiries: 0472239090'
+            content: 'AMAZ Hospital: Tokens confirmed for {{patientName}} on {{appointmentDate}}: {{tokenDetails}}. Barcode: {{bookingRef}}'
           };
         } else if (templateName === 'DOCTOR_ARRIVED') {
           template = {
@@ -67,7 +67,7 @@ export class NotificationService {
         } else if (templateName === 'LAB_REPORT_READY') {
           template = {
             id: 'temp', name: 'LAB_REPORT_READY', isActive: true, createdAt: new Date(), updatedAt: new Date(),
-            content: 'AMAZ Hospital: Lab report for {{patientName}} ({{testProfile}}) is ready. View report: {{reportLink}} Ref: {{referenceNo}}'
+            content: 'AMAZ Hospital: Lab report for {{patientName}} ({{testProfile}}) is ready. View report: {{reportLink}} Barcode: {{referenceNo}}'
           };
         } else if (templateName === 'PATIENT_PORTAL_OTP') {
           template = {
@@ -91,8 +91,17 @@ export class NotificationService {
         return null;
       }
 
+      // Ensure cross-compatibility for barcode / bookingRef / referenceNo
+      const vars = { ...variables };
+      const barcodeVal = vars.barcode || vars.bookingRef || vars.referenceNo;
+      if (barcodeVal) {
+        if (!vars.barcode) vars.barcode = barcodeVal;
+        if (!vars.bookingRef) vars.bookingRef = barcodeVal;
+        if (!vars.referenceNo) vars.referenceNo = barcodeVal;
+      }
+
       let message = template.content;
-      for (const [key, value] of Object.entries(variables)) {
+      for (const [key, value] of Object.entries(vars)) {
         message = message.replace(new RegExp(`{{${key}}}`, 'g'), value);
       }
 
