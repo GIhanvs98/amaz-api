@@ -195,17 +195,20 @@ export class PharmacyController {
             tx
           );
 
+          const itemQty = Number(item.qty) || 1;
+          const unitPrice = itemQty > 0 ? Number((dispenseResult.totalCost / itemQty).toFixed(2)) : dispenseResult.totalCost;
+
           charges.push({
             department: 'PHARMACY',
             referenceId: item.id,
             description: item.name || 'Pharmacy Medication',
-            quantity: 1,
-            unitPrice: dispenseResult.totalCost,
+            quantity: itemQty,
+            unitPrice: unitPrice,
             medicineId: item.id,
           });
         }
 
-        const subtotal = charges.reduce((sum, c) => sum + c.unitPrice, 0);
+        const subtotal = charges.reduce((sum, c) => sum + (c.quantity * c.unitPrice), 0);
         const discountAmount = Math.max(0, Math.min(subtotal, Number(discount?.amount) || 0));
         const finalCost = Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100);
 

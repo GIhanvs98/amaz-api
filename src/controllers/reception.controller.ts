@@ -1454,6 +1454,26 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       const patient = (inv.patientId ? patientsMap.get(inv.patientId) : null) || matchedAppt?.Patient || null;
 
       if (matchedAppt) {
+        const existingVisitItem = unifiedItems.find(
+          ui => ui.type === "VISIT" && (ui.appointmentId === matchedAppt.id || (ui.bookingReference && ui.bookingReference === matchedAppt.bookingReference))
+        );
+
+        if (existingVisitItem) {
+          existingVisitItem.totalAmount = Math.round((existingVisitItem.totalAmount + inv.totalAmount) * 100) / 100;
+          existingVisitItem.lineItems = [...(existingVisitItem.lineItems || []), ...(inv.lineItems || [])];
+          if (existingVisitItem.invoice) {
+            existingVisitItem.invoice.total = existingVisitItem.totalAmount;
+            existingVisitItem.invoice.subtotal = Math.round(((existingVisitItem.invoice.subtotal || 0) + (inv.subtotal || inv.totalAmount)) * 100) / 100;
+            existingVisitItem.invoice.items = (existingVisitItem.lineItems || []).map((li: any) => ({
+              name: li.description,
+              qty: li.quantity,
+              price: li.unitPrice,
+              total: li.total
+            }));
+          }
+          return;
+        }
+
         linkedApptIds.add(matchedAppt.id);
         unifiedItems.push({
           type: "VISIT",
@@ -1495,7 +1515,8 @@ export const getPOSHistory = async (req: Request, res: Response) => {
               name: li.description,
               qty: li.quantity,
               price: li.unitPrice,
-              total: li.total
+              total: li.total,
+              department: li.department
             }))
           }
         });
