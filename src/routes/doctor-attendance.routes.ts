@@ -4,15 +4,23 @@ import { markDoctorArrived, getDoctorsTodayStatus, getDoctorMetrics } from "../c
 
 const router = Router();
 
-router.use(verifyToken, requireRole(['ADMIN', 'DOCTOR', 'HR']));
+// GET /api/doctors/today - Status of today's scheduled and arrived doctors
+router.get("/today", getDoctorsTodayStatus);
+
+// POST /api/doctors/:id/attendance/arrive - Mark doctor arrived (Admin, Doctor, HR, Receptionist, Frontdesk)
+router.post(
+  "/:id/attendance/arrive",
+  verifyToken,
+  requireRole(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'HR', 'RECEPTIONIST', 'FRONTDESK']),
+  markDoctorArrived
+);
 
 // GET /api/doctors/metrics
-router.get("/metrics", getDoctorMetrics);
-
-// POST /api/doctors/:id/attendance/arrive
-router.post("/:id/attendance/arrive", markDoctorArrived);
-
-// GET /api/doctors/today
-router.get("/today", getDoctorsTodayStatus);
+router.get(
+  "/metrics",
+  verifyToken,
+  requireRole(['ADMIN', 'SUPERADMIN', 'DOCTOR', 'HR']),
+  getDoctorMetrics
+);
 
 export default router;

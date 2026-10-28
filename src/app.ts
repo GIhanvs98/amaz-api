@@ -83,6 +83,7 @@ import roomRoutes from "./routes/room.routes.js";
 import staffRoutes from "./routes/staff.routes.js";
 import hrRoutes from "./routes/hr.routes.js";
 import fundOfficeRoutes from "./routes/fund-office.routes.js";
+import doctorAttendanceRoutes from "./routes/doctor-attendance.routes.js";
 
 import { prisma } from "./lib/prisma.js";
 
@@ -113,6 +114,7 @@ app.patch("/api/testpatch/:id", (req, res) => { res.send("OK"); });
 app.use("/api/patients", patientRoutes);
 app.use("/api/tokens", tokenRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/doctors", doctorAttendanceRoutes);
 app.use("/api/admin/dashboard", dashboardRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/booking", bookingRoutes);

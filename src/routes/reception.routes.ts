@@ -3,6 +3,7 @@ import { Router } from "express";
 import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod, getActiveDoctors, checkoutAppointment, getPOSHistory, closeShiftAndGetSummary, openShift, getCurrentShift } from "../controllers/reception.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import { updatePatient } from "../controllers/patient.controller.js";
+import { getDoctorsTodayStatus } from "../controllers/doctor-attendance.controller.js";
 
 const router = Router();
 
@@ -12,13 +13,16 @@ router.use(verifyToken);
 router.get("/patients/:id", requireRole(['ADMIN', 'RECEPTIONIST', 'DOCTOR']), getPatientById);
 router.patch("/patients/:id", requireRole(['ADMIN', 'RECEPTIONIST', 'DOCTOR']), updatePatient);
 
-router.use(requireRole(['ADMIN', 'RECEPTIONIST', 'CASHIER', 'NURSE', 'PHARMACIST', 'FRONTDESK', 'LABTECH']));
+router.use(requireRole(['SUPERADMIN', 'ADMIN', 'RECEPTIONIST', 'CASHIER', 'NURSE', 'PHARMACIST', 'FRONTDESK', 'LABTECH']));
 
 // GET /api/reception/patients
 router.get("/patients", cacheMiddleware(60), getPatients);
 
 // GET /api/reception/doctors
 router.get("/doctors", getActiveDoctors);
+
+// GET /api/reception/doctors/today (alias for doctors today status)
+router.get("/doctors/today", getDoctorsTodayStatus);
 
 // GET /api/reception/metrics
 router.get("/metrics", cacheMiddleware(300), getMetrics);
