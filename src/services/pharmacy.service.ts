@@ -28,9 +28,12 @@ export class PharmacyService {
           category: true,
           itemType: true,
           form: true,
+          strength: true,
           unit: true,
+          packSize: true,
           retailPrice: true,
           barcode: true,
+          reorderLevel: true,
           isActive: true,
           stockBatches: {
             where: { currentQuantity: { gt: 0 } },
@@ -61,12 +64,16 @@ export class PharmacyService {
     };
   }
 
-  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; itemType?: string; form?: string; unit: string; reorderLevel?: number; baseStock?: number; basePrice?: number; expiryDate?: Date }) {
+  async addMedicine(data: { name: string; barcode?: string; genericName?: string; category: string; itemType?: string; form?: string; strength?: string; unit: string; packSize?: number; reorderLevel?: number; baseStock?: number; basePrice?: number; expiryDate?: Date }) {
     const existingName = await prisma.medicine.findFirst({
-      where: { name: { equals: data.name, mode: 'insensitive' } }
+      where: {
+        name: { equals: data.name, mode: 'insensitive' },
+        form: { equals: data.form || "", mode: 'insensitive' },
+        strength: { equals: data.strength || "", mode: 'insensitive' }
+      }
     });
     if (existingName) {
-      const err = new Error(`An item with the name "${data.name}" already exists in the inventory.`);
+      const err = new Error(`An item with name "${data.name}" (${data.form || "N/A"}, ${data.strength || "N/A"}) already exists in the inventory.`);
       (err as any).code = 'ALREADY_EXISTS';
       (err as any).itemId = existingName.id;
       throw err;
@@ -81,7 +88,9 @@ export class PharmacyService {
           category: data.category,
           itemType: data.itemType || "MEDICINE",
           form: data.form,
+          strength: data.strength,
           unit: data.unit,
+          packSize: data.packSize ?? 1,
           reorderLevel: data.reorderLevel,
         },
       });
@@ -364,13 +373,18 @@ export class PharmacyService {
     });
   }
 
-  async updateMedicine(id: string, data: { name?: string; genericName?: string; category?: string; form?: string; unit?: string; reorderLevel?: number; barcode?: string }) {
+  async updateMedicine(id: string, data: { name?: string; genericName?: string; category?: string; form?: string; strength?: string; unit?: string; packSize?: number; reorderLevel?: number; barcode?: string }) {
     if (data.name) {
       const existingName = await prisma.medicine.findFirst({
-        where: { name: { equals: data.name, mode: 'insensitive' }, id: { not: id } }
+        where: {
+          name: { equals: data.name, mode: 'insensitive' },
+          form: { equals: data.form || "", mode: 'insensitive' },
+          strength: { equals: data.strength || "", mode: 'insensitive' },
+          id: { not: id }
+        }
       });
       if (existingName) {
-        const err = new Error(`An item with the name "${data.name}" already exists in the inventory.`);
+        const err = new Error(`An item with the name "${data.name}" (${data.form || "N/A"}, ${data.strength || "N/A"}) already exists in the inventory.`);
         (err as any).code = 'ALREADY_EXISTS';
         (err as any).itemId = existingName.id;
         throw err;

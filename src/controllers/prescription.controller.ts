@@ -160,6 +160,8 @@ export const getPrescriptionById = async (req: Request, res: Response) => {
         medicine: i.medicine ? {
           id: i.medicine.id,
           name: i.medicine.name,
+          unit: i.medicine.unit,
+          packSize: i.medicine.packSize ?? 1,
           stockBatches: i.medicine.stockBatches
         } : null
       })),
@@ -511,7 +513,11 @@ export const getPendingPrescriptions = async (req: Request, res: Response): Prom
             ...i,
             dispenseQty,
             totalStock,
-            unitPrice
+            unitPrice,
+            medicine: i.medicine ? {
+              ...i.medicine,
+              packSize: i.medicine.packSize ?? 1
+            } : null
           };
         }),
         bookingReference: appt?.bookingReference || null,

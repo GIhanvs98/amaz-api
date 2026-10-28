@@ -15,7 +15,9 @@ model Medicine {
   category          String
   itemType          String              @default("MEDICINE") // MEDICINE, CONSUMABLE, EQUIPMENT
   form              String?
+  strength          String?
   unit              String
+  packSize          Int                 @default(1)  // Dose units per stock unit: Tablet=1, Syrup Bottle=60(ml), Cream Tube=30(g), Eye Drop=10(ml)
   reorderLevel      Int                 @default(50)
   retailPrice       Float               @default(0)
   isActive          Boolean             @default(true)

@@ -198,6 +198,9 @@ export const barcodeController = {
                         barcode: true,
                         retailPrice: true,
                         unit: true,
+                        form: true,
+                        strength: true,
+                        packSize: true,
                         stockBatches: {
                           select: { unitPrice: true, currentQuantity: true },
                           take: 1

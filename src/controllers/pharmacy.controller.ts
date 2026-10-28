@@ -31,7 +31,7 @@ export class PharmacyController {
 
   async addMedicine(req: Request, res: Response) {
     try {
-      const { name, barcode, genericName, category, itemType, form, unit, reorderLevel, baseStock, basePrice, expiryDate } = req.body;
+      const { name, barcode, genericName, category, itemType, form, strength, unit, packSize, reorderLevel, baseStock, basePrice, expiryDate } = req.body;
       
       if (!name || !category || !unit) {
         return res.status(400).json({ error: "Missing required fields: name, category, or unit." });
@@ -53,7 +53,9 @@ export class PharmacyController {
         category,
         itemType,
         form: isMedical ? form : null,
+        strength: strength || null,
         unit,
+        packSize: packSize ? Number(packSize) : undefined,
         reorderLevel: reorderLevel ? Number(reorderLevel) : undefined,
         baseStock: baseStock ? Number(baseStock) : undefined,
         basePrice: basePrice ? Number(basePrice) : undefined,
@@ -139,13 +141,13 @@ export class PharmacyController {
   async updateMedicine(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const { name, genericName, category, form, unit, reorderLevel, barcode } = req.body;
+      const { name, genericName, category, form, strength, unit, packSize, reorderLevel, barcode } = req.body;
 
       if (barcode && !/^\d{10}$/.test(barcode)) {
         return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
       }
 
-      const medicine = await pharmacyService.updateMedicine(id as string, { name, genericName, category, form, unit, reorderLevel: reorderLevel ? Number(reorderLevel) : undefined, barcode });
+      const medicine = await pharmacyService.updateMedicine(id as string, { name, genericName, category, form, strength, unit, packSize: packSize !== undefined ? Number(packSize) : undefined, reorderLevel: reorderLevel ? Number(reorderLevel) : undefined, barcode });
       res.json(medicine);
     } catch (error: any) {
       if (error.code === 'P2002') {

@@ -73,6 +73,56 @@ async function run() {
     });
   }
 
+  // Ensure Cipium exists and has stock for the Syrup packaging test
+  let cipium = await prisma.medicine.findFirst({
+    where: { name: { contains: "Cipium" } },
+    include: { stockBatches: true }
+  });
+  if (!cipium) {
+    cipium = await prisma.medicine.create({
+      data: {
+        name: "Cipium",
+        genericName: "Piriton",
+        category: "Antihistamines",
+        form: "Syrup",
+        unit: "Bottle",
+        packSize: 60,
+        retailPrice: 200,
+        stockBatches: {
+          create: {
+            batchNumber: `BAT-CIP-${Date.now()}`,
+            currentQuantity: 50,
+            initialQuantity: 50,
+            unitPrice: 200,
+            costPrice: 120,
+            expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+          }
+        }
+      },
+      include: { stockBatches: true }
+    });
+  } else {
+    const totalQty = cipium.stockBatches.reduce((acc, b) => acc + b.currentQuantity, 0);
+    if (totalQty < 10) {
+      await prisma.stockBatch.create({
+        data: {
+          medicineId: cipium.id,
+          batchNumber: `BAT-CIP-${Date.now()}`,
+          currentQuantity: 50,
+          initialQuantity: 50,
+          unitPrice: 200,
+          costPrice: 120,
+          expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+        }
+      });
+    }
+  }
+
+  try {
+    const { clearCache } = await import("../src/middlewares/cache.middleware.js");
+    await clearCache("pharmacy/medicines");
+  } catch (_) {}
+
   // 4. Create consultation appointment/token in WAITING status
   const tokenNo = Math.floor(10 + Math.random() * 89).toString();
   const appointment = await prisma.appointment.create({
@@ -99,7 +149,8 @@ async function run() {
     visitId: appointment.id,
     tokenNumber: appointment.tokenNumber,
     medicineId: medicine.id,
-    medicineName: medicine.name
+    medicineName: medicine.name,
+    cipiumId: cipium.id
   }));
 }
 
@@ -109,5 +160,10 @@ run()
     process.exit(1);
   })
   .finally(async () => {
+    try {
+      const redis = (await import("../src/lib/redis.js")).default;
+      if (redis.isOpen) await redis.disconnect();
+    } catch (_) {}
     await prisma.$disconnect();
+    process.exit(0);
   });
