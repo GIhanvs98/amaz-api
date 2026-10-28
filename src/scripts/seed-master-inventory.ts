@@ -231,9 +231,9 @@ export function loadAndNormalizeInventory(customPath?: string): CleanedDrugItem[
     // Pack size: dose units per stock unit (1 for tablets, 60ml for syrups, 30g for creams, etc.)
     const packSize = getPackSizeForForm(form);
 
-    // Reorder Level
+    // Reorder Level: Standardized to 50 for all items as per inventory guidelines
     const parsedReorder = parseInt(String(r["Reorder Level*"]), 10);
-    const reorderLevel = isNaN(parsedReorder) || parsedReorder < 0 ? 50 : parsedReorder;
+    const reorderLevel = 50;
 
     // Unit Price (Rs)
     const parsedPrice = parseFloat(String(r["Unit Price (Rs)"]));
@@ -251,8 +251,12 @@ export function loadAndNormalizeInventory(customPath?: string): CleanedDrugItem[
     }
 
     // Opening Stock & Expiry
+    // Uses Opening Stock column; falls back to parsedReorder if Opening Stock is not set
     const parsedStock = parseInt(String(r["Opening Stock"]), 10);
-    const openingStock = isNaN(parsedStock) || parsedStock < 0 ? 0 : parsedStock;
+    let openingStock = !isNaN(parsedStock) && parsedStock > 0 ? parsedStock : 0;
+    if (openingStock === 0 && !isNaN(parsedReorder) && parsedReorder > 0) {
+      openingStock = parsedReorder;
+    }
 
     let expiryDate: Date | null = null;
     const rawExpiry = String(r["Opening Stock Expiry"] || "").trim();
