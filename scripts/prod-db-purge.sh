@@ -45,6 +45,9 @@ INCLUDE_MEDICINES=false
 RESEED_DRUGS=false
 CUSTOM_DB_URL=""
 
+ROLLBACK=false
+ROLLBACK_FILE=""
+
 print_header() {
     echo -e "${CYAN}================================================================================"
     echo -e "       AMAZ HOSPITAL - PRODUCTION DATABASE RESET & PURGE UTILITY"
@@ -58,24 +61,29 @@ show_help() {
     echo -e "${BOLD}Usage:${NC}"
     echo -e "  bash scripts/prod-db-purge.sh [OPTIONS]"
     echo ""
-    echo -e "${BOLD}Options:${NC}"
+    echo -e "${BOLD}Purge Options:${NC}"
     echo -e "  ${YELLOW}--dry-run${NC}             Audit and display row counts without deleting anything"
     echo -e "  ${YELLOW}--force, -y${NC}           Execute immediately without interactive confirmation"
     echo -e "  ${YELLOW}--no-backup${NC}           Skip the automatic pre-purge SQL backup (default: creates backup)"
     echo -e "  ${YELLOW}--include-medicines${NC}   Also wipe the Medicine catalog table (in addition to stock batches)"
     echo -e "  ${YELLOW}--reseed-drugs${NC}        Automatically run 'npm run seed:drugs' after purge"
     echo -e "  ${YELLOW}--db-url=<url>${NC}        Specify custom PostgreSQL connection string"
-    echo -e "  ${YELLOW}--help, -h${NC}            Show this help message"
+    echo ""
+    echo -e "${BOLD}Rollback / Restore Options:${NC}"
+    echo -e "  ${YELLOW}--rollback${NC}            Interactive rollback: list and restore from an available backup"
+    echo -e "  ${YELLOW}--rollback=<file>${NC}     Restore database from a specific .sql backup file"
+    echo -e "  ${YELLOW}--restore[=<file>]${NC}    Alias for --rollback"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
-    echo -e "  # 1. Preview row counts (safe, dry-run):"
+    echo -e "  # 1. Preview row counts (safe audit):"
     echo -e "  bash scripts/prod-db-purge.sh --dry-run"
     echo ""
     echo -e "  # 2. Standard purge (auto-creates SQL backup before clearing data):"
     echo -e "  bash scripts/prod-db-purge.sh"
     echo ""
-    echo -e "  # 3. Purge data, wipe medicines and re-seed clean master drugs:"
-    echo -e "  bash scripts/prod-db-purge.sh --include-medicines --reseed-drugs"
+    echo -e "  # 3. Rollback / restore database from previous backup:"
+    echo -e "  bash scripts/prod-db-purge.sh --rollback"
+    echo "  bash scripts/prod-db-purge.sh --rollback=backups/amaz_db_backup_pre_purge_20261112_152000.sql"
     echo ""
     exit 0
 }
@@ -94,6 +102,20 @@ for arg in "$@"; do
             ;;
         --no-backup|--skip-backup)
             BACKUP=false
+            ;;
+        --rollback)
+            ROLLBACK=true
+            ;;
+        --rollback=*)
+            ROLLBACK=true
+            ROLLBACK_FILE="${arg#*=}"
+            ;;
+        --restore)
+            ROLLBACK=true
+            ;;
+        --restore=*)
+            ROLLBACK=true
+            ROLLBACK_FILE="${arg#*=}"
             ;;
         --include-medicines)
             INCLUDE_MEDICINES=true
@@ -159,6 +181,131 @@ fi
 
 echo -e "${GREEN}[OK] Database connection verified successfully.${NC}"
 echo ""
+
+# ------------------------------------------------------------------------------
+# Rollback / Restore Handler
+# ------------------------------------------------------------------------------
+if [ "$ROLLBACK" = true ]; then
+    echo -e "${YELLOW}${BOLD}================================================================================${NC}"
+    echo -e "${YELLOW}${BOLD}                        DATABASE ROLLBACK / RESTORE                             ${NC}"
+    echo -e "${YELLOW}${BOLD}================================================================================${NC}"
+    echo ""
+
+    BACKUP_DIR="$PROJECT_ROOT/backups"
+    TARGET_BACKUP="$ROLLBACK_FILE"
+
+    if [ -n "$TARGET_BACKUP" ]; then
+        if [ ! -f "$TARGET_BACKUP" ] && [ -f "$BACKUP_DIR/$TARGET_BACKUP" ]; then
+            TARGET_BACKUP="$BACKUP_DIR/$TARGET_BACKUP"
+        fi
+        if [ ! -f "$TARGET_BACKUP" ]; then
+            echo -e "${RED}[ERROR] Specified backup file not found: $ROLLBACK_FILE${NC}"
+            exit 1
+        fi
+    else
+        if [ ! -d "$BACKUP_DIR" ]; then
+            echo -e "${RED}[ERROR] No backups directory found at $BACKUP_DIR.${NC}"
+            exit 1
+        fi
+
+        mapfile -t AVAILABLE_BACKUPS < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "*.sql" -printf "%T@ %p\n" 2>/dev/null | sort -nr | awk '{print $2}')
+
+        if [ ${#AVAILABLE_BACKUPS[@]} -eq 0 ]; then
+            echo -e "${RED}[ERROR] No backup .sql files found in $BACKUP_DIR.${NC}"
+            exit 1
+        elif [ ${#AVAILABLE_BACKUPS[@]} -eq 1 ]; then
+            TARGET_BACKUP="${AVAILABLE_BACKUPS[0]}"
+            echo -e "${CYAN}[INFO] Found 1 available backup file: $(basename "$TARGET_BACKUP")${NC}"
+        else
+            echo -e "${BOLD}Available Backup Snapshots (Newest First):${NC}"
+            for i in "${!AVAILABLE_BACKUPS[@]}"; do
+                BFILE="${AVAILABLE_BACKUPS[$i]}"
+                BSIZE=$(du -h "$BFILE" | cut -f1)
+                BDATE=$(date -r "$BFILE" "+%Y-%m-%d %H:%M:%S")
+                echo -e "  [${BOLD}$((i+1))${NC}] $(basename "$BFILE") (${BSIZE}, ${BDATE})"
+            done
+            echo ""
+            read -r -p "Select snapshot number to restore [1-${#AVAILABLE_BACKUPS[@]}]: " CHOICE
+            if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt ${#AVAILABLE_BACKUPS[@]} ]; then
+                echo -e "${RED}[ERROR] Invalid selection. Aborting rollback.${NC}"
+                exit 1
+            fi
+            TARGET_BACKUP="${AVAILABLE_BACKUPS[$((CHOICE-1))]}"
+        fi
+    fi
+
+    echo ""
+    BACKUP_SIZE=$(du -h "$TARGET_BACKUP" | cut -f1)
+    echo -e "${BLUE}[TARGET SNAPSHOT]:${NC} $TARGET_BACKUP ($BACKUP_SIZE)"
+    echo -e "${BLUE}[TARGET DATABASE]:${NC} $MASKED_DB_URL"
+    echo ""
+
+    if [ "$FORCE" = false ]; then
+        echo -e "${RED}${BOLD}WARNING: Restoring this backup will replace current database tables and data!${NC}"
+        read -r -p "Type 'RESTORE' to execute rollback: " USER_CONFIRM
+        if [ "$USER_CONFIRM" != "RESTORE" ]; then
+            echo -e "${YELLOW}[CANCELLED] Rollback aborted. Database untouched.${NC}"
+            exit 0
+        fi
+        echo ""
+    fi
+
+    echo -e "${BLUE}[RESTORING] Applying SQL backup file to PostgreSQL...${NC}"
+    START_RESTORE=$(date +%s%3N)
+    if psql "$PSQL_URL" -q < "$TARGET_BACKUP"; then
+        END_RESTORE=$(date +%s%3N)
+        DURATION=$((END_RESTORE - START_RESTORE))
+        echo -e "${GREEN}[OK] Database restored successfully in ${DURATION}ms!${NC}"
+    else
+        echo -e "${RED}[ERROR] Failed to restore database from $TARGET_BACKUP!${NC}"
+        exit 1
+    fi
+    echo ""
+
+    # Flush Redis after restore
+    echo -e "${BOLD}--- FLUSHING REDIS CACHE ---${NC}"
+    REDIS_URL_FOUND=$(grep -E "^REDIS_URL=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" || echo "")
+    if command -v redis-cli &> /dev/null; then
+        if [ -n "$REDIS_URL_FOUND" ]; then
+            redis-cli -u "$REDIS_URL_FOUND" FLUSHDB > /dev/null 2>&1 || redis-cli FLUSHDB > /dev/null 2>&1 || true
+        else
+            redis-cli FLUSHDB > /dev/null 2>&1 || true
+        fi
+        echo -e "${GREEN}[OK] Redis cache flushed.${NC}"
+    fi
+    echo ""
+
+    # Post-restore verification
+    echo -e "${BOLD}--- POST-RESTORE VERIFICATION ---${NC}"
+    POST_SQL="
+    SELECT json_build_object(
+        'users', (SELECT count(*) FROM \"User\"),
+        'patients', (SELECT count(*) FROM \"Patient\"),
+        'appointments', (SELECT count(*) FROM \"Appointment\"),
+        'invoices', (SELECT count(*) FROM \"Invoice\"),
+        'payments', (SELECT count(*) FROM \"Payment\"),
+        'prescriptions', (SELECT count(*) FROM \"Prescription\"),
+        'stock_batches', (SELECT count(*) FROM \"StockBatch\")
+    )::text;
+    "
+    POST_JSON=$(psql "$PSQL_URL" -t -A -c "$POST_SQL")
+    python3 -c "
+import json
+d = json.loads('''$POST_JSON''')
+print(f'  Restored Users:        {d.get(\"users\")}')
+print(f'  Restored Patients:     {d.get(\"patients\")}')
+print(f'  Restored Appointments: {d.get(\"appointments\")}')
+print(f'  Restored Invoices:     {d.get(\"invoices\")}')
+print(f'  Restored Payments:     {d.get(\"payments\")}')
+print(f'  Restored Prescriptions:{d.get(\"prescriptions\")}')
+print(f'  Restored Stock Batches:{d.get(\"stock_batches\")}')
+"
+    echo ""
+    echo -e "${GREEN}${BOLD}================================================================================${NC}"
+    echo -e "${GREEN}${BOLD}ROLLBACK COMPLETE! DATABASE RESTORED TO BACKUP STATE.${NC}"
+    echo -e "${GREEN}${BOLD}================================================================================${NC}"
+    exit 0
+fi
 
 # ------------------------------------------------------------------------------
 # 2. Database Audit (Pre-Purge Counts)

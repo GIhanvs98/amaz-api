@@ -11,6 +11,7 @@
     "seed:drugs": "tsx src/scripts/seed-drugs.ts",
     "seed:inventory": "tsx src/scripts/seed-drugs.ts",
     "purge:prod": "bash scripts/prod-db-purge.sh",
+    "rollback:prod": "bash scripts/prod-db-purge.sh --rollback",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
