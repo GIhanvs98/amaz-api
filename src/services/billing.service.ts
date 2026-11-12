@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 import { websocketService } from "./websocket.service.js";
+import { recordDoctorShareOnPayment, reverseDoctorShareOnRefund } from "../controllers/fund-office.controller.js";
 
 export class BillingService {
   /**
@@ -373,7 +374,7 @@ export class BillingService {
     shiftId?: string,
     discount?: { type?: string; value?: number; amount?: number; reason?: string }
   ) {
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
       if (!invoice) throw new Error("Invoice not found");
       if (invoice.status === "PAID") throw new Error("Invoice is already paid");
@@ -440,6 +441,13 @@ export class BillingService {
         include: { lineItems: true, payments: true }
       });
     });
+
+    // Auto-record doctor share if invoice contains a consultation fee
+    recordDoctorShareOnPayment(invoiceId).catch((err) =>
+      console.error("Error auto-recording doctor share on billing payInvoice:", err)
+    );
+
+    return result;
   }
 
   async getCashierMetrics() {
@@ -521,7 +529,7 @@ export class BillingService {
    * Processes a refund for a specific payment, supporting partial or full refunds.
    */
   async processRefund(paymentId: string, amount: number, reason: string, shiftId?: string) {
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       // 1. Lock the payment row to serialize concurrent refunds
       await tx.$executeRaw`SELECT id FROM "Payment" WHERE id = ${paymentId} FOR UPDATE`;
 
@@ -566,8 +574,17 @@ export class BillingService {
         });
       }
 
-      return refund;
+      return { refund, invoiceId: payment.invoiceId };
     });
+
+    // If refund was processed, check and reverse doctor share if consultation was refunded
+    if (result?.invoiceId) {
+      reverseDoctorShareOnRefund(result.invoiceId).catch((err) =>
+        console.error("Error reversing doctor share on billing refund:", err)
+      );
+    }
+
+    return result.refund;
   }
 
   /**

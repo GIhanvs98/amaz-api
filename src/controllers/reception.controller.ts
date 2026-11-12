@@ -9,6 +9,7 @@ import { generateMRN } from "../utils/mrn.util.js";
 import { generateIdentityKey } from "../utils/identity.util.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
+import { recordDoctorShareOnPayment } from "./fund-office.controller.js";
 
 export const openShift = async (req: Request, res: Response) => {
   try {
@@ -1302,6 +1303,12 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         }
       }
     }, { timeout: 15000, maxWait: 5000 });
+
+    if (mergedInvoice?.id) {
+      recordDoctorShareOnPayment(mergedInvoice.id).catch((err) =>
+        console.error("Error auto-recording doctor share on reception payment:", err)
+      );
+    }
 
     if (websocketService.getIo()) {
       websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });
