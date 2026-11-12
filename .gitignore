@@ -16,7 +16,10 @@ init
 init.*
 
 
-# OS / IDE
-.DS_Store
 .idea/
 public/uploads/
+
+# Backups
+backups/
+*.sql
+*.dump
