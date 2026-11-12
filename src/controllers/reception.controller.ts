@@ -1362,8 +1362,8 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         ...t, 
         roomNumber, 
         patientAge,
-        doctorName: t.User?.fullName || t.doctorName,
-        patientName: t.Patient?.fullName || t.patientName
+        doctorName: t.User?.fullName || (t as any).doctorName || "General",
+        patientName: t.Patient?.fullName || (t as any).patientName || "Walk-in Patient"
       };
     })) as any;
 
