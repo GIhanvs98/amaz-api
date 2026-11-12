@@ -40,7 +40,7 @@ NC='\033[0m' # No Color
 # Default flags
 DRY_RUN=false
 FORCE=false
-BACKUP=false
+BACKUP=true
 INCLUDE_MEDICINES=false
 RESEED_DRUGS=false
 CUSTOM_DB_URL=""
@@ -61,21 +61,21 @@ show_help() {
     echo -e "${BOLD}Options:${NC}"
     echo -e "  ${YELLOW}--dry-run${NC}             Audit and display row counts without deleting anything"
     echo -e "  ${YELLOW}--force, -y${NC}           Execute immediately without interactive confirmation"
-    echo -e "  ${YELLOW}--backup${NC}              Create a pg_dump backup SQL file before purging"
+    echo -e "  ${YELLOW}--no-backup${NC}           Skip the automatic pre-purge SQL backup (default: creates backup)"
     echo -e "  ${YELLOW}--include-medicines${NC}   Also wipe the Medicine catalog table (in addition to stock batches)"
     echo -e "  ${YELLOW}--reseed-drugs${NC}        Automatically run 'npm run seed:drugs' after purge"
     echo -e "  ${YELLOW}--db-url=<url>${NC}        Specify custom PostgreSQL connection string"
     echo -e "  ${YELLOW}--help, -h${NC}            Show this help message"
     echo ""
     echo -e "${BOLD}Examples:${NC}"
-    echo -e "  # 1. Preview row counts (safe):"
+    echo -e "  # 1. Preview row counts (safe, dry-run):"
     echo -e "  bash scripts/prod-db-purge.sh --dry-run"
     echo ""
-    echo -e "  # 2. Backup and execute with confirmation:"
-    echo -e "  bash scripts/prod-db-purge.sh --backup"
+    echo -e "  # 2. Standard purge (auto-creates SQL backup before clearing data):"
+    echo -e "  bash scripts/prod-db-purge.sh"
     echo ""
-    echo -e "  # 3. Wipe clinical data, backup, wipe medicines and re-seed clean master drugs:"
-    echo -e "  bash scripts/prod-db-purge.sh --backup --include-medicines --reseed-drugs"
+    echo -e "  # 3. Purge data, wipe medicines and re-seed clean master drugs:"
+    echo -e "  bash scripts/prod-db-purge.sh --include-medicines --reseed-drugs"
     echo ""
     exit 0
 }
@@ -91,6 +91,9 @@ for arg in "$@"; do
             ;;
         --backup)
             BACKUP=true
+            ;;
+        --no-backup|--skip-backup)
+            BACKUP=false
             ;;
         --include-medicines)
             INCLUDE_MEDICINES=true
@@ -289,19 +292,31 @@ if [ "$FORCE" = false ]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 4. Optional Backup
+# 4. Mandatory / Automatic Pre-Purge SQL Backup
 # ------------------------------------------------------------------------------
 if [ "$BACKUP" = true ]; then
     BACKUP_DIR="$PROJECT_ROOT/backups"
     mkdir -p "$BACKUP_DIR"
-    BACKUP_FILE="$BACKUP_DIR/db-backup-pre-purge-$(date +%Y%m%d_%H%M%S).sql"
-    echo -e "${BLUE}[BACKUP] Taking pre-purge snapshot using pg_dump...${NC}"
+    BACKUP_FILE="$BACKUP_DIR/amaz_db_backup_pre_purge_$(date +%Y%m%d_%H%M%S).sql"
+    echo -e "${BLUE}[BACKUP] Generating complete PostgreSQL SQL snapshot before purge...${NC}"
     if command -v pg_dump &> /dev/null; then
-        pg_dump "$PSQL_URL" --format=plain > "$BACKUP_FILE"
-        echo -e "${GREEN}[OK] Backup successfully saved to:${NC} $BACKUP_FILE"
+        if pg_dump "$PSQL_URL" --clean --if-exists > "$BACKUP_FILE"; then
+            BACKUP_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
+            echo -e "${GREEN}[OK] Complete SQL backup saved (${BACKUP_SIZE}):${NC} $BACKUP_FILE"
+            echo -e "${CYAN}[INFO] To restore this backup if needed, run:${NC}"
+            echo -e "       psql \"\$DATABASE_URL\" < \"$BACKUP_FILE\""
+        else
+            echo -e "${RED}[ERROR] pg_dump failed! Aborting purge to prevent data loss.${NC}"
+            exit 1
+        fi
     else
-        echo -e "${YELLOW}[WARN] pg_dump not found in PATH. Skipping backup.${NC}"
+        echo -e "${RED}[ERROR] 'pg_dump' utility not found in PATH!${NC}"
+        echo -e "Install postgresql-client or pass ${YELLOW}--no-backup${NC} if you are sure."
+        exit 1
     fi
+    echo ""
+else
+    echo -e "${YELLOW}[WARN] Pre-purge backup skipped by user flag (--no-backup).${NC}"
     echo ""
 fi
 
