@@ -1,4 +1,4 @@
-# Amaz Hospital - Backend Server
+# Amaz Hospital - Backend Server--
 
 The backend of the Amaz Hospital Management System. This is a monolithic Node.js and Express application powered by Prisma and a NeonDB PostgreSQL database. It supports real-time features using WebSockets and handles everything from centralized billing logic to live prescription routing.
 
