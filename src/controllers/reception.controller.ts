@@ -346,7 +346,9 @@ export const generateToken = async (req: Request, res: Response) => {
       labTokenNumber, 
       serviceTokenNumber, 
       date, 
-      bookingType 
+      bookingType,
+      roomId: requestedRoomId,
+      roomNumber: requestedRoomNumber 
     } = req.body;
 
     // Multi-tenant patient resolution
@@ -410,7 +412,8 @@ export const generateToken = async (req: Request, res: Response) => {
 
     // --- Billing Logic ---
     let doctorDetails = null;
-    let doctorRoomNumber = null;
+    let doctorRoomNumber = requestedRoomNumber || null;
+    let doctorRoomId = requestedRoomId || null;
     if (doctorId) {
       doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true } });
       const targetDate = date ? new Date(date) : new Date();
@@ -445,7 +448,17 @@ export const generateToken = async (req: Request, res: Response) => {
         });
       }
 
-      doctorRoomNumber = todayAttendance?.room?.roomNumber || session?.room?.roomNumber || doctorDetails?.room?.roomNumber || null;
+      doctorRoomNumber = todayAttendance?.room?.roomNumber 
+        || session?.room?.roomNumber 
+        || doctorDetails?.room?.roomNumber 
+        || requestedRoomNumber 
+        || null;
+
+      doctorRoomId = todayAttendance?.roomId 
+        || session?.roomId 
+        || doctorDetails?.roomId 
+        || requestedRoomId 
+        || null;
     }
     
     let labTestsDetails: any[] = [];
@@ -700,9 +713,9 @@ export const generateToken = async (req: Request, res: Response) => {
       tokensToGenerate.push({
         dept: "CONSULTATION",
         docId: doctorId,
-        roomId: doctorDetails?.roomId || null,
+        roomId: doctorRoomId,
         prefix: "",
-        name: doctorName || "General Physician",
+        name: doctorName || doctorDetails?.fullName || "General Physician",
         roomNumber: doctorRoomNumber,
         requestedTokenNumber: doctorTokenNumber
       });
@@ -787,6 +800,10 @@ export const generateToken = async (req: Request, res: Response) => {
     const generatedTokens = [];
     for (const t of tokensToGenerate) {
       const token = await generateSpecificToken(t.dept, t.docId, t.roomId, t.prefix, t.requestedTokenNumber);
+      const patientAge = patient?.dateOfBirth 
+        ? (new Date().getFullYear() - new Date(patient.dateOfBirth).getFullYear()) 
+        : (patient?.ageFallback || (ageFallback ? parseInt(ageFallback.toString(), 10) : null));
+
       generatedTokens.push({
         id: token.id,
         refNo: token.bookingReference,
@@ -795,6 +812,7 @@ export const generateToken = async (req: Request, res: Response) => {
         status: token.status,
         doctorName: t.name,
         patientName: patient.fullName,
+        patientAge: patientAge,
         appointmentDate: token.appointmentDate,
         roomId: t.roomId,
         roomNumber: t.roomNumber,
@@ -1316,7 +1334,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
 
     let allTokens = await prisma.appointment.findMany({
       where: { id: { in: allApptIds } },
-      include: { Patient: true, User: { include: { room: true } } }
+      include: { Patient: true, User: { include: { room: true } }, room: true }
     });
 
     const targetDate = new Date();
@@ -1326,7 +1344,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     allTokens = await Promise.all(allTokens.map(async (t) => {
-      let roomNumber = t.User?.room?.roomNumber || null;
+      let roomNumber = t.room?.roomNumber || t.User?.room?.roomNumber || null;
       if (t.doctorId) {
         const attendance = await prisma.doctorAttendance.findFirst({
           where: { doctorId: t.doctorId, date: { gte: startOfDay, lte: endOfDay } },
@@ -1336,7 +1354,17 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
           roomNumber = attendance.room.roomNumber;
         }
       }
-      return { ...t, roomNumber };
+      const patientAge = t.Patient?.dateOfBirth 
+        ? (new Date().getFullYear() - new Date(t.Patient.dateOfBirth).getFullYear()) 
+        : (t.Patient?.ageFallback || null);
+
+      return { 
+        ...t, 
+        roomNumber, 
+        patientAge,
+        doctorName: t.User?.fullName || t.doctorName,
+        patientName: t.Patient?.fullName || t.patientName
+      };
     })) as any;
 
     res.json({
@@ -1416,6 +1444,7 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       take: 100,
       include: {
         User: { include: { room: true } },
+        room: true,
         Patient: true
       }
     });
@@ -1491,7 +1520,7 @@ export const getPOSHistory = async (req: Request, res: Response) => {
           tokenNumber: matchedAppt.tokenNumber,
           department: matchedAppt.department,
           doctorName: matchedAppt.User?.fullName,
-          roomNumber: matchedAppt.User?.room?.roomNumber,
+          roomNumber: matchedAppt.room?.roomNumber || matchedAppt.User?.room?.roomNumber || null,
           bookingReference: matchedAppt.bookingReference,
           appointmentStatus: matchedAppt.status,
           appointmentId: matchedAppt.id,
@@ -1507,8 +1536,11 @@ export const getPOSHistory = async (req: Request, res: Response) => {
             department: matchedAppt.department,
             status: matchedAppt.status,
             doctorName: matchedAppt.User?.fullName,
-            roomNumber: matchedAppt.User?.room?.roomNumber,
+            roomNumber: matchedAppt.room?.roomNumber || matchedAppt.User?.room?.roomNumber || null,
             patientName: patient?.fullName || "Walk-in Patient",
+            patientAge: patient?.dateOfBirth 
+              ? (new Date().getFullYear() - new Date(patient.dateOfBirth).getFullYear()) 
+              : (patient?.ageFallback || null),
             appointmentDate: matchedAppt.createdAt
           },
           invoice: {
