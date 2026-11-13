@@ -81,4 +81,7 @@ router.get('/outsource/daily', labController.getOutsourceDailyReports.bind(labCo
 // PUT /api/lab/outsource/:requestId/status
 router.put('/outsource/:requestId/status', labController.updateOutsourceStatus.bind(labController));
 
+// POST /api/lab/outsource/cashout
+router.post('/outsource/cashout', requireRole(['SUPERADMIN', 'ADMIN', 'RECEPTIONIST', 'CASHIER', 'FRONTDESK', 'LABTECH']), labController.recordOutsourceCashout.bind(labController));
+
 export default router;

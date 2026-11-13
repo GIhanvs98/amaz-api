@@ -233,6 +233,11 @@ model LabRequest {
   priority        String    @default("ROUTINE")
   reportUrl       String?
   visitId         String?
+  outsourcePaid      Boolean   @default(false)
+  outsourcePaidAt    DateTime?
+  outsourceReceiptNo String?
+  outsourcePaidTo    String?
+  outsourcePaidCost  Float?
 
   Patient Patient          @relation(fields: [patientId], references: [id])
   Visit   Appointment?     @relation(fields: [visitId], references: [id])

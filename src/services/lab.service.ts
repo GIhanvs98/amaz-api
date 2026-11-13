@@ -1082,7 +1082,12 @@ export class LabService {
             status: currentStatus,
             reportUrl: req.reportUrl,
             handedOverAt: req.handedOverAt,
-            handedOverBy: req.handedOverBy
+            handedOverBy: req.handedOverBy,
+            outsourcePaid: (req as any).outsourcePaid || false,
+            outsourcePaidAt: (req as any).outsourcePaidAt || null,
+            outsourceReceiptNo: (req as any).outsourceReceiptNo || null,
+            outsourcePaidTo: (req as any).outsourcePaidTo || null,
+            outsourcePaidCost: (req as any).outsourcePaidCost || null
           });
         }
       }
@@ -1141,6 +1146,84 @@ export class LabService {
           items: { include: { LabTest: true } }
         }
       });
+    });
+  }
+
+  /**
+   * Cashout to Outsource Lab Partner and update financial records / drawer expense
+   */
+  async recordOutsourceCashout(data: {
+    partnerCenter: string;
+    requestIds: string[];
+    itemIds?: string[];
+    amount: number;
+    paymentMethod?: string;
+    notes?: string;
+    userId: string;
+  }) {
+    return withRetry(async () => {
+      const numAmount = Number(data.amount);
+      if (!numAmount || isNaN(numAmount) || numAmount <= 0) {
+        throw new Error("A valid positive cashout amount is required.");
+      }
+
+      if (!data.partnerCenter || !data.partnerCenter.trim()) {
+        throw new Error("Outsource laboratory partner name is required.");
+      }
+
+      if (!data.requestIds || data.requestIds.length === 0) {
+        throw new Error("At least one outsource test request must be selected for cashout.");
+      }
+
+      // Check if user has an active open cash register shift
+      const shift = await prisma.cashRegisterShift.findFirst({
+        where: { openedBy: data.userId, status: "OPEN" },
+        orderBy: { openedAt: "desc" }
+      });
+
+      // Generate unique receipt number: EXP-OUT-YYYYMMDD-XXXX
+      const now = new Date();
+      const datePrefix = now.toISOString().slice(0, 10).replace(/-/g, "");
+      const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+      const receiptNumber = `EXP-OUT-${datePrefix}-${randomSuffix}`;
+
+      // 1. Create Expense record in finance
+      const expense = await prisma.expense.create({
+        data: {
+          category: "OUTSOURCE_LAB",
+          amount: numAmount,
+          description: `Outsource Lab Payout: ${data.partnerCenter} - ${data.requestIds.length} test(s) [${receiptNumber}]${data.notes ? ` (Note: ${data.notes})` : ""}`,
+          paymentMethod: data.paymentMethod || "CASH",
+          shiftId: shift?.id || null,
+          userId: data.userId,
+          receiptNumber,
+          date: now,
+          status: "COMPLETED"
+        }
+      });
+
+      // 2. Mark matching LabRequests as paid
+      await prisma.labRequest.updateMany({
+        where: { id: { in: data.requestIds } },
+        data: {
+          outsourcePaid: true,
+          outsourcePaidAt: now,
+          outsourceReceiptNo: receiptNumber,
+          outsourcePaidTo: data.partnerCenter,
+          outsourcePaidCost: numAmount
+        }
+      });
+
+      return {
+        success: true,
+        receiptNumber,
+        expenseId: expense.id,
+        partnerCenter: data.partnerCenter,
+        amount: numAmount,
+        shiftId: shift?.id || null,
+        paidAt: now,
+        count: data.requestIds.length
+      };
     });
   }
 }
