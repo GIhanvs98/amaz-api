@@ -8,7 +8,7 @@ import { SMSService } from "../services/sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
 import { generateIdentityKey } from "../utils/identity.util.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
-import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
+import { sortDoctorsWithOpdFirst, isOpdDoctor } from "../utils/doctor-utils.js";
 import { recordDoctorShareOnPayment } from "./fund-office.controller.js";
 
 export const openShift = async (req: Request, res: Response) => {
@@ -295,12 +295,15 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       medications: p.items.map(i => i.drugName)
     }));
 
-    const labResults = patient.LabRequests.map(l => ({
-      id: l.id,
-      date: l.requestedAt,
-      status: l.status,
-      tests: l.items.map(i => i.LabTest.name)
-    }));
+    const labResults = patient.LabRequests
+      .filter(l => l.status !== "CANCELLED")
+      .map(l => ({
+        id: l.id,
+        date: l.requestedAt,
+        status: l.status,
+        tests: l.items.map(i => i.LabTest.name),
+        testIds: l.items.map(i => i.labTestId)
+      }));
     
     // Map to the frontend expected format
     res.json({
@@ -350,6 +353,20 @@ export const generateToken = async (req: Request, res: Response) => {
       roomId: requestedRoomId,
       roomNumber: requestedRoomNumber 
     } = req.body;
+
+    // Validate mandatory POS patient fields: Name, Phone, Age
+    if (!requestedPatientId) {
+      if (!patientName || !String(patientName).trim()) {
+        return res.status(400).json({ success: false, error: "Patient Name is mandatory for token generation." });
+      }
+      if (!patientPhone || !String(patientPhone).trim()) {
+        return res.status(400).json({ success: false, error: "Patient Phone Number is mandatory for token generation." });
+      }
+      const parsedAge = ageFallback !== undefined && ageFallback !== null && ageFallback !== "" ? parseInt(String(ageFallback), 10) : NaN;
+      if (isNaN(parsedAge) || parsedAge <= 0 || parsedAge > 130) {
+        return res.status(400).json({ success: false, error: "Valid Patient Age (1-130) is mandatory for token generation." });
+      }
+    }
 
     // Multi-tenant patient resolution
     let patient: any = null;
@@ -415,7 +432,7 @@ export const generateToken = async (req: Request, res: Response) => {
     let doctorRoomNumber = requestedRoomNumber || null;
     let doctorRoomId = requestedRoomId || null;
     if (doctorId) {
-      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true } });
+      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true, Department: true } });
       const targetDate = date ? new Date(date) : new Date();
       const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
       const todayAttendance = await prisma.doctorAttendance.findFirst({
@@ -859,7 +876,35 @@ export const generateToken = async (req: Request, res: Response) => {
       }
 
       if (hasLab) {
+        // Deduplication check: check if patient already has active lab requests for today / visit
+        const alreadyBookedTestIds = new Set<string>();
+        if (patient.id) {
+          const colomboDateStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Colombo" });
+          const startOfDay = new Date(`${colomboDateStr}T00:00:00+05:30`);
+          const endOfDay = new Date(`${colomboDateStr}T23:59:59.999+05:30`);
+
+          const existingPatientLabs = await prisma.labRequest.findMany({
+            where: {
+              patientId: patient.id,
+              status: { not: "CANCELLED" },
+              requestedAt: { gte: startOfDay, lte: endOfDay }
+            },
+            include: { items: true }
+          });
+          existingPatientLabs.forEach(lr => {
+            lr.items.forEach(item => {
+              alreadyBookedTestIds.add(item.labTestId);
+            });
+          });
+        }
+
         labTestsDetails.forEach(test => {
+          // If already ordered & active for today's visit, skip duplicate billing charge
+          if (alreadyBookedTestIds.has(test.id)) {
+            console.log(`[Frontdesk] Deduplication: Lab test ${test.name} already booked for patient ${patient.id}. Skipping duplicate billing charge.`);
+            return;
+          }
+
           const finalPrice = customLabPrices && customLabPrices[test.id] !== undefined 
             ? Number(customLabPrices[test.id]) 
             : test.price;
@@ -929,22 +974,44 @@ export const generateToken = async (req: Request, res: Response) => {
     }
 
     if (patientPhone && !patientPhone.startsWith('WALKIN')) {
-      const masterBookingRef = generatedTokens[0]?.refNo || (typeof sharedRefNo !== 'undefined' ? sharedRefNo : 'N/A');
-      const formattedApptDate = (date ? new Date(date) : new Date()).toLocaleDateString('en-GB');
+      const isOpd = hasConsultation && doctorDetails && isOpdDoctor(doctorDetails);
 
-      const { templateName, variables } = SMSService.buildVisitTokenNotification(
-        patient.fullName,
-        formattedApptDate,
-        masterBookingRef,
-        generatedTokens
-      );
+      if (isOpd) {
+        // Clinical Requirement: OPD Doctor sends SMS bills ONLY. Suppress booking confirmation SMS.
+        // If an invoice was created and paid upfront, send the OPD Bill Receipt SMS.
+        if (invoiceData && invoiceData.status === 'PAID') {
+          const doctorNameStr = doctorDetails?.fullName || doctorName || 'OPD Doctor';
+          const primaryTokenNum = generatedTokens[0]?.tokenNumber || generatedTokens[0]?.refNo || '-';
+          const billRefStr = (invoiceData as any)?.invoiceNumber || generatedTokens[0]?.refNo || (invoiceData ? `INV-${invoiceData.id.slice(0, 8).toUpperCase()}` : 'N/A');
+          await NotificationService.sendOpdBillSMS({
+            patientId: patient.id,
+            phone: patientPhone,
+            patientName: patient.fullName,
+            doctorName: doctorNameStr,
+            tokenNumber: primaryTokenNum,
+            totalAmount: invoiceData.totalAmount,
+            billRef: billRefStr
+          }).catch(console.error);
+        }
+      } else {
+        // Specialist / Visiting Consultant / Non-OPD visit: Send standard booking confirmation SMS
+        const masterBookingRef = generatedTokens[0]?.refNo || (typeof sharedRefNo !== 'undefined' ? sharedRefNo : 'N/A');
+        const formattedApptDate = (date ? new Date(date) : new Date()).toLocaleDateString('en-GB');
 
-      await NotificationService.sendTemplatedSMS(
-        patient.id,
-        patientPhone,
-        templateName,
-        variables
-      ).catch(console.error);
+        const { templateName, variables } = SMSService.buildVisitTokenNotification(
+          patient.fullName,
+          formattedApptDate,
+          masterBookingRef,
+          generatedTokens
+        );
+
+        await NotificationService.sendTemplatedSMS(
+          patient.id,
+          patientPhone,
+          templateName,
+          variables
+        ).catch(console.error);
+      }
     }
 
     if (hasConsultation && typeof doctorId === 'string') {
@@ -1136,7 +1203,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
 
     const appointment = await prisma.appointment.findUnique({
       where: { id: appointmentId },
-      include: { Patient: true, User: true }
+      include: { Patient: true, User: { include: { Department: true } } }
     });
 
     if (!appointment) {
@@ -1330,6 +1397,24 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
 
     if (websocketService.getIo()) {
       websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });
+    }
+
+    // Clinical Rule: OPD doctor sends SMS bills ONLY upon payment/checkout.
+    if (appointment.Patient?.phone && !appointment.Patient.phone.startsWith('WALKIN')) {
+      const isOpd = isOpdDoctor(appointment.User);
+      if (isOpd && mergedInvoice && Number(mergedInvoice.totalAmount) > 0) {
+        const docName = appointment.User?.fullName || 'OPD Doctor';
+        const billRef = (mergedInvoice as any)?.invoiceNumber || appointment.bookingReference || `INV-${mergedInvoice.id.slice(0, 8).toUpperCase()}`;
+        NotificationService.sendOpdBillSMS({
+          patientId: appointment.patientId,
+          phone: appointment.Patient.phone,
+          patientName: appointment.Patient.fullName,
+          doctorName: docName,
+          tokenNumber: appointment.tokenNumber,
+          totalAmount: mergedInvoice.totalAmount,
+          billRef
+        }).catch(console.error);
+      }
     }
 
     let allTokens = await prisma.appointment.findMany({
@@ -1665,7 +1750,7 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
 
     if (!shift) return res.status(400).json({ error: "No open shift found." });
     
-    const [payments, refunds, doctorDisbursements, todayAgg] = await Promise.all([
+    const [payments, refunds, doctorDisbursements, shiftExpenses, todayAgg] = await Promise.all([
       prisma.payment.findMany({
         where: { shiftId: shift.id, status: "COMPLETED" },
         include: {
@@ -1705,6 +1790,15 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
             select: { id: true, fullName: true, specialty: true }
           }
         }
+      }),
+      prisma.expense.findMany({
+        where: { shiftId: shift.id, status: "COMPLETED" },
+        include: {
+          user: {
+            select: { id: true, fullName: true }
+          }
+        },
+        orderBy: { date: "asc" }
       }),
       (() => {
         const { startOfDay, endOfDay } = getTimezoneBoundaries();
@@ -1900,16 +1994,22 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
       disbursedAt: d.updatedAt
     }));
 
-    // 6. Cash Balance & Drawer Reconciliation
+    // 6. Expenses & Cashouts during Shift
+    const totalCashExpenses = shiftExpenses
+      .filter(e => !e.paymentMethod || e.paymentMethod === "CASH")
+      .reduce((sum, e) => sum + (e.amount || 0), 0);
+    const totalExpenses = shiftExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+
+    // 7. Cash Balance & Drawer Reconciliation
     const startingFloat = shift.openingFloat || 0;
     const totalSales = systemCashTotal + systemCardTotal + systemBankTotal + systemQrTotal;
     const netSales = totalSales - (cashRefundsTotal + nonCashRefundsTotal);
-    const expectedCash = startingFloat + systemCashTotal - cashRefundsTotal - totalDoctorCashDisbursed;
+    const expectedCash = startingFloat + systemCashTotal - cashRefundsTotal - totalDoctorCashDisbursed - totalCashExpenses;
     const actualCash = Number(declaredCash);
     const variance = actualCash - expectedCash;
     const varianceStatus = Math.abs(variance) < 0.01 ? "BALANCED" : variance > 0 ? "SURPLUS" : "SHORTAGE";
 
-    // 7. Update Shift in Database
+    // 8. Update Shift in Database
     const closedAt = new Date();
     await prisma.cashRegisterShift.update({
       where: { id: shift.id },
@@ -1968,11 +2068,23 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
       cashCollected: systemCashTotal,
       cashRefunds: cashRefundsTotal,
       doctorCashDisbursed: totalDoctorCashDisbursed,
+      cashExpenses: totalCashExpenses,
+      totalExpenses,
       expectedCash,
       actualCash,
       declaredCash: actualCash,
       variance,
       varianceStatus,
+      shiftExpensesList: shiftExpenses.map(e => ({
+        id: e.id,
+        receiptNumber: e.receiptNumber,
+        category: e.category,
+        amount: e.amount,
+        description: e.description,
+        paymentMethod: e.paymentMethod,
+        date: e.date,
+        recordedBy: e.user?.fullName || "Cashier"
+      })),
 
       // 4. Doctor Payments
       doctorPayments,
@@ -1983,6 +2095,120 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
     res.json({ success: true, data: summary });
   } catch (error: any) {
     console.error("closeShiftAndGetSummary error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Record a Frontdesk Cashout or Cash Drawer Expense
+ * POST /api/reception/cashout
+ */
+export const recordCashout = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+    const { category, amount, description, paymentMethod } = req.body;
+
+    const numAmount = Number(amount);
+    if (!numAmount || isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ success: false, error: "A valid positive amount is required." });
+    }
+
+    if (!description || typeof description !== "string" || !description.trim()) {
+      return res.status(400).json({ success: false, error: "A description or reason is required." });
+    }
+
+    // Require an active open shift for cashout / drawer expense
+    const shift = await prisma.cashRegisterShift.findFirst({
+      where: { openedBy: user.id, status: "OPEN" },
+      orderBy: { openedAt: "desc" }
+    });
+
+    if (!shift) {
+      return res.status(400).json({
+        success: false,
+        error: "You must have an OPEN cashier shift to record a cashout or expense."
+      });
+    }
+
+    // Generate unique receipt number e.g. EXP-20261113-ABCD
+    const now = new Date();
+    const datePrefix = now.toISOString().slice(0, 10).replace(/-/g, "");
+    const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const receiptNumber = `EXP-${datePrefix}-${randomSuffix}`;
+
+    const expense = await prisma.expense.create({
+      data: {
+        category: category || "Cashout / Drawer Drop",
+        amount: numAmount,
+        description: description.trim(),
+        paymentMethod: paymentMethod || "CASH",
+        receiptNumber,
+        status: "COMPLETED",
+        shiftId: shift.id,
+        userId: user.id,
+        date: now
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            Role: { select: { name: true } }
+          }
+        },
+        shift: {
+          select: {
+            id: true,
+            openedAt: true,
+            status: true
+          }
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: "Cashout recorded successfully.",
+      data: expense
+    });
+  } catch (error: any) {
+    console.error("recordCashout error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Get Expenses / Cashouts for the current active shift
+ * GET /api/reception/shift-expenses
+ */
+export const getShiftExpenses = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+    const shift = await prisma.cashRegisterShift.findFirst({
+      where: { openedBy: user.id, status: "OPEN" },
+      orderBy: { openedAt: "desc" }
+    });
+
+    if (!shift) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const expenses = await prisma.expense.findMany({
+      where: { shiftId: shift.id },
+      orderBy: { createdAt: "desc" },
+      include: {
+        user: { select: { fullName: true } }
+      }
+    });
+
+    res.json({ success: true, data: expenses });
+  } catch (error: any) {
+    console.error("getShiftExpenses error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };

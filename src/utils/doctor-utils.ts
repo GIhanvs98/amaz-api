@@ -7,7 +7,7 @@ export function isOpdDoctor(doc: {
   department?: { name?: string | null } | string | null; 
   fullName?: string | null;
   Department?: { name?: string | null } | null;
-}): boolean {
+} | null | undefined): boolean {
   if (!doc) return false;
   const spec = (doc.specialty || "").toUpperCase();
   const deptName = typeof doc.department === "string" 
@@ -15,7 +15,14 @@ export function isOpdDoctor(doc: {
     : (doc.department?.name || doc.Department?.name || "").toUpperCase();
   const name = (doc.fullName || "").toUpperCase();
 
-  return spec.includes("OPD") || deptName.includes("OPD") || name.includes("OPD");
+  return (
+    spec.includes("OPD") || 
+    deptName.includes("OPD") || 
+    name.includes("OPD") || 
+    spec === "GENERAL" || 
+    spec.includes("GENERAL") || 
+    deptName.includes("GENERAL")
+  );
 }
 
 export function sortDoctorsWithOpdFirst<T extends { 

@@ -491,3 +491,21 @@ export const getRoomSchedules = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+export const getNotificationLogs = async (req: Request, res: Response) => {
+  try {
+    const { patientId, phone, limit = 50 } = req.query;
+    const where: any = {};
+    if (patientId) where.patientId = patientId as string;
+    if (phone) where.phoneNumber = phone as string;
+
+    const logs = await prisma.notificationJob.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: Number(limit)
+    });
+    res.json({ success: true, data: logs });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
