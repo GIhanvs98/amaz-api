@@ -665,13 +665,8 @@ export async function recalculateDailySheetTotals(sheetId: string) {
 
   const totalPatients = allItems.length;
   const totalRevenue = allItems.reduce((sum, it) => sum + (it.consultationFee || 0), 0);
-  let totalHospitalCommission = 0;
-  if (sheet.commissionType === "FLAT") {
-    totalHospitalCommission = allItems.reduce((sum, it) => sum + (it.hospitalShare || 0), 0);
-  } else {
-    totalHospitalCommission = Math.round(totalRevenue * (sheet.commissionRate / 100) * 100) / 100;
-  }
-  const netDoctorPayment = Math.max(0, totalRevenue - totalHospitalCommission - (sheet.otherAdjustments || 0));
+  const totalHospitalCommission = Math.round(allItems.reduce((sum, it) => sum + (it.hospitalShare || 0), 0) * 100) / 100;
+  const netDoctorPayment = Math.max(0, Math.round(allItems.reduce((sum, it) => sum + (it.doctorShare || 0), 0) * 100) / 100 - (sheet.otherAdjustments || 0));
 
   const cashRevenue = allItems
     .filter(it => (it.collectionMethod || "CASH") === "CASH")
@@ -719,129 +714,245 @@ export async function recordDoctorShareOnPayment(invoiceId: string) {
 
     if (!invoice || invoice.status !== "PAID") return;
 
-    // Check if this invoice has a consultation line item
-    const consultItem = invoice.lineItems.find(
-      (li: any) =>
-        li.department === "CONSULTATION" ||
-        li.description?.toLowerCase().includes("consultation")
-    );
-    if (!consultItem || consultItem.total <= 0) return;
-
-    const consultationFee = consultItem.total;
-
-    // Locate linked appointment (via invoice.visitId or payment.appointmentId)
-    const appointmentId = invoice.visitId || invoice.payments.find(p => p.appointmentId)?.appointmentId;
-    if (!appointmentId) return;
-
-    const apt = await prisma.appointment.findFirst({
-      where: {
-        OR: [
-          { id: appointmentId },
-          { tokenNumber: appointmentId }
-        ]
-      },
-      include: {
-        User: true,
-        Patient: true
-      }
-    });
-
-    if (!apt || !apt.doctorId) return;
-
-    const doctor = await prisma.user.findUnique({
-      where: { id: apt.doctorId }
-    });
-    if (!doctor) return;
-
-    const commissionType = (doctor.commissionType || "PERCENTAGE").toUpperCase();
-    const commissionRate = doctor.commissionRate ?? (commissionType === "FLAT" ? 500 : 20);
-
-    let hospitalShare = 0;
-    if (commissionType === "FLAT") {
-      hospitalShare = Math.min(consultationFee, commissionRate);
-    } else {
-      hospitalShare = Math.round(consultationFee * (commissionRate / 100) * 100) / 100;
-    }
-    const doctorShare = Math.max(0, Math.round((consultationFee - hospitalShare) * 100) / 100);
-
     // Detect payment method (Cash vs Card/Bank)
     const latestPayment = invoice.payments[0];
     const pMethod = (latestPayment?.method || "CASH").toUpperCase();
     const isCardOrBank = pMethod.includes("CARD") || pMethod.includes("BANK") || pMethod.includes("TRANSFER") || pMethod.includes("VISA") || pMethod.includes("MASTER") || pMethod.includes("QR") || pMethod.includes("ONLINE");
     const collectionMethod = isCardOrBank ? "CARD" : "CASH";
 
-    // Sheet date: tied to appointment clinic date (or invoice paid date)
-    const aptDate = apt.appointmentDate || apt.createdAt || invoice.updatedAt || new Date();
+    // Locate linked appointment (via invoice.visitId or payment.appointmentId)
+    const appointmentId = invoice.visitId || invoice.payments.find(p => p.appointmentId)?.appointmentId;
+    let apt: any = null;
+    if (appointmentId) {
+      apt = await prisma.appointment.findFirst({
+        where: {
+          OR: [
+            { id: appointmentId },
+            { tokenNumber: appointmentId }
+          ]
+        },
+        include: {
+          User: true,
+          Patient: true
+        }
+      });
+    }
+
+    const aptDate = apt?.appointmentDate || apt?.createdAt || invoice.updatedAt || new Date();
     const sheetDate = new Date(aptDate.getFullYear(), aptDate.getMonth(), aptDate.getDate(), 0, 0, 0, 0);
 
-    // Find or create daily sheet
-    let sheet = await prisma.doctorDailySheet.findFirst({
-      where: {
-        doctorId: doctor.id,
-        date: sheetDate
-      }
-    });
+    // 1. Process Consultation Line Item (if present)
+    const consultItem = invoice.lineItems.find(
+      (li: any) =>
+        li.department === "CONSULTATION" ||
+        li.description?.toLowerCase().includes("consultation")
+    );
 
-    if (!sheet) {
-      sheet = await prisma.doctorDailySheet.create({
-        data: {
-          doctorId: doctor.id,
-          date: sheetDate,
-          sessionName: "All Day",
-          consultationFee,
-          commissionRate,
-          commissionType,
-          status: "DRAFT"
-        }
+    if (consultItem && consultItem.total > 0 && apt && apt.doctorId) {
+      const consultationFee = consultItem.total;
+      const doctor = await prisma.user.findUnique({
+        where: { id: apt.doctorId }
       });
+
+      if (doctor) {
+        const commissionType = (doctor.commissionType || "PERCENTAGE").toUpperCase();
+        const commissionRate = doctor.commissionRate ?? (commissionType === "FLAT" ? 500 : 20);
+
+        let hospitalShare = 0;
+        if (commissionType === "FLAT") {
+          hospitalShare = Math.min(consultationFee, commissionRate);
+        } else {
+          hospitalShare = Math.round(consultationFee * (commissionRate / 100) * 100) / 100;
+        }
+        const doctorShare = Math.max(0, Math.round((consultationFee - hospitalShare) * 100) / 100);
+
+        // Find or create daily sheet
+        let sheet = await prisma.doctorDailySheet.findFirst({
+          where: {
+            doctorId: doctor.id,
+            date: sheetDate
+          }
+        });
+
+        if (!sheet) {
+          sheet = await prisma.doctorDailySheet.create({
+            data: {
+              doctorId: doctor.id,
+              date: sheetDate,
+              sessionName: "All Day",
+              consultationFee,
+              commissionRate,
+              commissionType,
+              status: "DRAFT"
+            }
+          });
+        }
+
+        // Check if item already exists for this appointment in this sheet
+        const existingItem = await prisma.doctorDailyPatientItem.findFirst({
+          where: {
+            dailySheetId: sheet.id,
+            OR: [
+              { appointmentId: apt.id },
+              ...(apt.tokenNumber ? [{ tokenNumber: apt.tokenNumber }] : [])
+            ]
+          }
+        });
+
+        const remarks = `Paid via ${pMethod} (Inv: ${invoice.id.slice(0, 8)})`;
+
+        if (existingItem) {
+          await prisma.doctorDailyPatientItem.update({
+            where: { id: existingItem.id },
+            data: {
+              patientName: apt.Patient?.fullName || "Patient",
+              consultationFee,
+              hospitalShare,
+              doctorShare,
+              collectionMethod,
+              time: latestPayment?.createdAt || new Date(),
+              remarks
+            }
+          });
+        } else {
+          await prisma.doctorDailyPatientItem.create({
+            data: {
+              dailySheetId: sheet.id,
+              patientName: apt.Patient?.fullName || "Patient",
+              patientId: apt.patientId,
+              appointmentId: apt.id,
+              tokenNumber: apt.tokenNumber,
+              consultationFee,
+              hospitalShare,
+              doctorShare,
+              collectionMethod,
+              time: latestPayment?.createdAt || new Date(),
+              remarks
+            }
+          });
+        }
+
+        await recalculateDailySheetTotals(sheet.id);
+      }
     }
 
-    // Check if item already exists for this appointment in this sheet
-    const existingItem = await prisma.doctorDailyPatientItem.findFirst({
-      where: {
-        dailySheetId: sheet.id,
-        OR: [
-          { appointmentId: apt.id },
-          ...(apt.tokenNumber ? [{ tokenNumber: apt.tokenNumber }] : [])
-        ]
+    // 2. Process Extra Service Line Items (if present)
+    const extraServiceItems = invoice.lineItems.filter(
+      (li: any) =>
+        (li.department === "EXTRA_SERVICE" || li.department === "SERVICE") &&
+        (li.total || 0) > 0
+    );
+
+    for (const extraLi of extraServiceItems) {
+      let extraService: any = null;
+      let extraOrder: any = null;
+
+      if (extraLi.referenceId) {
+        extraOrder = await prisma.extraServiceOrder.findUnique({
+          where: { id: extraLi.referenceId },
+          include: { service: true, doctor: true }
+        }).catch(() => null);
+
+        if (!extraOrder) {
+          extraService = await prisma.extraService.findUnique({
+            where: { id: extraLi.referenceId },
+            include: { doctor: true }
+          }).catch(() => null);
+        } else {
+          extraService = extraOrder.service;
+        }
       }
-    });
 
-    const remarks = `Paid via ${pMethod} (Inv: ${invoice.id.slice(0, 8)})`;
+      if (!extraService) {
+        const cleanTitle = extraLi.description.replace(/^Extra Service:\s*/i, '').trim();
+        extraService = await prisma.extraService.findFirst({
+          where: { title: { equals: cleanTitle, mode: 'insensitive' } },
+          include: { doctor: true }
+        }).catch(() => null);
+      }
 
-    if (existingItem) {
-      await prisma.doctorDailyPatientItem.update({
-        where: { id: existingItem.id },
-        data: {
-          patientName: apt.Patient?.fullName || "Patient",
-          consultationFee,
-          hospitalShare,
-          doctorShare,
-          collectionMethod,
-          time: latestPayment?.createdAt || new Date(),
-          remarks
+      const assignedDocId = extraOrder?.doctorId || extraService?.doctorId || apt?.doctorId;
+      if (!assignedDocId) continue;
+
+      const commType = (extraOrder?.doctorCommissionType || extraService?.doctorCommissionType || "PERCENTAGE").toUpperCase();
+      const commRate = extraOrder?.doctorCommissionRate ?? extraService?.doctorCommissionRate ?? 0;
+      if (commRate <= 0) continue;
+
+      const fee = extraLi.total || 0;
+      let docShare = 0;
+      if (commType === "FLAT") {
+        docShare = Math.min(fee, commRate);
+      } else {
+        docShare = Math.round(fee * (commRate / 100) * 100) / 100;
+      }
+      const hospShare = Math.max(0, Math.round((fee - docShare) * 100) / 100);
+
+      let docSheet = await prisma.doctorDailySheet.findFirst({
+        where: {
+          doctorId: assignedDocId,
+          date: sheetDate
         }
       });
-    } else {
-      await prisma.doctorDailyPatientItem.create({
-        data: {
-          dailySheetId: sheet.id,
-          patientName: apt.Patient?.fullName || "Patient",
-          patientId: apt.patientId,
-          appointmentId: apt.id,
-          tokenNumber: apt.tokenNumber,
-          consultationFee,
-          hospitalShare,
-          doctorShare,
-          collectionMethod,
-          time: latestPayment?.createdAt || new Date(),
-          remarks
+
+      if (!docSheet) {
+        docSheet = await prisma.doctorDailySheet.create({
+          data: {
+            doctorId: assignedDocId,
+            date: sheetDate,
+            sessionName: "All Day",
+            consultationFee: fee,
+            commissionRate: commRate,
+            commissionType: commType,
+            status: "DRAFT"
+          }
+        });
+      }
+
+      const extraItemRemarks = `Extra Service: ${extraService?.title || extraLi.description} (${pMethod}, Inv: ${invoice.id.slice(0, 8)})`;
+
+      const existingExtraItem = await prisma.doctorDailyPatientItem.findFirst({
+        where: {
+          dailySheetId: docSheet.id,
+          remarks: { contains: `Inv: ${invoice.id.slice(0, 8)}` },
+          AND: [
+            { remarks: { contains: extraService?.title || extraLi.description } }
+          ]
         }
       });
+
+      if (existingExtraItem) {
+        await prisma.doctorDailyPatientItem.update({
+          where: { id: existingExtraItem.id },
+          data: {
+            patientName: apt?.Patient?.fullName || "Patient",
+            consultationFee: fee,
+            hospitalShare: hospShare,
+            doctorShare: docShare,
+            collectionMethod,
+            time: latestPayment?.createdAt || new Date(),
+            remarks: extraItemRemarks
+          }
+        });
+      } else {
+        await prisma.doctorDailyPatientItem.create({
+          data: {
+            dailySheetId: docSheet.id,
+            patientName: apt?.Patient?.fullName || "Patient",
+            patientId: apt?.patientId,
+            appointmentId: apt?.id,
+            tokenNumber: apt?.tokenNumber,
+            consultationFee: fee,
+            hospitalShare: hospShare,
+            doctorShare: docShare,
+            collectionMethod,
+            time: latestPayment?.createdAt || new Date(),
+            remarks: extraItemRemarks
+          }
+        });
+      }
+
+      await recalculateDailySheetTotals(docSheet.id);
     }
-
-    // Recalculate sheet totals
-    await recalculateDailySheetTotals(sheet.id);
   } catch (err) {
     console.error("Error in recordDoctorShareOnPayment:", err);
   }
