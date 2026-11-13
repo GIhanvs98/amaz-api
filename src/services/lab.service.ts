@@ -173,7 +173,50 @@ export class LabService {
         if (apt?.doctorId) effectiveDoctorId = apt.doctorId;
       }
 
-      // 1. Create the lab request with items
+      // Deduplication Check: Prevent duplicate lab orders & double billing for same patient in active visit / today
+      const colomboDateStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Colombo" });
+      const startOfDay = new Date(`${colomboDateStr}T00:00:00+05:30`);
+      const endOfDay = new Date(`${colomboDateStr}T23:59:59.999+05:30`);
+
+      const existingActiveRequests = await prisma.labRequest.findMany({
+        where: {
+          patientId: data.patientId,
+          status: { not: "CANCELLED" },
+          OR: [
+            ...(data.visitId ? [{ visitId: data.visitId }] : []),
+            { requestedAt: { gte: startOfDay, lte: endOfDay } }
+          ]
+        },
+        include: {
+          items: {
+            include: { LabTest: true }
+          }
+        }
+      });
+
+      const alreadyOrderedTestIds = new Set<string>();
+      existingActiveRequests.forEach(req => {
+        req.items.forEach(item => {
+          alreadyOrderedTestIds.add(item.labTestId);
+        });
+      });
+
+      const newTests = tests.filter(test => !alreadyOrderedTestIds.has(test.id));
+      const duplicateTests = tests.filter(test => alreadyOrderedTestIds.has(test.id));
+
+      if (newTests.length === 0) {
+        // All requested tests are already booked and active! Skip duplicate creation and charges.
+        console.log(`[LabService] Deduplication: All tests (${duplicateTests.map(t => t.name).join(", ")}) already booked for patient ${data.patientId}. Skipping duplicate charges.`);
+        const primaryExisting = existingActiveRequests[0];
+        return {
+          ...primaryExisting,
+          duplicatePrevented: true,
+          skippedDuplicates: duplicateTests.map(t => t.name),
+          message: `All selected lab tests (${duplicateTests.map(t => t.name).join(", ")}) were already booked for this visit. Existing booking retained without double charging.`
+        };
+      }
+
+      // 1. Create the lab request with items strictly for new (non-duplicate) tests
       const request = await prisma.labRequest.create({
         data: {
           patientId: data.patientId,
@@ -182,7 +225,7 @@ export class LabService {
           priority: data.priority || "ROUTINE",
           status: "PENDING",
           items: {
-            create: tests.map(test => {
+            create: newTests.map(test => {
               const basePrice = data.customPrices && data.customPrices[test.id] !== undefined 
                 ? Number(data.customPrices[test.id]) 
                 : test.price;
@@ -204,12 +247,12 @@ export class LabService {
         }
       });
 
-      // 2. Add all charges atomically using bulk billing
+      // 2. Add charges atomically using bulk billing strictly for new (non-duplicate) tests
       if (!data.skipBilling && (data.visitId || data.patientId)) {
         await billingService.addChargesBulk({
           visitId: data.visitId,
           patientId: data.patientId,
-          charges: tests.map(test => {
+          charges: newTests.map(test => {
             const basePrice = data.customPrices && data.customPrices[test.id] !== undefined
               ? Number(data.customPrices[test.id])
               : test.price;
@@ -232,7 +275,10 @@ export class LabService {
       }
 
       websocketService.broadcast("lab_request_created", request);
-      return request;
+      return {
+        ...request,
+        skippedDuplicates: duplicateTests.map(t => t.name)
+      };
     });
   }
 
@@ -715,6 +761,7 @@ export class LabService {
           const apptIds = allAppointments.map(a => a.id);
           allLabRequests = await prisma.labRequest.findMany({
             where: {
+              status: { not: "CANCELLED" },
               OR: [
                 { visitId: { in: apptIds } },
                 { patientId: directLabReq.patientId, requestedAt: { gte: today } }
@@ -824,9 +871,10 @@ export class LabService {
 
       const allApptIds = allAppointments.map(a => a.id);
 
-      // Fetch all LabRequests across all visit appointments or created for this patient today
+      // Fetch all non-cancelled LabRequests across all visit appointments or created for this patient today
       const allLabRequests = await prisma.labRequest.findMany({
         where: {
+          status: { not: "CANCELLED" },
           OR: [
             { visitId: { in: allApptIds } },
             {
