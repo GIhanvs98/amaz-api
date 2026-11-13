@@ -269,14 +269,24 @@ model LabResult {
 }
 
 model Expense {
-  id          String   @id @default(uuid())
-  category    String
-  amount      Float
-  description String
-  status      String   @default("COMPLETED")
-  date        DateTime @default(now())
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String             @id @default(uuid())
+  category       String
+  amount         Float
+  description    String
+  status         String             @default("COMPLETED")
+  date           DateTime           @default(now())
+  paymentMethod  String             @default("CASH")
+  shiftId        String?
+  userId         String?
+  receiptNumber  String?            @unique
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  shift          CashRegisterShift? @relation(fields: [shiftId], references: [id])
+  user           User?              @relation(fields: [userId], references: [id])
+
+  @@index([shiftId])
+  @@index([userId])
+  @@index([date])
 }
 
 model Prescription {
@@ -467,6 +477,8 @@ model User {
   DoctorDailySheets      DoctorDailySheet[]
   EmployeeProfile        EmployeeProfile?
   ExtraServiceOrders     ExtraServiceOrder[]
+  ExtraServices          ExtraService[]          @relation("ExtraServiceDoctor")
+  expenses               Expense[]
 }
 
 model DoctorSchedule {
@@ -568,40 +580,50 @@ model ActivityLog {
 }
 
 model ExtraService {
-  id          String   @id @default(uuid())
-  title       String
-  description String?
-  price       Float
-  barcode     String   @unique
-  roomId      String?
-  room        Room?    @relation(fields: [roomId], references: [id])
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                     String    @id @default(uuid())
+  title                  String
+  description            String?
+  price                  Float
+  barcode                String    @unique
+  roomId                 String?
+  room                   Room?     @relation(fields: [roomId], references: [id])
+  doctorId               String?
+  doctor                 User?     @relation("ExtraServiceDoctor", fields: [doctorId], references: [id])
+  doctorCommissionType   String?   @default("PERCENTAGE") // PERCENTAGE or FLAT
+  doctorCommissionRate   Float?    @default(0)
+  hospitalCommissionType String?   @default("PERCENTAGE") // PERCENTAGE or FLAT
+  hospitalCommissionRate Float?    @default(0)
+  isActive               Boolean   @default(true)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  orders      ExtraServiceOrder[]
+  orders                 ExtraServiceOrder[]
 }
 
 model ExtraServiceOrder {
-  id              String        @id @default(uuid())
-  orderNumber     String        @unique
-  serviceId       String
-  service         ExtraService  @relation(fields: [serviceId], references: [id])
-  patientId       String
-  patient         Patient       @relation(fields: [patientId], references: [id])
-  doctorId        String?
-  doctor          User?         @relation(fields: [doctorId], references: [id])
-  visitId         String?
-  customPrice     Float?        // Doctor OPD price override
-  finalPrice      Float         // Effective billed price
-  status          String        @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED, CANCELLED
-  notes           String?
-  certificateType String?       // GENERAL, SICK_LEAVE, FITNESS
-  certificateData Json?         // Form fields (leaveDays, diagnosis, fitRemarks, etc.)
-  reportFiles     Json?         // Array of uploaded file objects [{ id, fileName, fileUrl, fileType, fileSize, uploadedAt, uploadedBy }]
-  completedAt     DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id                     String        @id @default(uuid())
+  orderNumber            String        @unique
+  serviceId              String
+  service                ExtraService  @relation(fields: [serviceId], references: [id])
+  patientId              String
+  patient                Patient       @relation(fields: [patientId], references: [id])
+  doctorId               String?
+  doctor                 User?         @relation(fields: [doctorId], references: [id])
+  visitId                String?
+  customPrice            Float?        // Doctor OPD price override
+  finalPrice             Float         // Effective billed price
+  doctorCommissionType   String?       @default("PERCENTAGE")
+  doctorCommissionRate   Float?        @default(0)
+  doctorShare            Float?        @default(0)
+  hospitalShare          Float?        @default(0)
+  status                 String        @default("PENDING") // PENDING, IN_PROGRESS, COMPLETED, CANCELLED
+  notes                  String?
+  certificateType        String?       // GENERAL, SICK_LEAVE, FITNESS
+  certificateData        Json?         // Form fields (leaveDays, diagnosis, fitRemarks, etc.)
+  reportFiles            Json?         // Array of uploaded file objects [{ id, fileName, fileUrl, fileType, fileSize, uploadedAt, uploadedBy }]
+  completedAt            DateTime?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
 
   @@index([patientId])
   @@index([status])
@@ -640,6 +662,7 @@ model CashRegisterShift {
   user         User      @relation(fields: [openedBy], references: [id])
   payments     Payment[]
   refunds      Refund[]
+  expenses     Expense[]
 }
 
 model StaffAttendance {
