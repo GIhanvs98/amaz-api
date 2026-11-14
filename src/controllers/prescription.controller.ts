@@ -1088,7 +1088,14 @@ export const addItemToPrescription = async (req: Request, res: Response): Promis
         status: item.status || "ACTIVE"
       },
       include: {
-        medicine: true
+        medicine: {
+          include: {
+            stockBatches: {
+              where: { currentQuantity: { gt: 0 } },
+              orderBy: { createdAt: "asc" }
+            }
+          }
+        }
       }
     }));
 
@@ -1138,7 +1145,14 @@ export const updatePrescriptionItem = async (req: Request, res: Response): Promi
         status: item.status !== undefined ? item.status : undefined
       },
       include: {
-        medicine: true
+        medicine: {
+          include: {
+            stockBatches: {
+              where: { currentQuantity: { gt: 0 } },
+              orderBy: { createdAt: "asc" }
+            }
+          }
+        }
       }
     }));
 

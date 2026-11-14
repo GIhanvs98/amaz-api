@@ -73,6 +73,7 @@ async function main() {
     { email: 'reception@amaz.com', fullName: 'Alice Reception', role: 'Receptionist' },
     { email: 'labtech@amaz.com', fullName: 'Charlie Lab', role: 'LabTech' },
     { email: 'nurse@amaz.com', fullName: 'Nancy Nurse', role: 'Nurse' },
+    { email: 'pharmacist@amaz.com', fullName: 'Peter Pharmacist', role: 'Pharmacist' },
   ];
 
   await Promise.all(staffUsersData.map(u => {

@@ -290,6 +290,33 @@ export class LabController {
       res.status(400).json({ success: false, error: error.message });
     }
   }
+
+  async recordOutsourceCashout(req: Request, res: Response) {
+    try {
+      const user = (req as any).user;
+      if (!user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+      const { partnerCenter, requestIds, itemIds, amount, paymentMethod, notes } = req.body;
+      const result = await labService.recordOutsourceCashout({
+        partnerCenter,
+        requestIds: requestIds || [],
+        itemIds: itemIds || [],
+        amount: Number(amount),
+        paymentMethod: paymentMethod || "CASH",
+        notes: notes || undefined,
+        userId: user.id
+      });
+
+      await clearCache('*lab*');
+      await clearCache('*finance*');
+      await clearCache('*reception*');
+
+      res.json(result);
+    } catch (error: any) {
+      console.error("recordOutsourceCashout error:", error);
+      res.status(400).json({ success: false, error: error.message });
+    }
+  }
 }
 
 export const labController = new LabController();

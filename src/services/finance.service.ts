@@ -84,14 +84,15 @@ export class FinanceService {
   }
 
   /**
-   * Merges Payments (INCOME), PurchaseOrders (EXPENSE) and Generic Expenses (EXPENSE)
+   * Merges Payments (INCOME), PurchaseOrders (EXPENSE), Generic Expenses (EXPENSE) and Refunds (REFUND)
    * into a single unified chronological array.
    */
   private async getUnifiedRecentTransactions() {
-    const [payments, po, expenses] = await Promise.all([
+    const [payments, po, expenses, refunds] = await Promise.all([
       prisma.payment.findMany({ take: 5, orderBy: { createdAt: 'desc' }, include: { invoice: { include: { lineItems: true } } } }),
       prisma.purchaseOrder.findMany({ take: 5, orderBy: { createdAt: 'desc' }, include: { supplier: true } }),
-      prisma.expense.findMany({ take: 5, orderBy: { date: 'desc' } })
+      prisma.expense.findMany({ take: 5, orderBy: { date: 'desc' } }),
+      prisma.refund.findMany({ take: 5, orderBy: { createdAt: 'desc' }, include: { payment: { include: { invoice: { include: { lineItems: true } } } } } })
     ]);
 
     const unified: any[] = [];
@@ -99,7 +100,7 @@ export class FinanceService {
     payments.forEach(p => unified.push({
       id: (p.id.split('-')[0] || '').toUpperCase(),
       date: p.createdAt.toISOString(),
-      type: 'INCOME',
+      type: p.status === 'REFUNDED' ? 'REFUND' : 'INCOME',
       category: p.invoice?.lineItems[0]?.department || 'MIXED',
       amount: p.amount,
       status: p.status
@@ -121,6 +122,16 @@ export class FinanceService {
       category: e.category,
       amount: e.amount,
       status: e.status
+    }));
+
+    refunds.forEach(r => unified.push({
+      id: (r.id.split('-')[0] || '').toUpperCase(),
+      date: r.createdAt.toISOString(),
+      type: 'REFUND',
+      category: r.payment?.invoice?.lineItems[0]?.department || 'REFUND',
+      amount: r.amount,
+      status: 'REFUNDED',
+      description: r.reason || 'Patient Refund'
     }));
 
     // Sort descending by date and slice to 10
@@ -147,15 +158,20 @@ export class FinanceService {
 
     // Execute sequentially to ensure correct array pushing order
     for (const m of months) {
-      const [income, po, exp] = await Promise.all([
-        prisma.payment.aggregate({ where: { createdAt: { gte: m.start, lte: m.end }, status: 'COMPLETED' }, _sum: { amount: true } }),
+      const [income, po, exp, ref] = await Promise.all([
+        prisma.payment.aggregate({ where: { createdAt: { gte: m.start, lte: m.end }, status: { in: ['COMPLETED', 'REFUNDED'] } }, _sum: { amount: true } }),
         prisma.purchaseOrder.aggregate({ where: { orderDate: { gte: m.start, lte: m.end }, status: { in: ['DELIVERED', 'COMPLETED'] } }, _sum: { totalAmount: true } }),
-        prisma.expense.aggregate({ where: { date: { gte: m.start, lte: m.end }, status: 'COMPLETED' }, _sum: { amount: true } })
+        prisma.expense.aggregate({ where: { date: { gte: m.start, lte: m.end }, status: 'COMPLETED' }, _sum: { amount: true } }),
+        prisma.refund.aggregate({ where: { createdAt: { gte: m.start, lte: m.end }, status: 'COMPLETED' }, _sum: { amount: true } })
       ]);
       
+      const grossIncome = income._sum.amount || 0;
+      const totalRefunds = ref._sum.amount || 0;
+      const netIncome = Math.max(0, grossIncome - totalRefunds);
+
       chartData.push({
         month: m.label,
-        income: income._sum.amount || 0,
+        income: netIncome,
         expense: (po._sum.totalAmount || 0) + (exp._sum.amount || 0)
       });
     }
@@ -305,7 +321,24 @@ export class FinanceService {
         where,
         orderBy: { date: 'desc' },
         skip,
-        take: limit
+        take: limit,
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+              Role: { select: { name: true } }
+            }
+          },
+          shift: {
+            select: {
+              id: true,
+              openedAt: true,
+              status: true
+            }
+          }
+        }
       }),
       prisma.expense.count({ where })
     ]);
@@ -321,7 +354,7 @@ export class FinanceService {
   }
 
   async getTransactions(page: number = 1, limit: number = 50, filters: {
-    type?: string;         // INCOME | EXPENSE
+    type?: string;         // INCOME | EXPENSE | REFUND
     category?: string;
     status?: string;
     startDate?: string;
@@ -351,11 +384,33 @@ export class FinanceService {
     if (dateFilter) expWhere.date = dateFilter;
     if (filters.search) expWhere.description = { contains: filters.search, mode: 'insensitive' };
 
-    // Determine what to fetch based on type filter
-    const fetchPayments = !filters.type || filters.type === 'INCOME';
-    const fetchExpenses = !filters.type || filters.type === 'EXPENSE';
+    const refWhere: Prisma.RefundWhereInput = {};
+    if (filters.status && filters.status !== 'REFUNDED') {
+      refWhere.status = filters.status;
+    }
+    if (dateFilter) refWhere.createdAt = dateFilter;
+    if (filters.search) {
+      refWhere.OR = [
+        { id: { contains: filters.search, mode: 'insensitive' } },
+        { reason: { contains: filters.search, mode: 'insensitive' } }
+      ];
+    }
 
-    const [payments, po, expenses] = await Promise.all([
+    // Determine what to fetch based on type filter
+    const fetchPayments = !filters.type || filters.type === 'INCOME' || (filters.type === 'REFUND' && (!filters.status || filters.status === 'REFUNDED'));
+    const fetchExpenses = !filters.type || filters.type === 'EXPENSE';
+    const fetchRefunds = !filters.type || filters.type === 'REFUND';
+
+    // If type is strictly INCOME and no specific status given, default to non-refunded payments
+    if (filters.type === 'INCOME' && !filters.status) {
+      paymentWhere.status = 'COMPLETED';
+    }
+    // If type is strictly REFUND, only fetch REFUNDED payments if fetchPayments is true
+    if (filters.type === 'REFUND') {
+      paymentWhere.status = 'REFUNDED';
+    }
+
+    const [payments, po, expenses, refunds] = await Promise.all([
       fetchPayments ? prisma.payment.findMany({
         where: paymentWhere,
         orderBy: { createdAt: 'desc' },
@@ -371,6 +426,22 @@ export class FinanceService {
       fetchExpenses ? prisma.expense.findMany({
         where: expWhere,
         orderBy: { date: 'desc' },
+        include: {
+          user: { select: { fullName: true } },
+          shift: { select: { id: true } }
+        },
+        take: 500
+      }) : Promise.resolve([]),
+      fetchRefunds ? prisma.refund.findMany({
+        where: refWhere,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          payment: {
+            include: {
+              invoice: { include: { lineItems: true } }
+            }
+          }
+        },
         take: 500
       }) : Promise.resolve([])
     ]);
@@ -385,7 +456,7 @@ export class FinanceService {
         id: (p.id.split('-')[0] || '').toUpperCase(),
         fullId: p.id,
         date: p.createdAt.toISOString(),
-        type: 'INCOME',
+        type: p.status === 'REFUNDED' ? 'REFUND' : 'INCOME',
         category,
         amount: p.amount,
         status: p.status
@@ -415,7 +486,25 @@ export class FinanceService {
         category: e.category,
         amount: e.amount,
         status: e.status,
-        description: e.description
+        description: e.description,
+        cashier: e.user?.fullName || null,
+        shiftId: e.shiftId || null,
+        receiptNumber: e.receiptNumber || null
+      });
+    });
+
+    refunds.forEach((r: any) => {
+      const category = r.payment?.invoice?.lineItems[0]?.department || 'REFUND';
+      if (filters.category && filters.category !== category && filters.category !== 'REFUND') return;
+      unified.push({
+        id: (r.id.split('-')[0] || '').toUpperCase(),
+        fullId: r.id,
+        date: r.createdAt.toISOString(),
+        type: 'REFUND',
+        category,
+        amount: r.amount,
+        status: 'REFUNDED',
+        description: r.reason ? `Refund - ${r.reason}` : 'Patient Refund'
       });
     });
 
@@ -619,6 +708,10 @@ export class FinanceService {
           refunds: {
             where: { status: "COMPLETED" },
             select: { amount: true, payment: { select: { method: true } } }
+          },
+          expenses: {
+            where: { status: "COMPLETED" },
+            select: { amount: true, paymentMethod: true, category: true, description: true }
           }
         }
       }),
@@ -638,8 +731,17 @@ export class FinanceService {
           if (r.payment?.method === "CASH") cashRefunds += r.amount;
         });
 
+        let cashExpenses = 0;
+        let totalExpenses = 0;
+        (s.expenses || []).forEach(e => {
+          totalExpenses += e.amount || 0;
+          if (!e.paymentMethod || e.paymentMethod === "CASH") {
+            cashExpenses += e.amount || 0;
+          }
+        });
+
         const totalSales = cashTotal + cardTotal;
-        const calculatedExpectedCash = Math.round((s.openingFloat + cashTotal - cashRefunds) * 100) / 100;
+        const calculatedExpectedCash = Math.round((s.openingFloat + cashTotal - cashRefunds - cashExpenses) * 100) / 100;
         const expectedCash = s.status === "CLOSED" && s.expectedCash > 0 ? s.expectedCash : calculatedExpectedCash;
         const actualCash = s.actualCash;
         const variance = actualCash !== null ? Math.round((actualCash - expectedCash) * 100) / 100 : null;
@@ -654,6 +756,8 @@ export class FinanceService {
           cardTotal,
           totalSales,
           cashRefunds,
+          cashExpenses,
+          totalExpenses,
           expectedCash,
           actualCash,
           variance,
