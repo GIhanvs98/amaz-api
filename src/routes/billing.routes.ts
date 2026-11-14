@@ -26,9 +26,9 @@ router.post('/refunds', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER
 router.get('/refunds', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST'], 'READ', 'Refunds'), billingController.getRefunds.bind(billingController));
 
 // DELETE /api/billing/invoices/:invoiceId/items/:lineItemId
-router.delete('/invoices/:invoiceId/items/:lineItemId', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER'], 'DELETE', 'Billing'), billingController.removeCharge.bind(billingController));
+router.delete('/invoices/:invoiceId/items/:lineItemId', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST', 'PHARMACIST'], 'DELETE', 'Billing'), billingController.removeCharge.bind(billingController));
 
 // DELETE /api/billing/invoices/:invoiceId
-router.delete('/invoices/:invoiceId', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER'], 'DELETE', 'Billing'), billingController.deleteInvoice.bind(billingController));
+router.delete('/invoices/:invoiceId', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST', 'PHARMACIST'], 'DELETE', 'Billing'), billingController.deleteInvoice.bind(billingController));
 
 export default router;

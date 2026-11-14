@@ -1,6 +1,6 @@
 import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
-import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod, getActiveDoctors, checkoutAppointment, getPOSHistory, closeShiftAndGetSummary, openShift, getCurrentShift } from "../controllers/reception.controller.js";
+import { generateToken, getPatients, getMetrics, getPatientById, markDoctorArrived, markDoctorOut, updateShiftPeriod, getActiveDoctors, checkoutAppointment, getPOSHistory, closeShiftAndGetSummary, openShift, getCurrentShift, recordCashout, getShiftExpenses } from "../controllers/reception.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import { updatePatient } from "../controllers/patient.controller.js";
 import { getDoctorsTodayStatus } from "../controllers/doctor-attendance.controller.js";
@@ -38,6 +38,12 @@ router.get("/history", getPOSHistory);
 
 // POST /api/reception/shift-summary
 router.post("/shift-summary", closeShiftAndGetSummary);
+
+// POST /api/reception/cashout
+router.post("/cashout", recordCashout);
+
+// GET /api/reception/shift-expenses
+router.get("/shift-expenses", getShiftExpenses);
 
 // POST /api/reception/open-shift
 router.post("/open-shift", openShift);

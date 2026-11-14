@@ -177,15 +177,33 @@ export const extraServiceOrderController = {
         }
 
         if (!createdOrder) {
+          const finalDoctorId = targetDoctorId || service.doctorId || null;
+          const commType = service.doctorCommissionType || "PERCENTAGE";
+          const commRate = service.doctorCommissionRate || 0;
+          let docShare = 0;
+          let hospShare = effectivePrice;
+          if (finalDoctorId && commRate > 0) {
+            if (commType === "FLAT") {
+              docShare = Math.min(effectivePrice, commRate);
+            } else {
+              docShare = Math.round(effectivePrice * (commRate / 100) * 100) / 100;
+            }
+            hospShare = Math.max(0, Math.round((effectivePrice - docShare) * 100) / 100);
+          }
+
           createdOrder = await prisma.extraServiceOrder.create({
             data: {
               orderNumber,
               serviceId: service.id,
               patientId: targetPatientId,
-              doctorId: targetDoctorId,
+              doctorId: finalDoctorId,
               visitId: targetVisitId,
               customPrice: (item.customPrice !== undefined && item.customPrice !== null) ? Number(item.customPrice) : null,
               finalPrice: effectivePrice,
+              doctorCommissionType: commType,
+              doctorCommissionRate: commRate,
+              doctorShare: docShare,
+              hospitalShare: hospShare,
               status: resolvedStatus,
               completedAt: isCompleted ? new Date() : null,
               notes: item.notes || null,

@@ -173,7 +173,50 @@ export class LabService {
         if (apt?.doctorId) effectiveDoctorId = apt.doctorId;
       }
 
-      // 1. Create the lab request with items
+      // Deduplication Check: Prevent duplicate lab orders & double billing for same patient in active visit / today
+      const colomboDateStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Colombo" });
+      const startOfDay = new Date(`${colomboDateStr}T00:00:00+05:30`);
+      const endOfDay = new Date(`${colomboDateStr}T23:59:59.999+05:30`);
+
+      const existingActiveRequests = await prisma.labRequest.findMany({
+        where: {
+          patientId: data.patientId,
+          status: { not: "CANCELLED" },
+          OR: [
+            ...(data.visitId ? [{ visitId: data.visitId }] : []),
+            { requestedAt: { gte: startOfDay, lte: endOfDay } }
+          ]
+        },
+        include: {
+          items: {
+            include: { LabTest: true }
+          }
+        }
+      });
+
+      const alreadyOrderedTestIds = new Set<string>();
+      existingActiveRequests.forEach(req => {
+        req.items.forEach(item => {
+          alreadyOrderedTestIds.add(item.labTestId);
+        });
+      });
+
+      const newTests = tests.filter(test => !alreadyOrderedTestIds.has(test.id));
+      const duplicateTests = tests.filter(test => alreadyOrderedTestIds.has(test.id));
+
+      if (newTests.length === 0) {
+        // All requested tests are already booked and active! Skip duplicate creation and charges.
+        console.log(`[LabService] Deduplication: All tests (${duplicateTests.map(t => t.name).join(", ")}) already booked for patient ${data.patientId}. Skipping duplicate charges.`);
+        const primaryExisting = existingActiveRequests[0];
+        return {
+          ...primaryExisting,
+          duplicatePrevented: true,
+          skippedDuplicates: duplicateTests.map(t => t.name),
+          message: `All selected lab tests (${duplicateTests.map(t => t.name).join(", ")}) were already booked for this visit. Existing booking retained without double charging.`
+        };
+      }
+
+      // 1. Create the lab request with items strictly for new (non-duplicate) tests
       const request = await prisma.labRequest.create({
         data: {
           patientId: data.patientId,
@@ -182,7 +225,7 @@ export class LabService {
           priority: data.priority || "ROUTINE",
           status: "PENDING",
           items: {
-            create: tests.map(test => {
+            create: newTests.map(test => {
               const basePrice = data.customPrices && data.customPrices[test.id] !== undefined 
                 ? Number(data.customPrices[test.id]) 
                 : test.price;
@@ -204,12 +247,12 @@ export class LabService {
         }
       });
 
-      // 2. Add all charges atomically using bulk billing
+      // 2. Add charges atomically using bulk billing strictly for new (non-duplicate) tests
       if (!data.skipBilling && (data.visitId || data.patientId)) {
         await billingService.addChargesBulk({
           visitId: data.visitId,
           patientId: data.patientId,
-          charges: tests.map(test => {
+          charges: newTests.map(test => {
             const basePrice = data.customPrices && data.customPrices[test.id] !== undefined
               ? Number(data.customPrices[test.id])
               : test.price;
@@ -232,7 +275,10 @@ export class LabService {
       }
 
       websocketService.broadcast("lab_request_created", request);
-      return request;
+      return {
+        ...request,
+        skippedDuplicates: duplicateTests.map(t => t.name)
+      };
     });
   }
 
@@ -715,6 +761,7 @@ export class LabService {
           const apptIds = allAppointments.map(a => a.id);
           allLabRequests = await prisma.labRequest.findMany({
             where: {
+              status: { not: "CANCELLED" },
               OR: [
                 { visitId: { in: apptIds } },
                 { patientId: directLabReq.patientId, requestedAt: { gte: today } }
@@ -824,9 +871,10 @@ export class LabService {
 
       const allApptIds = allAppointments.map(a => a.id);
 
-      // Fetch all LabRequests across all visit appointments or created for this patient today
+      // Fetch all non-cancelled LabRequests across all visit appointments or created for this patient today
       const allLabRequests = await prisma.labRequest.findMany({
         where: {
+          status: { not: "CANCELLED" },
           OR: [
             { visitId: { in: allApptIds } },
             {
@@ -1034,7 +1082,12 @@ export class LabService {
             status: currentStatus,
             reportUrl: req.reportUrl,
             handedOverAt: req.handedOverAt,
-            handedOverBy: req.handedOverBy
+            handedOverBy: req.handedOverBy,
+            outsourcePaid: (req as any).outsourcePaid || false,
+            outsourcePaidAt: (req as any).outsourcePaidAt || null,
+            outsourceReceiptNo: (req as any).outsourceReceiptNo || null,
+            outsourcePaidTo: (req as any).outsourcePaidTo || null,
+            outsourcePaidCost: (req as any).outsourcePaidCost || null
           });
         }
       }
@@ -1093,6 +1146,84 @@ export class LabService {
           items: { include: { LabTest: true } }
         }
       });
+    });
+  }
+
+  /**
+   * Cashout to Outsource Lab Partner and update financial records / drawer expense
+   */
+  async recordOutsourceCashout(data: {
+    partnerCenter: string;
+    requestIds: string[];
+    itemIds?: string[];
+    amount: number;
+    paymentMethod?: string;
+    notes?: string;
+    userId: string;
+  }) {
+    return withRetry(async () => {
+      const numAmount = Number(data.amount);
+      if (!numAmount || isNaN(numAmount) || numAmount <= 0) {
+        throw new Error("A valid positive cashout amount is required.");
+      }
+
+      if (!data.partnerCenter || !data.partnerCenter.trim()) {
+        throw new Error("Outsource laboratory partner name is required.");
+      }
+
+      if (!data.requestIds || data.requestIds.length === 0) {
+        throw new Error("At least one outsource test request must be selected for cashout.");
+      }
+
+      // Check if user has an active open cash register shift
+      const shift = await prisma.cashRegisterShift.findFirst({
+        where: { openedBy: data.userId, status: "OPEN" },
+        orderBy: { openedAt: "desc" }
+      });
+
+      // Generate unique receipt number: EXP-OUT-YYYYMMDD-XXXX
+      const now = new Date();
+      const datePrefix = now.toISOString().slice(0, 10).replace(/-/g, "");
+      const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+      const receiptNumber = `EXP-OUT-${datePrefix}-${randomSuffix}`;
+
+      // 1. Create Expense record in finance
+      const expense = await prisma.expense.create({
+        data: {
+          category: "OUTSOURCE_LAB",
+          amount: numAmount,
+          description: `Outsource Lab Payout: ${data.partnerCenter} - ${data.requestIds.length} test(s) [${receiptNumber}]${data.notes ? ` (Note: ${data.notes})` : ""}`,
+          paymentMethod: data.paymentMethod || "CASH",
+          shiftId: shift?.id || null,
+          userId: data.userId,
+          receiptNumber,
+          date: now,
+          status: "COMPLETED"
+        }
+      });
+
+      // 2. Mark matching LabRequests as paid
+      await prisma.labRequest.updateMany({
+        where: { id: { in: data.requestIds } },
+        data: {
+          outsourcePaid: true,
+          outsourcePaidAt: now,
+          outsourceReceiptNo: receiptNumber,
+          outsourcePaidTo: data.partnerCenter,
+          outsourcePaidCost: numAmount
+        }
+      });
+
+      return {
+        success: true,
+        receiptNumber,
+        expenseId: expense.id,
+        partnerCenter: data.partnerCenter,
+        amount: numAmount,
+        shiftId: shift?.id || null,
+        paidAt: now,
+        count: data.requestIds.length
+      };
     });
   }
 }

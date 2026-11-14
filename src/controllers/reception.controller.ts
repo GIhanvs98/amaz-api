@@ -8,7 +8,7 @@ import { SMSService } from "../services/sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
 import { generateIdentityKey } from "../utils/identity.util.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
-import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
+import { sortDoctorsWithOpdFirst, isOpdDoctor } from "../utils/doctor-utils.js";
 import { recordDoctorShareOnPayment } from "./fund-office.controller.js";
 
 export const openShift = async (req: Request, res: Response) => {
@@ -295,12 +295,15 @@ export const getPatientById = async (req: Request, res: Response): Promise<void>
       medications: p.items.map(i => i.drugName)
     }));
 
-    const labResults = patient.LabRequests.map(l => ({
-      id: l.id,
-      date: l.requestedAt,
-      status: l.status,
-      tests: l.items.map(i => i.LabTest.name)
-    }));
+    const labResults = patient.LabRequests
+      .filter(l => l.status !== "CANCELLED")
+      .map(l => ({
+        id: l.id,
+        date: l.requestedAt,
+        status: l.status,
+        tests: l.items.map(i => i.LabTest.name),
+        testIds: l.items.map(i => i.labTestId)
+      }));
     
     // Map to the frontend expected format
     res.json({
@@ -346,8 +349,24 @@ export const generateToken = async (req: Request, res: Response) => {
       labTokenNumber, 
       serviceTokenNumber, 
       date, 
-      bookingType 
+      bookingType,
+      roomId: requestedRoomId,
+      roomNumber: requestedRoomNumber 
     } = req.body;
+
+    // Validate mandatory POS patient fields: Name, Phone, Age
+    if (!requestedPatientId) {
+      if (!patientName || !String(patientName).trim()) {
+        return res.status(400).json({ success: false, error: "Patient Name is mandatory for token generation." });
+      }
+      if (!patientPhone || !String(patientPhone).trim()) {
+        return res.status(400).json({ success: false, error: "Patient Phone Number is mandatory for token generation." });
+      }
+      const parsedAge = ageFallback !== undefined && ageFallback !== null && ageFallback !== "" ? parseInt(String(ageFallback), 10) : NaN;
+      if (isNaN(parsedAge) || parsedAge <= 0 || parsedAge > 130) {
+        return res.status(400).json({ success: false, error: "Valid Patient Age (1-130) is mandatory for token generation." });
+      }
+    }
 
     // Multi-tenant patient resolution
     let patient: any = null;
@@ -410,9 +429,10 @@ export const generateToken = async (req: Request, res: Response) => {
 
     // --- Billing Logic ---
     let doctorDetails = null;
-    let doctorRoomNumber = null;
+    let doctorRoomNumber = requestedRoomNumber || null;
+    let doctorRoomId = requestedRoomId || null;
     if (doctorId) {
-      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true } });
+      doctorDetails = await prisma.user.findUnique({ where: { id: doctorId }, include: { room: true, Department: true } });
       const targetDate = date ? new Date(date) : new Date();
       const { startOfDay, endOfDay, dayOfWeek } = getTimezoneBoundaries(targetDate);
       const todayAttendance = await prisma.doctorAttendance.findFirst({
@@ -445,7 +465,17 @@ export const generateToken = async (req: Request, res: Response) => {
         });
       }
 
-      doctorRoomNumber = todayAttendance?.room?.roomNumber || session?.room?.roomNumber || doctorDetails?.room?.roomNumber || null;
+      doctorRoomNumber = todayAttendance?.room?.roomNumber 
+        || session?.room?.roomNumber 
+        || doctorDetails?.room?.roomNumber 
+        || requestedRoomNumber 
+        || null;
+
+      doctorRoomId = todayAttendance?.roomId 
+        || session?.roomId 
+        || doctorDetails?.roomId 
+        || requestedRoomId 
+        || null;
     }
     
     let labTestsDetails: any[] = [];
@@ -700,9 +730,9 @@ export const generateToken = async (req: Request, res: Response) => {
       tokensToGenerate.push({
         dept: "CONSULTATION",
         docId: doctorId,
-        roomId: doctorDetails?.roomId || null,
+        roomId: doctorRoomId,
         prefix: "",
-        name: doctorName || "General Physician",
+        name: doctorName || doctorDetails?.fullName || "General Physician",
         roomNumber: doctorRoomNumber,
         requestedTokenNumber: doctorTokenNumber
       });
@@ -787,6 +817,10 @@ export const generateToken = async (req: Request, res: Response) => {
     const generatedTokens = [];
     for (const t of tokensToGenerate) {
       const token = await generateSpecificToken(t.dept, t.docId, t.roomId, t.prefix, t.requestedTokenNumber);
+      const patientAge = patient?.dateOfBirth 
+        ? (new Date().getFullYear() - new Date(patient.dateOfBirth).getFullYear()) 
+        : (patient?.ageFallback || (ageFallback ? parseInt(ageFallback.toString(), 10) : null));
+
       generatedTokens.push({
         id: token.id,
         refNo: token.bookingReference,
@@ -795,6 +829,7 @@ export const generateToken = async (req: Request, res: Response) => {
         status: token.status,
         doctorName: t.name,
         patientName: patient.fullName,
+        patientAge: patientAge,
         appointmentDate: token.appointmentDate,
         roomId: t.roomId,
         roomNumber: t.roomNumber,
@@ -841,7 +876,35 @@ export const generateToken = async (req: Request, res: Response) => {
       }
 
       if (hasLab) {
+        // Deduplication check: check if patient already has active lab requests for today / visit
+        const alreadyBookedTestIds = new Set<string>();
+        if (patient.id) {
+          const colomboDateStr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Colombo" });
+          const startOfDay = new Date(`${colomboDateStr}T00:00:00+05:30`);
+          const endOfDay = new Date(`${colomboDateStr}T23:59:59.999+05:30`);
+
+          const existingPatientLabs = await prisma.labRequest.findMany({
+            where: {
+              patientId: patient.id,
+              status: { not: "CANCELLED" },
+              requestedAt: { gte: startOfDay, lte: endOfDay }
+            },
+            include: { items: true }
+          });
+          existingPatientLabs.forEach(lr => {
+            lr.items.forEach(item => {
+              alreadyBookedTestIds.add(item.labTestId);
+            });
+          });
+        }
+
         labTestsDetails.forEach(test => {
+          // If already ordered & active for today's visit, skip duplicate billing charge
+          if (alreadyBookedTestIds.has(test.id)) {
+            console.log(`[Frontdesk] Deduplication: Lab test ${test.name} already booked for patient ${patient.id}. Skipping duplicate billing charge.`);
+            return;
+          }
+
           const finalPrice = customLabPrices && customLabPrices[test.id] !== undefined 
             ? Number(customLabPrices[test.id]) 
             : test.price;
@@ -911,22 +974,44 @@ export const generateToken = async (req: Request, res: Response) => {
     }
 
     if (patientPhone && !patientPhone.startsWith('WALKIN')) {
-      const masterBookingRef = generatedTokens[0]?.refNo || (typeof sharedRefNo !== 'undefined' ? sharedRefNo : 'N/A');
-      const formattedApptDate = (date ? new Date(date) : new Date()).toLocaleDateString('en-GB');
+      const isOpd = hasConsultation && doctorDetails && isOpdDoctor(doctorDetails);
 
-      const { templateName, variables } = SMSService.buildVisitTokenNotification(
-        patient.fullName,
-        formattedApptDate,
-        masterBookingRef,
-        generatedTokens
-      );
+      if (isOpd) {
+        // Clinical Requirement: OPD Doctor sends SMS bills ONLY. Suppress booking confirmation SMS.
+        // If an invoice was created and paid upfront, send the OPD Bill Receipt SMS.
+        if (invoiceData && invoiceData.status === 'PAID') {
+          const doctorNameStr = doctorDetails?.fullName || doctorName || 'OPD Doctor';
+          const primaryTokenNum = generatedTokens[0]?.tokenNumber || generatedTokens[0]?.refNo || '-';
+          const billRefStr = (invoiceData as any)?.invoiceNumber || generatedTokens[0]?.refNo || (invoiceData ? `INV-${invoiceData.id.slice(0, 8).toUpperCase()}` : 'N/A');
+          await NotificationService.sendOpdBillSMS({
+            patientId: patient.id,
+            phone: patientPhone,
+            patientName: patient.fullName,
+            doctorName: doctorNameStr,
+            tokenNumber: primaryTokenNum,
+            totalAmount: invoiceData.totalAmount,
+            billRef: billRefStr
+          }).catch(console.error);
+        }
+      } else {
+        // Specialist / Visiting Consultant / Non-OPD visit: Send standard booking confirmation SMS
+        const masterBookingRef = generatedTokens[0]?.refNo || (typeof sharedRefNo !== 'undefined' ? sharedRefNo : 'N/A');
+        const formattedApptDate = (date ? new Date(date) : new Date()).toLocaleDateString('en-GB');
 
-      await NotificationService.sendTemplatedSMS(
-        patient.id,
-        patientPhone,
-        templateName,
-        variables
-      ).catch(console.error);
+        const { templateName, variables } = SMSService.buildVisitTokenNotification(
+          patient.fullName,
+          formattedApptDate,
+          masterBookingRef,
+          generatedTokens
+        );
+
+        await NotificationService.sendTemplatedSMS(
+          patient.id,
+          patientPhone,
+          templateName,
+          variables
+        ).catch(console.error);
+      }
     }
 
     if (hasConsultation && typeof doctorId === 'string') {
@@ -1111,14 +1196,14 @@ export const updateShiftPeriod = async (req: Request, res: Response) => {
 
 export const checkoutAppointment = async (req: Request, res: Response) => {
   try {
-    const { appointmentId, fee, isUpfront, discount } = req.body;
+    const { appointmentId, fee, isUpfront, discount, addedLabTestIds, addedExtraServiceIds } = req.body;
     if (!appointmentId) {
       return res.status(400).json({ success: false, error: "appointmentId is required" });
     }
 
     const appointment = await prisma.appointment.findUnique({
       where: { id: appointmentId },
-      include: { Patient: true, User: true }
+      include: { Patient: true, User: { include: { Department: true } } }
     });
 
     if (!appointment) {
@@ -1178,6 +1263,149 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
     let mergedInvoice: any = null;
 
     await prisma.$transaction(async (tx) => {
+      const { startOfDay, endOfDay } = getTimezoneBoundaries();
+
+      // --- 1. Handle newly added Lab Tests on checkout ---
+      const addedLineItems: any[] = [];
+      if (addedLabTestIds && Array.isArray(addedLabTestIds) && addedLabTestIds.length > 0) {
+        const labTests = await tx.labTest.findMany({
+          where: { id: { in: addedLabTestIds } },
+          include: { room: true }
+        });
+
+        if (labTests.length > 0) {
+          const labRooms = await tx.room.findMany({
+            where: { department: "LAB", isActive: true },
+            orderBy: { roomNumber: "asc" }
+          });
+          const defaultLabRoom = labRooms[0] || null;
+
+          const labGroups = new Map<string, { roomId: string | null; roomNumber: string; testIds: string[] }>();
+          for (const t of labTests) {
+            const assignedRoom = t.room || labRooms.find((r: any) => r.id === t.roomId) || defaultLabRoom;
+            const rId = assignedRoom?.id || "default-lab";
+            const rNum = assignedRoom?.roomNumber || "LAB-A";
+            if (!labGroups.has(rId)) {
+              labGroups.set(rId, { roomId: assignedRoom?.id || null, roomNumber: rNum, testIds: [] });
+            }
+            labGroups.get(rId)!.testIds.push(t.id);
+            addedLineItems.push({
+              description: `Lab Test: ${t.name}`,
+              quantity: 1,
+              unitPrice: Number(t.price) || 0,
+              total: Number(t.price) || 0,
+              department: "LAB"
+            });
+          }
+
+          // Generate room-partitioned tokens and appointments
+          for (const [_, grp] of labGroups.entries()) {
+            const isLabA = grp.roomNumber.toUpperCase().includes("A");
+            const isLabB = grp.roomNumber.toUpperCase().includes("B");
+            const prefix = isLabA ? "LA" : isLabB ? "LB" : "LAB";
+
+            const countToday = await tx.appointment.count({
+              where: {
+                department: "LAB",
+                roomId: grp.roomId,
+                appointmentDate: { gte: startOfDay, lte: endOfDay }
+              }
+            });
+            const tokenDisplay = `${prefix}-${String(countToday + 1).padStart(2, '0')}`;
+
+            const labAppt = await tx.appointment.create({
+              data: {
+                tokenNumber: tokenDisplay,
+                patientId: appointment.patientId,
+                department: "LAB",
+                status: "WAITING_FOR_LAB_TEST",
+                roomId: grp.roomId,
+                bookingType: "WALK_IN",
+                appointmentDate: startOfDay,
+                bookingReference: appointment.bookingReference
+              }
+            });
+            allApptIds.push(labAppt.id);
+          }
+
+          // Create LabRequest
+          await tx.labRequest.create({
+            data: {
+              patientId: appointment.patientId,
+              visitId: appointment.id,
+              priority: "ROUTINE",
+              status: "PENDING",
+              items: {
+                create: labTests.map((t: any) => ({
+                  labTestId: t.id,
+                  price: Number(t.price) || 0
+                }))
+              }
+            }
+          });
+        }
+      }
+
+      // --- 2. Handle newly added Extra Services on checkout ---
+      if (addedExtraServiceIds && Array.isArray(addedExtraServiceIds) && addedExtraServiceIds.length > 0) {
+        const extraServices = await tx.extraService.findMany({
+          where: { id: { in: addedExtraServiceIds } },
+          include: { room: true }
+        });
+
+        if (extraServices.length > 0) {
+          const serviceRooms = await tx.room.findMany({
+            where: { department: "EXTRA_SERVICE", isActive: true },
+            orderBy: { roomNumber: "asc" }
+          });
+          const defaultServiceRoom = serviceRooms[0] || null;
+
+          const serviceGroups = new Map<string, { roomId: string | null; roomNumber: string; serviceIds: string[] }>();
+          for (const s of extraServices) {
+            const assignedRoom = s.room || serviceRooms.find((r: any) => r.id === s.roomId) || defaultServiceRoom;
+            const rId = assignedRoom?.id || "default-es";
+            const rNum = assignedRoom?.roomNumber || "EXT-01";
+            if (!serviceGroups.has(rId)) {
+              serviceGroups.set(rId, { roomId: assignedRoom?.id || null, roomNumber: rNum, serviceIds: [] });
+            }
+            serviceGroups.get(rId)!.serviceIds.push(s.id);
+            addedLineItems.push({
+              description: `Service: ${s.title}`,
+              quantity: 1,
+              unitPrice: Number(s.price) || 0,
+              total: Number(s.price) || 0,
+              department: "EXTRA_SERVICE"
+            });
+          }
+
+          for (const [_, grp] of serviceGroups.entries()) {
+            const prefix = grp.roomNumber.toUpperCase().includes("ECG") ? "ECG" : "EXT";
+            const countToday = await tx.appointment.count({
+              where: {
+                department: "EXTRA_SERVICE",
+                roomId: grp.roomId,
+                appointmentDate: { gte: startOfDay, lte: endOfDay }
+              }
+            });
+            const tokenDisplay = `${prefix}-${String(countToday + 1).padStart(2, '0')}`;
+
+            const serviceAppt = await tx.appointment.create({
+              data: {
+                tokenNumber: tokenDisplay,
+                patientId: appointment.patientId,
+                department: "EXTRA_SERVICE",
+                status: "WAITING",
+                roomId: grp.roomId,
+                bookingType: "WALK_IN",
+                appointmentDate: startOfDay,
+                bookingReference: appointment.bookingReference
+              }
+            });
+            allApptIds.push(serviceAppt.id);
+          }
+        }
+      }
+
       let invoices = await tx.invoice.findMany({
         where: {
           visitId: { in: allVisitIdentifiers },
@@ -1211,6 +1439,18 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       const willCreateConsultInvoice = !existingConsultPaid && !hasConsultInDraftInvoices && numericFee > 0;
 
       if (invoices.length > 0) {
+        // If there are added line items, append to first draft invoice
+        if (addedLineItems.length > 0 && invoices[0]) {
+          const targetInv = invoices[0];
+          await tx.invoiceLineItem.createMany({
+            data: addedLineItems.map(item => ({ ...item, invoiceId: targetInv.id }))
+          });
+          const addedSum = addedLineItems.reduce((acc, item) => acc + item.total, 0);
+          targetInv.subtotal += addedSum;
+          targetInv.totalAmount += addedSum;
+          targetInv.lineItems.push(...addedLineItems);
+        }
+
         // Pay all existing DRAFT invoices
         for (const inv of invoices) {
           const isConsultationInv = inv.lineItems?.some((li: any) => li.department === "CONSULTATION");
@@ -1263,17 +1503,20 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         const consultApptId = availableApptIdForPayment;
         availableApptIdForPayment = null;
 
-        // Create a new paid invoice for consultation (upfront or post-pay)
+        const addedSum = invoices.length === 0 ? addedLineItems.reduce((acc, item) => acc + item.total, 0) : 0;
+        const consultTotal = numericFee + addedSum;
+
+        // Create a new paid invoice for consultation (and added services if no draft invoices existed)
         const consultInvoice = await tx.invoice.create({
           data: {
             visitId: appointment.id,
             patientId: appointment.patientId,
-            subtotal: numericFee,
-            totalAmount: numericFee,
+            subtotal: consultTotal,
+            totalAmount: consultTotal,
             status: "PAID",
             payments: {
               create: [{
-                amount: numericFee,
+                amount: consultTotal,
                 method: req.body.paymentMethod || "CASH",
                 status: "COMPLETED", 
                 shiftId,
@@ -1288,7 +1531,8 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
                   unitPrice: numericFee,
                   total: numericFee,
                   department: "CONSULTATION"
-                }
+                },
+                ...(invoices.length === 0 ? addedLineItems : [])
               ]
             }
           },
@@ -1300,6 +1544,37 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         } else {
           mergedInvoice.totalAmount += consultInvoice.totalAmount;
           mergedInvoice.lineItems.push(...consultInvoice.lineItems);
+        }
+      } else if (invoices.length === 0 && addedLineItems.length > 0) {
+        // No consultation invoice and no draft invoices, but services were added on checkout
+        const addedSum = addedLineItems.reduce((acc, item) => acc + item.total, 0);
+        const addedInvoice = await tx.invoice.create({
+          data: {
+            visitId: appointment.id,
+            patientId: appointment.patientId,
+            subtotal: addedSum,
+            totalAmount: addedSum,
+            status: "PAID",
+            payments: {
+              create: [{
+                amount: addedSum,
+                method: req.body.paymentMethod || "CASH",
+                status: "COMPLETED", 
+                shiftId
+              }]
+            },
+            lineItems: {
+              create: addedLineItems
+            }
+          },
+          include: { lineItems: true }
+        });
+
+        if (!mergedInvoice) {
+          mergedInvoice = addedInvoice;
+        } else {
+          mergedInvoice.totalAmount += addedInvoice.totalAmount;
+          mergedInvoice.lineItems.push(...addedInvoice.lineItems);
         }
       }
     }, { timeout: 15000, maxWait: 5000 });
@@ -1314,9 +1589,27 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       websocketService.getIo().emit("TOKEN_STATUS_UPDATED", { tokenId: appointmentId });
     }
 
+    // Clinical Rule: OPD doctor sends SMS bills ONLY upon payment/checkout.
+    if (appointment.Patient?.phone && !appointment.Patient.phone.startsWith('WALKIN')) {
+      const isOpd = isOpdDoctor(appointment.User);
+      if (isOpd && mergedInvoice && Number(mergedInvoice.totalAmount) > 0) {
+        const docName = appointment.User?.fullName || 'OPD Doctor';
+        const billRef = (mergedInvoice as any)?.invoiceNumber || appointment.bookingReference || `INV-${mergedInvoice.id.slice(0, 8).toUpperCase()}`;
+        NotificationService.sendOpdBillSMS({
+          patientId: appointment.patientId,
+          phone: appointment.Patient.phone,
+          patientName: appointment.Patient.fullName,
+          doctorName: docName,
+          tokenNumber: appointment.tokenNumber,
+          totalAmount: mergedInvoice.totalAmount,
+          billRef
+        }).catch(console.error);
+      }
+    }
+
     let allTokens = await prisma.appointment.findMany({
       where: { id: { in: allApptIds } },
-      include: { Patient: true, User: { include: { room: true } } }
+      include: { Patient: true, User: { include: { room: true } }, room: true }
     });
 
     const targetDate = new Date();
@@ -1326,7 +1619,7 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     allTokens = await Promise.all(allTokens.map(async (t) => {
-      let roomNumber = t.User?.room?.roomNumber || null;
+      let roomNumber = t.room?.roomNumber || t.User?.room?.roomNumber || null;
       if (t.doctorId) {
         const attendance = await prisma.doctorAttendance.findFirst({
           where: { doctorId: t.doctorId, date: { gte: startOfDay, lte: endOfDay } },
@@ -1336,7 +1629,17 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
           roomNumber = attendance.room.roomNumber;
         }
       }
-      return { ...t, roomNumber };
+      const patientAge = t.Patient?.dateOfBirth 
+        ? (new Date().getFullYear() - new Date(t.Patient.dateOfBirth).getFullYear()) 
+        : (t.Patient?.ageFallback || null);
+
+      return { 
+        ...t, 
+        roomNumber, 
+        patientAge,
+        doctorName: t.User?.fullName || (t as any).doctorName || "General",
+        patientName: t.Patient?.fullName || (t as any).patientName || "Walk-in Patient"
+      };
     })) as any;
 
     res.json({
@@ -1416,6 +1719,7 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       take: 100,
       include: {
         User: { include: { room: true } },
+        room: true,
         Patient: true
       }
     });
@@ -1491,7 +1795,7 @@ export const getPOSHistory = async (req: Request, res: Response) => {
           tokenNumber: matchedAppt.tokenNumber,
           department: matchedAppt.department,
           doctorName: matchedAppt.User?.fullName,
-          roomNumber: matchedAppt.User?.room?.roomNumber,
+          roomNumber: matchedAppt.room?.roomNumber || matchedAppt.User?.room?.roomNumber || null,
           bookingReference: matchedAppt.bookingReference,
           appointmentStatus: matchedAppt.status,
           appointmentId: matchedAppt.id,
@@ -1507,8 +1811,11 @@ export const getPOSHistory = async (req: Request, res: Response) => {
             department: matchedAppt.department,
             status: matchedAppt.status,
             doctorName: matchedAppt.User?.fullName,
-            roomNumber: matchedAppt.User?.room?.roomNumber,
+            roomNumber: matchedAppt.room?.roomNumber || matchedAppt.User?.room?.roomNumber || null,
             patientName: patient?.fullName || "Walk-in Patient",
+            patientAge: patient?.dateOfBirth 
+              ? (new Date().getFullYear() - new Date(patient.dateOfBirth).getFullYear()) 
+              : (patient?.ageFallback || null),
             appointmentDate: matchedAppt.createdAt
           },
           invoice: {
@@ -1633,7 +1940,7 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
 
     if (!shift) return res.status(400).json({ error: "No open shift found." });
     
-    const [payments, refunds, doctorDisbursements, todayAgg] = await Promise.all([
+    const [payments, refunds, doctorDisbursements, shiftExpenses, todayAgg] = await Promise.all([
       prisma.payment.findMany({
         where: { shiftId: shift.id, status: "COMPLETED" },
         include: {
@@ -1673,6 +1980,15 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
             select: { id: true, fullName: true, specialty: true }
           }
         }
+      }),
+      prisma.expense.findMany({
+        where: { shiftId: shift.id, status: "COMPLETED" },
+        include: {
+          user: {
+            select: { id: true, fullName: true }
+          }
+        },
+        orderBy: { date: "asc" }
       }),
       (() => {
         const { startOfDay, endOfDay } = getTimezoneBoundaries();
@@ -1868,16 +2184,22 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
       disbursedAt: d.updatedAt
     }));
 
-    // 6. Cash Balance & Drawer Reconciliation
+    // 6. Expenses & Cashouts during Shift
+    const totalCashExpenses = shiftExpenses
+      .filter(e => !e.paymentMethod || e.paymentMethod === "CASH")
+      .reduce((sum, e) => sum + (e.amount || 0), 0);
+    const totalExpenses = shiftExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+
+    // 7. Cash Balance & Drawer Reconciliation
     const startingFloat = shift.openingFloat || 0;
     const totalSales = systemCashTotal + systemCardTotal + systemBankTotal + systemQrTotal;
     const netSales = totalSales - (cashRefundsTotal + nonCashRefundsTotal);
-    const expectedCash = startingFloat + systemCashTotal - cashRefundsTotal - totalDoctorCashDisbursed;
+    const expectedCash = startingFloat + systemCashTotal - cashRefundsTotal - totalDoctorCashDisbursed - totalCashExpenses;
     const actualCash = Number(declaredCash);
     const variance = actualCash - expectedCash;
     const varianceStatus = Math.abs(variance) < 0.01 ? "BALANCED" : variance > 0 ? "SURPLUS" : "SHORTAGE";
 
-    // 7. Update Shift in Database
+    // 8. Update Shift in Database
     const closedAt = new Date();
     await prisma.cashRegisterShift.update({
       where: { id: shift.id },
@@ -1936,11 +2258,23 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
       cashCollected: systemCashTotal,
       cashRefunds: cashRefundsTotal,
       doctorCashDisbursed: totalDoctorCashDisbursed,
+      cashExpenses: totalCashExpenses,
+      totalExpenses,
       expectedCash,
       actualCash,
       declaredCash: actualCash,
       variance,
       varianceStatus,
+      shiftExpensesList: shiftExpenses.map(e => ({
+        id: e.id,
+        receiptNumber: e.receiptNumber,
+        category: e.category,
+        amount: e.amount,
+        description: e.description,
+        paymentMethod: e.paymentMethod,
+        date: e.date,
+        recordedBy: e.user?.fullName || "Cashier"
+      })),
 
       // 4. Doctor Payments
       doctorPayments,
@@ -1951,6 +2285,120 @@ export const closeShiftAndGetSummary = async (req: Request, res: Response) => {
     res.json({ success: true, data: summary });
   } catch (error: any) {
     console.error("closeShiftAndGetSummary error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Record a Frontdesk Cashout or Cash Drawer Expense
+ * POST /api/reception/cashout
+ */
+export const recordCashout = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+    const { category, amount, description, paymentMethod } = req.body;
+
+    const numAmount = Number(amount);
+    if (!numAmount || isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ success: false, error: "A valid positive amount is required." });
+    }
+
+    if (!description || typeof description !== "string" || !description.trim()) {
+      return res.status(400).json({ success: false, error: "A description or reason is required." });
+    }
+
+    // Require an active open shift for cashout / drawer expense
+    const shift = await prisma.cashRegisterShift.findFirst({
+      where: { openedBy: user.id, status: "OPEN" },
+      orderBy: { openedAt: "desc" }
+    });
+
+    if (!shift) {
+      return res.status(400).json({
+        success: false,
+        error: "You must have an OPEN cashier shift to record a cashout or expense."
+      });
+    }
+
+    // Generate unique receipt number e.g. EXP-20261113-ABCD
+    const now = new Date();
+    const datePrefix = now.toISOString().slice(0, 10).replace(/-/g, "");
+    const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const receiptNumber = `EXP-${datePrefix}-${randomSuffix}`;
+
+    const expense = await prisma.expense.create({
+      data: {
+        category: category || "Cashout / Drawer Drop",
+        amount: numAmount,
+        description: description.trim(),
+        paymentMethod: paymentMethod || "CASH",
+        receiptNumber,
+        status: "COMPLETED",
+        shiftId: shift.id,
+        userId: user.id,
+        date: now
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            Role: { select: { name: true } }
+          }
+        },
+        shift: {
+          select: {
+            id: true,
+            openedAt: true,
+            status: true
+          }
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      message: "Cashout recorded successfully.",
+      data: expense
+    });
+  } catch (error: any) {
+    console.error("recordCashout error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Get Expenses / Cashouts for the current active shift
+ * GET /api/reception/shift-expenses
+ */
+export const getShiftExpenses = async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
+    const shift = await prisma.cashRegisterShift.findFirst({
+      where: { openedBy: user.id, status: "OPEN" },
+      orderBy: { openedAt: "desc" }
+    });
+
+    if (!shift) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const expenses = await prisma.expense.findMany({
+      where: { shiftId: shift.id },
+      orderBy: { createdAt: "desc" },
+      include: {
+        user: { select: { fullName: true } }
+      }
+    });
+
+    res.json({ success: true, data: expenses });
+  } catch (error: any) {
+    console.error("getShiftExpenses error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
