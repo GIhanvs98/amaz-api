@@ -5,7 +5,7 @@ import { websocketService } from "./websocket.service.js";
 import { SMSService } from "./sms.service.js";
 import { generateMRN } from "../utils/mrn.util.js";
 import { generateIdentityKey } from "../utils/identity.util.js";
-import { sortDoctorsWithOpdFirst } from "../utils/doctor-utils.js";
+import { sortDoctorsWithOpdFirst, isOpdDoctor } from "../utils/doctor-utils.js";
 
 export class BookingService {
   static async getDoctors() {
@@ -456,28 +456,35 @@ export class BookingService {
           bookingReference: sharedRefNo
         },
         include: {
-          User: true
+          User: {
+            include: { Department: true }
+          }
         }
       });
     }));
 
-        try {
-          await NotificationService.sendTemplatedSMS(
-            token.patientId,
-            phone,
-            'APPOINTMENT_BOOKED',
-            {
-              patientName: fullName,
-              doctorName: (token.User?.fullName || 'General Physician').replace(/^Dr\.?\s*/i, ""),
-              appointmentDate: startOfDay.toLocaleDateString('en-GB'),
-              tokenNumber: String(token.tokenNumber),
-              bookingRef: token.bookingReference || String(token.tokenNumber),
-              barcode: token.bookingReference || String(token.tokenNumber),
-              hospitalName: "AMAZ Hospital"
-            }
-          );
-        } catch (e) {
-          console.error("Failed to queue SMS job:", e);
+        // Clinical Rule: OPD doctors send SMS bills ONLY upon payment. Suppress booking SMS for OPD.
+        // Other specialist/consultant doctors send booking confirmation SMS.
+        const isOpd = isOpdDoctor(token.User);
+        if (!isOpd) {
+          try {
+            await NotificationService.sendTemplatedSMS(
+              token.patientId,
+              phone,
+              'APPOINTMENT_BOOKED',
+              {
+                patientName: fullName,
+                doctorName: (token.User?.fullName || 'General Physician').replace(/^Dr\.?\s*/i, ""),
+                appointmentDate: startOfDay.toLocaleDateString('en-GB'),
+                tokenNumber: String(token.tokenNumber),
+                bookingRef: token.bookingReference || String(token.tokenNumber),
+                barcode: token.bookingReference || String(token.tokenNumber),
+                hospitalName: "AMAZ Hospital"
+              }
+            );
+          } catch (e) {
+            console.error("Failed to queue SMS job:", e);
+          }
         }
 
         try {

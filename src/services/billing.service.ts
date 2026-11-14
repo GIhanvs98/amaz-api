@@ -2,6 +2,9 @@ import { prisma } from "../lib/prisma.js";
 import { getTimezoneBoundaries } from "../lib/dateUtils.js";
 import { websocketService } from "./websocket.service.js";
 import { recordDoctorShareOnPayment, reverseDoctorShareOnRefund } from "../controllers/fund-office.controller.js";
+import { synchronizeVisitCancellation } from "./cancellation-sync.service.js";
+import { NotificationService } from "./notification.service.js";
+import { isOpdDoctor } from "../utils/doctor-utils.js";
 
 export class BillingService {
   /**
@@ -447,6 +450,53 @@ export class BillingService {
       console.error("Error auto-recording doctor share on billing payInvoice:", err)
     );
 
+    // Auto-dispatch OPD Bill SMS if this invoice belongs to an OPD patient/consultation
+    try {
+      const inv = await prisma.invoice.findUnique({
+        where: { id: invoiceId }
+      });
+      if (inv && inv.patientId) {
+        const patient = await prisma.patient.findUnique({
+          where: { id: inv.patientId }
+        });
+        if (patient?.phone && !patient.phone.startsWith('WALKIN')) {
+          const visitRef = inv.visitId;
+          const linkedAppt = visitRef ? await prisma.appointment.findFirst({
+            where: {
+              OR: [
+                { id: visitRef },
+                { bookingReference: visitRef }
+              ]
+            },
+            include: { User: { include: { Department: true } } }
+          }) : null;
+
+          if (linkedAppt && isOpdDoctor(linkedAppt.User)) {
+            const billRefStr = (inv as any).invoiceNumber || linkedAppt.bookingReference || `INV-${inv.id.slice(0, 8).toUpperCase()}`;
+            const alreadySent = await prisma.notificationJob.findFirst({
+              where: {
+                patientId: inv.patientId,
+                message: { contains: billRefStr }
+              }
+            });
+            if (!alreadySent) {
+              NotificationService.sendOpdBillSMS({
+                patientId: inv.patientId,
+                phone: patient.phone,
+                patientName: patient.fullName,
+                doctorName: linkedAppt.User?.fullName || 'OPD Doctor',
+                tokenNumber: linkedAppt.tokenNumber,
+                totalAmount: inv.totalAmount,
+                billRef: billRefStr
+              }).catch(console.error);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Error triggering OPD bill SMS in payInvoice:", e);
+    }
+
     return result;
   }
 
@@ -562,8 +612,10 @@ export class BillingService {
         }
       });
 
+      const isFullyRefunded = amount === (payment.amount - refundedAmount);
+
       // If fully refunded, mark the parent records
-      if (amount === (payment.amount - refundedAmount)) {
+      if (isFullyRefunded) {
         await tx.payment.update({
           where: { id: paymentId },
           data: { status: "REFUNDED" }
@@ -574,13 +626,25 @@ export class BillingService {
         });
       }
 
-      return { refund, invoiceId: payment.invoiceId };
+      return {
+        refund,
+        invoiceId: payment.invoiceId,
+        visitId: payment.invoice?.visitId,
+        isFullyRefunded
+      };
     });
 
     // If refund was processed, check and reverse doctor share if consultation was refunded
     if (result?.invoiceId) {
       reverseDoctorShareOnRefund(result.invoiceId).catch((err) =>
         console.error("Error reversing doctor share on billing refund:", err)
+      );
+    }
+
+    // If fully refunded, synchronize cancellation to cancel pending labs and extra services
+    if (result?.isFullyRefunded && result?.visitId) {
+      synchronizeVisitCancellation(result.visitId, `Invoice Refund: ${reason}`).catch((err) =>
+        console.warn("Error synchronizing visit cancellation on billing refund:", err)
       );
     }
 

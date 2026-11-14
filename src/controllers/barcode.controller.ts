@@ -214,6 +214,7 @@ export const barcodeController = {
             }),
             prisma.labRequest.findMany({
               where: {
+                status: { not: "CANCELLED" },
                 OR: [
                   { visitId: { in: allVisitIdentifiers } },
                   {
@@ -236,6 +237,7 @@ export const barcodeController = {
             }),
             prisma.extraServiceOrder.findMany({
               where: {
+                status: { not: "CANCELLED" },
                 OR: [
                   { visitId: { in: allVisitIdentifiers } },
                   {

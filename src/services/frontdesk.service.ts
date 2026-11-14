@@ -6,6 +6,7 @@ import { generateMRN } from '../utils/mrn.util.js';
 import { generateIdentityKey } from '../utils/identity.util.js';
 import { getTimezoneBoundaries } from '../lib/dateUtils.js';
 import { sortDoctorsWithOpdFirst } from '../utils/doctor-utils.js';
+import { synchronizeVisitCancellation } from './cancellation-sync.service.js';
 
 export class FrontdeskService {
   // 1. Get Doctor Status & Sessions for a given date
@@ -370,6 +371,13 @@ export class FrontdeskService {
       },
       include: { Patient: true, User: true }
     });
+
+    // Synchronize cancellation with all linked LabRequests and ExtraServiceOrders
+    try {
+      await synchronizeVisitCancellation(appointmentId, effectiveReason, { userId });
+    } catch (syncErr) {
+      console.warn("Could not synchronize visit cancellation in cancelAppointment:", syncErr);
+    }
 
     // Check if there was an invoice / payment for this appointment / visit
     let wasPaid = false;
@@ -1085,6 +1093,13 @@ export class FrontdeskService {
       },
       include: { Patient: true, User: true }
     });
+
+    // Synchronize cancellation with all linked LabRequests and ExtraServiceOrders
+    try {
+      await synchronizeVisitCancellation(appointmentId, effectiveReason, { userId: options.userId });
+    } catch (syncErr) {
+      console.warn("Could not synchronize visit cancellation in cancelAndRefundAppointment:", syncErr);
+    }
 
     // 2. Resolve Payment / Invoice
     let paymentRecord = apt.Payment;

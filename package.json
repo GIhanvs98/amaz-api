@@ -5,9 +5,9 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "tsx src/server.ts",
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "start": "node init && tsx src/server.ts",
+    "dev": "node init && tsx watch src/server.ts",
+    "build": "node init && tsc",
     "seed:drugs": "tsx src/scripts/seed-drugs.ts",
     "seed:inventory": "tsx src/scripts/seed-drugs.ts",
     "purge:prod": "bash scripts/prod-db-purge.sh",

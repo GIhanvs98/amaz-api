@@ -20,6 +20,13 @@ export const extraServiceController = {
               roomNumber: true,
               department: true
             }
+          },
+          doctor: {
+            select: {
+              id: true,
+              fullName: true,
+              specialty: true
+            }
           }
         },
         orderBy: { createdAt: 'desc' }
@@ -32,7 +39,19 @@ export const extraServiceController = {
 
   createService: async (req: Request, res: Response) => {
     try {
-      const { title, description, price, barcode, roomId, roomNumber } = req.body;
+      const {
+        title,
+        description,
+        price,
+        barcode,
+        roomId,
+        roomNumber,
+        doctorId,
+        doctorCommissionType,
+        doctorCommissionRate,
+        hospitalCommissionType,
+        hospitalCommissionRate
+      } = req.body;
       
       if (!/^\d{10}$/.test(barcode)) {
         return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
@@ -50,7 +69,12 @@ export const extraServiceController = {
           description,
           price: parseFloat(price),
           barcode,
-          roomId: targetRoomId
+          roomId: targetRoomId,
+          doctorId: doctorId || null,
+          doctorCommissionType: doctorCommissionType || "PERCENTAGE",
+          doctorCommissionRate: doctorCommissionRate !== undefined ? parseFloat(doctorCommissionRate) : 0,
+          hospitalCommissionType: hospitalCommissionType || "PERCENTAGE",
+          hospitalCommissionRate: hospitalCommissionRate !== undefined ? parseFloat(hospitalCommissionRate) : 0
         },
         include: {
           room: {
@@ -58,6 +82,13 @@ export const extraServiceController = {
               id: true,
               roomNumber: true,
               department: true
+            }
+          },
+          doctor: {
+            select: {
+              id: true,
+              fullName: true,
+              specialty: true
             }
           }
         }
@@ -76,7 +107,20 @@ export const extraServiceController = {
   updateService: async (req: Request, res: Response) => {
     try {
       const id = req.params.id as string;
-      const { title, description, price, barcode, roomId, roomNumber, isActive } = req.body;
+      const {
+        title,
+        description,
+        price,
+        barcode,
+        roomId,
+        roomNumber,
+        isActive,
+        doctorId,
+        doctorCommissionType,
+        doctorCommissionRate,
+        hospitalCommissionType,
+        hospitalCommissionRate
+      } = req.body;
       
       if (barcode && !/^\d{10}$/.test(barcode)) {
         return res.status(400).json({ error: "Barcode must be exactly 10 digits." });
@@ -100,7 +144,12 @@ export const extraServiceController = {
           ...(price !== undefined ? { price: parseFloat(price) } : {}),
           ...(barcode !== undefined ? { barcode } : {}),
           ...(targetRoomId !== undefined ? { roomId: targetRoomId } : {}),
-          ...(isActive !== undefined ? { isActive: Boolean(isActive) } : {})
+          ...(isActive !== undefined ? { isActive: Boolean(isActive) } : {}),
+          ...(doctorId !== undefined ? { doctorId: doctorId || null } : {}),
+          ...(doctorCommissionType !== undefined ? { doctorCommissionType } : {}),
+          ...(doctorCommissionRate !== undefined ? { doctorCommissionRate: parseFloat(doctorCommissionRate) || 0 } : {}),
+          ...(hospitalCommissionType !== undefined ? { hospitalCommissionType } : {}),
+          ...(hospitalCommissionRate !== undefined ? { hospitalCommissionRate: parseFloat(hospitalCommissionRate) || 0 } : {})
         },
         include: {
           room: {
@@ -108,6 +157,13 @@ export const extraServiceController = {
               id: true,
               roomNumber: true,
               department: true
+            }
+          },
+          doctor: {
+            select: {
+              id: true,
+              fullName: true,
+              specialty: true
             }
           }
         }
@@ -145,7 +201,8 @@ export const extraServiceController = {
         prisma.appointment.findMany({
           where: {
             department: "EXTRA_SERVICE",
-            appointmentDate: { gte: startOfDay, lte: endOfDay }
+            appointmentDate: { gte: startOfDay, lte: endOfDay },
+            status: { not: "CANCELLED" }
           },
           include: {
             Patient: true,
@@ -155,7 +212,8 @@ export const extraServiceController = {
         }),
         prisma.extraServiceOrder.findMany({
           where: {
-            createdAt: { gte: startOfDay, lte: endOfDay }
+            createdAt: { gte: startOfDay, lte: endOfDay },
+            status: { not: "CANCELLED" }
           },
           include: {
             service: {
