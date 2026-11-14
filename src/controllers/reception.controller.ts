@@ -1196,7 +1196,7 @@ export const updateShiftPeriod = async (req: Request, res: Response) => {
 
 export const checkoutAppointment = async (req: Request, res: Response) => {
   try {
-    const { appointmentId, fee, isUpfront, discount } = req.body;
+    const { appointmentId, fee, isUpfront, discount, addedLabTestIds, addedExtraServiceIds } = req.body;
     if (!appointmentId) {
       return res.status(400).json({ success: false, error: "appointmentId is required" });
     }
@@ -1263,6 +1263,149 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
     let mergedInvoice: any = null;
 
     await prisma.$transaction(async (tx) => {
+      const { startOfDay, endOfDay } = getTimezoneBoundaries();
+
+      // --- 1. Handle newly added Lab Tests on checkout ---
+      const addedLineItems: any[] = [];
+      if (addedLabTestIds && Array.isArray(addedLabTestIds) && addedLabTestIds.length > 0) {
+        const labTests = await tx.labTest.findMany({
+          where: { id: { in: addedLabTestIds } },
+          include: { room: true }
+        });
+
+        if (labTests.length > 0) {
+          const labRooms = await tx.room.findMany({
+            where: { department: "LAB", isActive: true },
+            orderBy: { roomNumber: "asc" }
+          });
+          const defaultLabRoom = labRooms[0] || null;
+
+          const labGroups = new Map<string, { roomId: string | null; roomNumber: string; testIds: string[] }>();
+          for (const t of labTests) {
+            const assignedRoom = t.room || labRooms.find((r: any) => r.id === t.roomId) || defaultLabRoom;
+            const rId = assignedRoom?.id || "default-lab";
+            const rNum = assignedRoom?.roomNumber || "LAB-A";
+            if (!labGroups.has(rId)) {
+              labGroups.set(rId, { roomId: assignedRoom?.id || null, roomNumber: rNum, testIds: [] });
+            }
+            labGroups.get(rId)!.testIds.push(t.id);
+            addedLineItems.push({
+              description: `Lab Test: ${t.name}`,
+              quantity: 1,
+              unitPrice: Number(t.price) || 0,
+              total: Number(t.price) || 0,
+              department: "LAB"
+            });
+          }
+
+          // Generate room-partitioned tokens and appointments
+          for (const [_, grp] of labGroups.entries()) {
+            const isLabA = grp.roomNumber.toUpperCase().includes("A");
+            const isLabB = grp.roomNumber.toUpperCase().includes("B");
+            const prefix = isLabA ? "LA" : isLabB ? "LB" : "LAB";
+
+            const countToday = await tx.appointment.count({
+              where: {
+                department: "LAB",
+                roomId: grp.roomId,
+                appointmentDate: { gte: startOfDay, lte: endOfDay }
+              }
+            });
+            const tokenDisplay = `${prefix}-${String(countToday + 1).padStart(2, '0')}`;
+
+            const labAppt = await tx.appointment.create({
+              data: {
+                tokenNumber: tokenDisplay,
+                patientId: appointment.patientId,
+                department: "LAB",
+                status: "WAITING_FOR_LAB_TEST",
+                roomId: grp.roomId,
+                bookingType: "WALK_IN",
+                appointmentDate: startOfDay,
+                bookingReference: appointment.bookingReference
+              }
+            });
+            allApptIds.push(labAppt.id);
+          }
+
+          // Create LabRequest
+          await tx.labRequest.create({
+            data: {
+              patientId: appointment.patientId,
+              visitId: appointment.id,
+              priority: "ROUTINE",
+              status: "PENDING",
+              items: {
+                create: labTests.map((t: any) => ({
+                  labTestId: t.id,
+                  price: Number(t.price) || 0
+                }))
+              }
+            }
+          });
+        }
+      }
+
+      // --- 2. Handle newly added Extra Services on checkout ---
+      if (addedExtraServiceIds && Array.isArray(addedExtraServiceIds) && addedExtraServiceIds.length > 0) {
+        const extraServices = await tx.extraService.findMany({
+          where: { id: { in: addedExtraServiceIds } },
+          include: { room: true }
+        });
+
+        if (extraServices.length > 0) {
+          const serviceRooms = await tx.room.findMany({
+            where: { department: "EXTRA_SERVICE", isActive: true },
+            orderBy: { roomNumber: "asc" }
+          });
+          const defaultServiceRoom = serviceRooms[0] || null;
+
+          const serviceGroups = new Map<string, { roomId: string | null; roomNumber: string; serviceIds: string[] }>();
+          for (const s of extraServices) {
+            const assignedRoom = s.room || serviceRooms.find((r: any) => r.id === s.roomId) || defaultServiceRoom;
+            const rId = assignedRoom?.id || "default-es";
+            const rNum = assignedRoom?.roomNumber || "EXT-01";
+            if (!serviceGroups.has(rId)) {
+              serviceGroups.set(rId, { roomId: assignedRoom?.id || null, roomNumber: rNum, serviceIds: [] });
+            }
+            serviceGroups.get(rId)!.serviceIds.push(s.id);
+            addedLineItems.push({
+              description: `Service: ${s.title}`,
+              quantity: 1,
+              unitPrice: Number(s.price) || 0,
+              total: Number(s.price) || 0,
+              department: "EXTRA_SERVICE"
+            });
+          }
+
+          for (const [_, grp] of serviceGroups.entries()) {
+            const prefix = grp.roomNumber.toUpperCase().includes("ECG") ? "ECG" : "EXT";
+            const countToday = await tx.appointment.count({
+              where: {
+                department: "EXTRA_SERVICE",
+                roomId: grp.roomId,
+                appointmentDate: { gte: startOfDay, lte: endOfDay }
+              }
+            });
+            const tokenDisplay = `${prefix}-${String(countToday + 1).padStart(2, '0')}`;
+
+            const serviceAppt = await tx.appointment.create({
+              data: {
+                tokenNumber: tokenDisplay,
+                patientId: appointment.patientId,
+                department: "EXTRA_SERVICE",
+                status: "WAITING",
+                roomId: grp.roomId,
+                bookingType: "WALK_IN",
+                appointmentDate: startOfDay,
+                bookingReference: appointment.bookingReference
+              }
+            });
+            allApptIds.push(serviceAppt.id);
+          }
+        }
+      }
+
       let invoices = await tx.invoice.findMany({
         where: {
           visitId: { in: allVisitIdentifiers },
@@ -1296,6 +1439,18 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
       const willCreateConsultInvoice = !existingConsultPaid && !hasConsultInDraftInvoices && numericFee > 0;
 
       if (invoices.length > 0) {
+        // If there are added line items, append to first draft invoice
+        if (addedLineItems.length > 0 && invoices[0]) {
+          const targetInv = invoices[0];
+          await tx.invoiceLineItem.createMany({
+            data: addedLineItems.map(item => ({ ...item, invoiceId: targetInv.id }))
+          });
+          const addedSum = addedLineItems.reduce((acc, item) => acc + item.total, 0);
+          targetInv.subtotal += addedSum;
+          targetInv.totalAmount += addedSum;
+          targetInv.lineItems.push(...addedLineItems);
+        }
+
         // Pay all existing DRAFT invoices
         for (const inv of invoices) {
           const isConsultationInv = inv.lineItems?.some((li: any) => li.department === "CONSULTATION");
@@ -1348,17 +1503,20 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         const consultApptId = availableApptIdForPayment;
         availableApptIdForPayment = null;
 
-        // Create a new paid invoice for consultation (upfront or post-pay)
+        const addedSum = invoices.length === 0 ? addedLineItems.reduce((acc, item) => acc + item.total, 0) : 0;
+        const consultTotal = numericFee + addedSum;
+
+        // Create a new paid invoice for consultation (and added services if no draft invoices existed)
         const consultInvoice = await tx.invoice.create({
           data: {
             visitId: appointment.id,
             patientId: appointment.patientId,
-            subtotal: numericFee,
-            totalAmount: numericFee,
+            subtotal: consultTotal,
+            totalAmount: consultTotal,
             status: "PAID",
             payments: {
               create: [{
-                amount: numericFee,
+                amount: consultTotal,
                 method: req.body.paymentMethod || "CASH",
                 status: "COMPLETED", 
                 shiftId,
@@ -1373,7 +1531,8 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
                   unitPrice: numericFee,
                   total: numericFee,
                   department: "CONSULTATION"
-                }
+                },
+                ...(invoices.length === 0 ? addedLineItems : [])
               ]
             }
           },
@@ -1385,6 +1544,37 @@ export const checkoutAppointment = async (req: Request, res: Response) => {
         } else {
           mergedInvoice.totalAmount += consultInvoice.totalAmount;
           mergedInvoice.lineItems.push(...consultInvoice.lineItems);
+        }
+      } else if (invoices.length === 0 && addedLineItems.length > 0) {
+        // No consultation invoice and no draft invoices, but services were added on checkout
+        const addedSum = addedLineItems.reduce((acc, item) => acc + item.total, 0);
+        const addedInvoice = await tx.invoice.create({
+          data: {
+            visitId: appointment.id,
+            patientId: appointment.patientId,
+            subtotal: addedSum,
+            totalAmount: addedSum,
+            status: "PAID",
+            payments: {
+              create: [{
+                amount: addedSum,
+                method: req.body.paymentMethod || "CASH",
+                status: "COMPLETED", 
+                shiftId
+              }]
+            },
+            lineItems: {
+              create: addedLineItems
+            }
+          },
+          include: { lineItems: true }
+        });
+
+        if (!mergedInvoice) {
+          mergedInvoice = addedInvoice;
+        } else {
+          mergedInvoice.totalAmount += addedInvoice.totalAmount;
+          mergedInvoice.lineItems.push(...addedInvoice.lineItems);
         }
       }
     }, { timeout: 15000, maxWait: 5000 });
