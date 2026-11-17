@@ -130,6 +130,8 @@ model Invoice {
   updatedAt      DateTime          @updatedAt
   lineItems      InvoiceLineItem[]
   payments       Payment[]
+  Patient        Patient?          @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  Visit          Appointment?      @relation(fields: [visitId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([createdAt])
@@ -309,6 +311,7 @@ model Prescription {
   updatedAt     DateTime           @updatedAt
   items         PrescriptionItem[]
   Patient       Patient            @relation(fields: [patientId], references: [id])
+  Visit         Appointment        @relation(fields: [visitId], references: [id], onDelete: Cascade)
 
   @@index([patientId])
   @@index([status])
@@ -361,6 +364,7 @@ model Patient {
   Prescription Prescription[]
   Appointment  Appointment[]
   ExtraServiceOrders ExtraServiceOrder[]
+  Invoices     Invoice[]
 
   @@index([phone])
   @@index([fullName])
@@ -429,6 +433,8 @@ model Appointment {
   roomId           String?
   room             Room?                  @relation(fields: [roomId], references: [id])
   LabRequests      LabRequest[]
+  Invoices         Invoice[]
+  Prescriptions    Prescription[]
 
   @@unique([sessionId, appointmentDate, tokenNumber])
   @@index([appointmentDate, doctorId])

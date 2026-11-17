@@ -7,7 +7,6 @@ api.cjs
 
 # Env files
 *.env
-.env.production
 !.env.example
 
 # Backdoor protection
