@@ -349,21 +349,6 @@ export const createPrescription = async (req: Request, res: Response): Promise<v
               });
             }
           }
-
-          if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
-            for (const svc of req.body.extraServices) {
-              const targetPrice = Number(svc.customPrice !== undefined ? svc.customPrice : (svc.price ?? 0));
-              await billingService.addCharge({
-                visitId,
-                patientId,
-                department: "EXTRA_SERVICE",
-                referenceId: svc.id,
-                description: `Extra Service: ${svc.title}`,
-                quantity: 1,
-                unitPrice: targetPrice
-              }, tx);
-            }
-          }
           // NOTE: Appointment status is NOT changed here. The doctor must explicitly
           // click "Complete Consultation" to remove the patient from the queue.
         }
@@ -984,21 +969,6 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
                 });
               }
             }
-
-            if (req.body.extraServices && Array.isArray(req.body.extraServices)) {
-              for (const svc of req.body.extraServices) {
-                const targetPrice = Number(svc.customPrice !== undefined ? svc.customPrice : (svc.price ?? 0));
-                await billingService.addCharge({
-                  visitId: rx.visitId,
-                  patientId: rx.patientId,
-                  department: "EXTRA_SERVICE",
-                  referenceId: svc.id,
-                  description: `Extra Service: ${svc.title}`,
-                  quantity: 1,
-                  unitPrice: targetPrice
-                }, tx);
-              }
-            }
           }
         }
 
@@ -1013,13 +983,27 @@ export const updatePrescription = async (req: Request, res: Response): Promise<v
           tests: lr.items.map((item: any) => item.LabTest?.name || "Unknown Test")
         }));
 
+        const visitExs = rx.visitId ? await tx.extraServiceOrder.findMany({
+          where: { visitId: rx.visitId, status: { not: "CANCELLED" } },
+          include: { service: true }
+        }) : [];
+        const extraServicesData = visitExs.map((ex: any) => ({
+          id: ex.serviceId,
+          orderId: ex.id,
+          orderNumber: ex.orderNumber,
+          title: ex.service?.title || "Extra Service",
+          price: ex.finalPrice ?? ex.service?.price ?? 0,
+          status: ex.status
+        }));
+
         return {
           ...updated,
           patientName: updated.patientName || updated.Patient?.fullName || "Walk-in",
           doctorName: updated.doctorName || doctor?.fullName || "Doctor",
           bookingReference: bookingRef,
           doctor,
-          labRequests: labRequestsData
+          labRequests: labRequestsData,
+          extraServices: extraServicesData
         };
       }, { maxWait: 20000, timeout: 20000 });
     });

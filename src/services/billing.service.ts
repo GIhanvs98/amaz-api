@@ -116,9 +116,13 @@ export class BillingService {
       }
     }
 
-    // 2.6 Guard against duplicate charges by referenceId OR duplicate medical certificates on this invoice
+    // 2.6 Guard against duplicate charges by referenceId, duplicate certificates, or matching extra service description
     const isCertItem = data.department === "EXTRA_SERVICE" && Boolean(data.description?.toLowerCase().includes("certificate"));
-    if (data.referenceId || isCertItem) {
+    const cleanSvcDesc = (data.department === "EXTRA_SERVICE" || data.department === "SERVICE") && data.description
+      ? data.description.replace(/^extra service:\s*/i, '').trim()
+      : null;
+
+    if (data.referenceId || isCertItem || cleanSvcDesc) {
       const existingItem = await db.invoiceLineItem.findFirst({
         where: {
           invoiceId: invoice.id,
@@ -128,6 +132,15 @@ export class BillingService {
               {
                 department: "EXTRA_SERVICE",
                 description: { contains: "Certificate", mode: "insensitive" }
+              }
+            ] : []),
+            ...(cleanSvcDesc ? [
+              {
+                department: { in: ["EXTRA_SERVICE", "SERVICE"] },
+                OR: [
+                  { description: { equals: cleanSvcDesc, mode: "insensitive" } },
+                  { description: { equals: `Extra Service: ${cleanSvcDesc}`, mode: "insensitive" } }
+                ]
               }
             ] : [])
           ]

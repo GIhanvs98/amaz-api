@@ -265,10 +265,14 @@ export const barcodeController = {
           let mergedInvoice: any = null;
           let rawLineItems = invoices.flatMap(inv => inv.lineItems || []);
 
-          // Deduplicate already existing invoice line items by referenceId or id
+          // Deduplicate already existing invoice line items by referenceId or id, normalizing extra services
           const uniqueLineItemMap = new Map<string, any>();
           for (const li of rawLineItems) {
-            const key = li.referenceId ? `ref-${li.referenceId}` : (li.id ? `id-${li.id}` : `desc-${li.description}`);
+            let key = li.referenceId ? `ref-${li.referenceId}` : (li.id ? `id-${li.id}` : `desc-${li.description}`);
+            if (li.department === "EXTRA_SERVICE" || li.department === "SERVICE") {
+              const cleanDesc = (li.description || '').toLowerCase().replace(/^extra service:\s*/i, '').trim();
+              if (cleanDesc) key = `exs-${cleanDesc}`;
+            }
             if (!uniqueLineItemMap.has(key)) {
               uniqueLineItemMap.set(key, li);
             }
@@ -278,11 +282,14 @@ export const barcodeController = {
           // Ensure any extraServiceOrders not yet in invoice line items are represented
           for (const order of extraServiceOrders) {
             const isCert = Boolean(order.certificateType || order.service?.title?.toLowerCase().includes("certificate"));
+            const cleanTitle = (order.service?.title || '').toLowerCase().trim();
             const alreadyInInvoice = allLineItems.some(
               (li: any) =>
                 li.referenceId === order.id ||
                 (order.orderNumber && li.description?.includes(order.orderNumber)) ||
-                (isCert && li.department === "EXTRA_SERVICE" && li.description?.toLowerCase().includes("certificate"))
+                (isCert && li.department === "EXTRA_SERVICE" && li.description?.toLowerCase().includes("certificate")) ||
+                ((li.department === "EXTRA_SERVICE" || li.department === "SERVICE") &&
+                 li.description?.toLowerCase().replace(/^extra service:\s*/i, '').trim() === cleanTitle)
             );
             if (!alreadyInInvoice && order.status !== "CANCELLED") {
               const orderPrice = order.finalPrice ?? order.service?.price ?? 0;
