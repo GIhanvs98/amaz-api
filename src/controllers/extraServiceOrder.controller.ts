@@ -176,6 +176,75 @@ export const extraServiceOrderController = {
           }
         }
 
+        // Idempotency: For standard clinical extra services, check if active order already exists for this visit & service
+        if (!createdOrder && !isCertificate && (targetVisitId || targetPatientId)) {
+          const { startOfDay, endOfDay } = getTimezoneBoundaries();
+          const existingOrder = await prisma.extraServiceOrder.findFirst({
+            where: {
+              serviceId: service.id,
+              status: { not: "CANCELLED" },
+              OR: [
+                ...(targetVisitId ? [{ visitId: targetVisitId }] : []),
+                ...(item.id ? [{ id: item.id }] : []),
+                ...(targetPatientId ? [{ patientId: targetPatientId, createdAt: { gte: startOfDay, lte: endOfDay } }] : [])
+              ]
+            },
+            include: {
+              service: true,
+              patient: {
+                select: {
+                  id: true,
+                  patientId: true,
+                  fullName: true,
+                  phone: true,
+                  gender: true,
+                  ageFallback: true
+                }
+              },
+              doctor: {
+                select: {
+                  id: true,
+                  fullName: true,
+                  specialty: true
+                }
+              }
+            }
+          });
+
+          if (existingOrder) {
+            createdOrder = await prisma.extraServiceOrder.update({
+              where: { id: existingOrder.id },
+              data: {
+                customPrice: (item.customPrice !== undefined && item.customPrice !== null) ? Number(item.customPrice) : existingOrder.customPrice,
+                finalPrice: effectivePrice,
+                notes: item.notes || existingOrder.notes,
+                doctorId: targetDoctorId || existingOrder.doctorId,
+                visitId: targetVisitId || existingOrder.visitId
+              },
+              include: {
+                service: true,
+                patient: {
+                  select: {
+                    id: true,
+                    patientId: true,
+                    fullName: true,
+                    phone: true,
+                    gender: true,
+                    ageFallback: true
+                  }
+                },
+                doctor: {
+                  select: {
+                    id: true,
+                    fullName: true,
+                    specialty: true
+                  }
+                }
+              }
+            });
+          }
+        }
+
         if (!createdOrder) {
           const finalDoctorId = targetDoctorId || service.doctorId || null;
           const commType = service.doctorCommissionType || "PERCENTAGE";
