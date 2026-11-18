@@ -1037,9 +1037,11 @@ export class LabService {
             ? lt.outsourceCost
             : (it.price || lt.price || 0) * 0.75; // fallback 75% cost if unset
 
-          let hospitalMarkup = lt.hospitalCommission || 0;
-          if (lt.commissionType === "PERCENTAGE" && hospitalMarkup > 0) {
-            hospitalMarkup = (actualCost * hospitalMarkup) / 100;
+          const isPercentage = (lt.commissionType || "").toUpperCase() === "PERCENT" || (lt.commissionType || "").toUpperCase() === "PERCENTAGE";
+          const rawCommRate = lt.hospitalCommission !== null && lt.hospitalCommission !== undefined ? lt.hospitalCommission : 0;
+          let hospitalMarkup = rawCommRate;
+          if (isPercentage && rawCommRate > 0) {
+            hospitalMarkup = Math.round(((actualCost * rawCommRate) / 100) * 100) / 100;
           }
 
           const customerPrice = it.price || lt.price || (actualCost + hospitalMarkup);
@@ -1078,7 +1080,9 @@ export class LabService {
             category: lt.category || "External Pathology",
             outsourcedCenter: centerName,
             outsourceCost: actualCost,
-            commissionType: lt.commissionType || "FLAT",
+            commissionType: isPercentage ? "PERCENTAGE" : "FLAT",
+            commissionRate: rawCommRate,
+            hospitalCommission: hospitalMarkup,
             hospitalMarkup,
             customerPrice,
             profit,
