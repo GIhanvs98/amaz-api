@@ -312,7 +312,7 @@ export class BillingService {
         include: {
           lineItems: true,
           payments: { include: { refunds: true } },
-          patient: true
+          Patient: true
         }
       });
     }
@@ -337,7 +337,7 @@ export class BillingService {
           include: {
             lineItems: true,
             payments: { include: { refunds: true } },
-            patient: true
+            Patient: true
           }
         });
       }
@@ -353,7 +353,7 @@ export class BillingService {
           include: {
             lineItems: true,
             payments: { include: { refunds: true } },
-            patient: true
+            Patient: true
           }
         });
       }
@@ -372,7 +372,7 @@ export class BillingService {
           include: {
             lineItems: true,
             payments: { include: { refunds: true } },
-            patient: true
+            Patient: true
           }
         });
       }
@@ -401,6 +401,8 @@ export class BillingService {
     const totalRefunded = completedPayments.flatMap((p: any) => p.refunds || []).reduce((sum: number, r: any) => sum + (Number(r.amount) || 0), 0);
     const refundableAmount = Math.max(0, totalPaid - totalRefunded);
 
+    const patientObj = invoice.Patient || invoice.patient;
+
     return {
       id: invoice.id,
       invoiceNumber: `INV-${invoice.id.substring(0, 8).toUpperCase()}`,
@@ -411,10 +413,10 @@ export class BillingService {
       paidAmount: totalPaid,
       totalRefunded,
       refundableAmount,
-      patient: invoice.patient ? {
-        id: invoice.patient.id,
-        fullName: invoice.patient.fullName,
-        phone: invoice.patient.phone
+      patient: patientObj ? {
+        id: patientObj.id,
+        fullName: patientObj.fullName,
+        phone: patientObj.phone
       } : null,
       appointment: appointmentInfo ? {
         id: appointmentInfo.id,
