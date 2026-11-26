@@ -1,6 +1,6 @@
 import { verifyToken, requireRole } from "../middlewares/auth.middleware.js";
 import { Router } from "express";
-import { createPrescription, getPendingPrescriptions, markPrescriptionDispensed, updatePrescriptionStatus, getPrescriptionHistory, deletePrescription, updatePrescription, getPrescriptionById, addItemToPrescription, updatePrescriptionItem, deletePrescriptionItem } from "../controllers/prescription.controller.js";
+import { createPrescription, getPendingPrescriptions, markPrescriptionDispensed, updatePrescriptionStatus, getPrescriptionHistory, deletePrescription, updatePrescription, getPrescriptionById, addItemToPrescription, updatePrescriptionItem, deletePrescriptionItem, updatePrescriptionConsultationFee } from "../controllers/prescription.controller.js";
 import { cacheMiddleware } from "../middlewares/cache.middleware.js";
 import { clinicalTransactionLimiter } from "../middlewares/rate-limit.middleware.js";
 
@@ -18,6 +18,7 @@ router.delete("/:id", deletePrescription);
 router.get("/:id", getPrescriptionById);
 
 // Granular medicine item routes
+router.patch("/:id/consultation-fee", updatePrescriptionConsultationFee);
 router.post("/:id/items", addItemToPrescription);
 router.put("/:id/items/:itemId", updatePrescriptionItem);
 router.delete("/:id/items/:itemId", deletePrescriptionItem);

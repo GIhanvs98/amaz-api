@@ -1244,3 +1244,142 @@ export const deletePrescriptionItem = async (req: Request, res: Response): Promi
     res.status(500).json({ error: "Failed to delete prescription item" });
   }
 };
+
+export const updatePrescriptionConsultationFee = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { consultationFee } = req.body;
+
+    if (consultationFee === undefined || consultationFee === null || isNaN(Number(consultationFee)) || Number(consultationFee) < 0) {
+      res.status(400).json({ error: "Invalid consultation fee amount. Must be a non-negative number." });
+      return;
+    }
+
+    const newFee = Number(consultationFee);
+
+    const rx = (await withRetry(() => (prisma as any).prescription.findUnique({
+      where: { id },
+      include: {
+        doctor: { select: { fullName: true } }
+      }
+    }))) as any;
+
+    if (!rx) {
+      res.status(404).json({ error: "Prescription not found" });
+      return;
+    }
+
+    if ((req as any).roleName === 'DOCTOR' && rx.doctorId && rx.doctorId !== (req as any).user?.id) {
+      res.status(403).json({ error: "Forbidden: You can only edit your own prescriptions" });
+      return;
+    }
+
+    if (rx.status === "DISPENSED") {
+      res.status(400).json({ error: "Cannot edit consultation fee on a dispensed prescription" });
+      return;
+    }
+
+    // Check if consultation fee is already paid in any invoice
+    let visitIds: string[] = [rx.visitId];
+    if (rx.visitId) {
+      const currentAppt = (await withRetry(() => (prisma as any).appointment.findUnique({
+        where: { id: rx.visitId }
+      }))) as any;
+      if (currentAppt?.bookingReference) {
+        const linked = (await withRetry(() => (prisma as any).appointment.findMany({
+          where: { bookingReference: currentAppt.bookingReference },
+          select: { id: true }
+        }))) as any[];
+        visitIds = (linked || []).map((l: any) => l.id);
+      }
+    }
+
+    const paidConsultation = await withRetry(() => (prisma as any).invoiceLineItem.findFirst({
+      where: {
+        department: "CONSULTATION",
+        invoice: {
+          visitId: { in: visitIds },
+          status: "PAID"
+        }
+      }
+    }));
+
+    if (paidConsultation) {
+      res.status(400).json({ error: "Consultation fee has already been paid and cannot be modified." });
+      return;
+    }
+
+    const result = await withRetry(async () => {
+      return await (prisma as any).$transaction(async (tx: any) => {
+        // 1. Update prescription consultation fee
+        const updatedRx = await tx.prescription.update({
+          where: { id },
+          data: { consultationFee: newFee }
+        });
+
+        // 2. If a draft invoice exists, update or add the consultation line item and recalculate totals
+        let updatedDraftInvoice: any = null;
+        const draftInv = await tx.invoice.findFirst({
+          where: { visitId: { in: visitIds }, status: "DRAFT" },
+          include: { lineItems: true }
+        });
+
+        if (draftInv) {
+          const consultItem = draftInv.lineItems.find((li: any) => li.department === "CONSULTATION");
+          if (consultItem) {
+            await tx.invoiceLineItem.update({
+              where: { id: consultItem.id },
+              data: {
+                unitPrice: newFee,
+                total: newFee
+              }
+            });
+          } else {
+            await tx.invoiceLineItem.create({
+              data: {
+                invoiceId: draftInv.id,
+                department: "CONSULTATION",
+                description: `Doctor Consultation Fee - Dr. ${rx.doctorName || rx.doctor?.fullName || 'Doctor'}`,
+                quantity: 1,
+                unitPrice: newFee,
+                total: newFee
+              }
+            });
+          }
+
+          const remainingItems = await tx.invoiceLineItem.findMany({
+            where: { invoiceId: draftInv.id }
+          });
+          const newSubtotal = remainingItems.reduce((acc: number, item: any) => acc + (Number(item.total) || 0), 0);
+          updatedDraftInvoice = await tx.invoice.update({
+            where: { id: draftInv.id },
+            data: {
+              subtotal: newSubtotal,
+              totalAmount: Math.max(0, newSubtotal - (draftInv.discountAmount || 0))
+            },
+            include: { lineItems: true }
+          });
+        }
+
+        return { updatedRx, updatedDraftInvoice };
+      });
+    });
+
+    websocketService.broadcast("prescription_updated", {
+      prescriptionId: id,
+      consultationFee: newFee,
+      visitId: rx.visitId
+    });
+
+    res.json({
+      success: true,
+      message: "Consultation fee updated successfully",
+      consultationFee: newFee,
+      prescription: result.updatedRx,
+      draftInvoice: result.updatedDraftInvoice
+    });
+  } catch (error: any) {
+    console.error("Error updating prescription consultation fee:", error);
+    res.status(500).json({ error: error.message || "Failed to update consultation fee" });
+  }
+};
