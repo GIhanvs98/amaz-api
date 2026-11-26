@@ -358,7 +358,23 @@ export const getDailySheets = async (req: Request, res: Response) => {
       }
     });
 
-    const signedSheets = await Promise.all(sheets.map(signSheetSlips));
+    // Self-heal any sheets that were previously marked PAID but now hold undisbursed patient shares
+    const healedSheets = await Promise.all(
+      sheets.map(async (s) => {
+        const remainingCash = Math.max(0, (s.cashDoctorShare || 0) - (s.cashDisbursed || 0));
+        const remainingBank = Math.max(0, (s.bankDoctorShare || 0) - (s.bankDisbursed || 0));
+        if (s.status === "PAID" && (remainingCash > 0.01 || remainingBank > 0.01)) {
+          await prisma.doctorDailySheet.update({
+            where: { id: s.id },
+            data: { status: "DRAFT" }
+          });
+          s.status = "DRAFT";
+        }
+        return s;
+      })
+    );
+
+    const signedSheets = await Promise.all(healedSheets.map(signSheetSlips));
     res.json({ success: true, data: signedSheets });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
@@ -703,6 +719,20 @@ export async function recalculateDailySheetTotals(sheetId: string) {
     .filter(it => (it.collectionMethod || "CASH") !== "CASH")
     .reduce((s, it) => s + (it.doctorShare || 0), 0);
 
+  const totalDisbursed = (sheet.cashDisbursed || 0) + (sheet.bankDisbursed || 0);
+  const remainingNet = Math.max(0, netDoctorPayment - totalDisbursed);
+  const isFullyPaid = remainingNet <= 0.01 && totalDisbursed > 0;
+
+  let newStatus = sheet.status;
+  if (!isFullyPaid) {
+    // If additional patient arrived after cash issuance, sheet has pending share and cannot remain PAID
+    if (sheet.status === "PAID") {
+      newStatus = "DRAFT";
+    }
+  } else {
+    newStatus = "PAID";
+  }
+
   await prisma.doctorDailySheet.update({
     where: { id: sheet.id },
     data: {
@@ -713,7 +743,8 @@ export async function recalculateDailySheetTotals(sheetId: string) {
       cashRevenue,
       cardRevenue,
       cashDoctorShare,
-      bankDoctorShare
+      bankDoctorShare,
+      status: newStatus
     }
   });
 }
@@ -1429,7 +1460,23 @@ export const getFrontdeskDoctorShares = async (req: Request, res: Response) => {
       }
     });
 
-    const signedSheets = await Promise.all(sheets.map(signSheetSlips));
+    // Self-heal any sheets that were previously marked PAID but now hold undisbursed patient shares
+    const healedSheets = await Promise.all(
+      sheets.map(async (s) => {
+        const remainingCash = Math.max(0, (s.cashDoctorShare || 0) - (s.cashDisbursed || 0));
+        const remainingBank = Math.max(0, (s.bankDoctorShare || 0) - (s.bankDisbursed || 0));
+        if (s.status === "PAID" && (remainingCash > 0.01 || remainingBank > 0.01)) {
+          await prisma.doctorDailySheet.update({
+            where: { id: s.id },
+            data: { status: "DRAFT" }
+          });
+          s.status = "DRAFT";
+        }
+        return s;
+      })
+    );
+
+    const signedSheets = await Promise.all(healedSheets.map(signSheetSlips));
     res.json({ success: true, data: signedSheets });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
