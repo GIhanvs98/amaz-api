@@ -14,6 +14,12 @@ router.get('/cashier-metrics', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', '
 // GET /api/billing/invoices?visitId=...
 router.get('/invoices', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST'], 'READ', 'Billing'), billingController.getInvoice.bind(billingController));
 
+// GET /api/billing/invoices/lookup?q=...
+router.get('/invoices/lookup', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST'], 'READ', 'Billing'), billingController.lookupInvoice.bind(billingController));
+
+// GET /api/billing/invoices/:identifier
+router.get('/invoices/:identifier', requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST'], 'READ', 'Billing'), billingController.getInvoiceByIdentifier.bind(billingController));
+
 // POST /api/billing/charge
 router.post('/charge', financialTransactionLimiter, requireRoleOrPermission(['ADMIN', 'SUPERADMIN', 'CASHIER', 'RECEPTIONIST'], 'CREATE', 'Billing'), billingController.charge.bind(billingController));
 

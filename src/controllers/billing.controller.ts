@@ -74,6 +74,34 @@ export class BillingController {
     }
   }
 
+  async getInvoiceByIdentifier(req: Request, res: Response) {
+    try {
+      const identifier = (req.params.identifier || '') as string;
+      const invoice = await billingService.lookupInvoice(identifier);
+      if (!invoice) {
+        return res.status(404).json({ error: 'Invoice not found' });
+      }
+      res.json(invoice);
+    } catch (error: any) {
+      console.error('Get Invoice By Identifier Error:', error);
+      res.status(500).json({ error: error.message || 'Failed to fetch invoice' });
+    }
+  }
+
+  async lookupInvoice(req: Request, res: Response) {
+    try {
+      const q = (req.query.q || req.query.query || '') as string;
+      const invoice = await billingService.lookupInvoice(q);
+      if (!invoice) {
+        return res.status(404).json({ error: 'Invoice not found' });
+      }
+      res.json(invoice);
+    } catch (error: any) {
+      console.error('Lookup Invoice Error:', error);
+      res.status(500).json({ error: error.message || 'Failed to lookup invoice' });
+    }
+  }
+
   async payInvoice(req: Request, res: Response) {
     try {
       const { invoiceId } = req.params;
@@ -149,7 +177,7 @@ export class BillingController {
 
   async processRefund(req: Request, res: Response) {
     try {
-      const { paymentId, invoiceId, amount, reason, remarks, method } = req.body;
+      const { paymentId, invoiceId, amount, reason, remarks, method, shiftId } = req.body;
       const userId = (req as any).user?.id;
 
       if (!amount || amount <= 0) {
@@ -174,10 +202,22 @@ export class BillingController {
         return res.status(400).json({ error: 'paymentId or invoiceId is required' });
       }
 
+      let effectiveShiftId = shiftId;
+      if (!effectiveShiftId && userId) {
+        const activeShift = await prisma.cashRegisterShift.findFirst({
+          where: { openedBy: userId, status: 'OPEN' },
+          orderBy: { openedAt: 'desc' }
+        });
+        if (activeShift) {
+          effectiveShiftId = activeShift.id;
+        }
+      }
+
       const refund = await billingService.processRefund(
         targetPaymentId,
         Number(amount),
-        reason + (remarks ? ` - ${remarks}` : '')
+        reason + (remarks ? ` - ${remarks}` : ''),
+        effectiveShiftId
       );
 
       await clearCache("/api/finance/dashboard");

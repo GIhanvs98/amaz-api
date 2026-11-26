@@ -295,6 +295,141 @@ export class BillingService {
   /**
    * Fetch an invoice by visit ID or Invoice ID
    */
+  /**
+   * Universal Invoice Lookup
+   * Supports Invoice UUID, short-prefix (INV-xxxx), Appointment bookingReference / barcode, or Patient phone.
+   */
+  async lookupInvoice(searchQuery: string) {
+    if (!searchQuery || !searchQuery.trim()) return null;
+    const term = searchQuery.trim();
+
+    let invoice: any = null;
+
+    // 1. Try direct Invoice UUID
+    if (term.match(/^[0-9a-fA-F-]{36}$/)) {
+      invoice = await prisma.invoice.findUnique({
+        where: { id: term },
+        include: {
+          lineItems: true,
+          payments: { include: { refunds: true } },
+          patient: true
+        }
+      });
+    }
+
+    // 2. Try Appointment bookingReference / barcode or Appointment ID
+    if (!invoice) {
+      const appt = await prisma.appointment.findFirst({
+        where: {
+          OR: [
+            { bookingReference: term },
+            ...(term.match(/^[0-9a-fA-F-]{36}$/) ? [{ id: term }] : [])
+          ]
+        },
+        select: { id: true, bookingReference: true }
+      });
+
+      if (appt) {
+        const visitIds = [appt.id, ...(appt.bookingReference ? [appt.bookingReference] : [])];
+        invoice = await prisma.invoice.findFirst({
+          where: { visitId: { in: visitIds } },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            lineItems: true,
+            payments: { include: { refunds: true } },
+            patient: true
+          }
+        });
+      }
+    }
+
+    // 3. Try Invoice ID prefix (e.g. INV-cba2cea9 or cba2cea9)
+    if (!invoice) {
+      const cleanTerm = term.replace(/^INV-/i, '');
+      if (cleanTerm.length >= 6) {
+        invoice = await prisma.invoice.findFirst({
+          where: { id: { startsWith: cleanTerm, mode: 'insensitive' } },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            lineItems: true,
+            payments: { include: { refunds: true } },
+            patient: true
+          }
+        });
+      }
+    }
+
+    // 4. Try Patient phone
+    if (!invoice) {
+      const patient = await prisma.patient.findFirst({
+        where: { phone: term },
+        select: { id: true }
+      });
+      if (patient) {
+        invoice = await prisma.invoice.findFirst({
+          where: { patientId: patient.id },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            lineItems: true,
+            payments: { include: { refunds: true } },
+            patient: true
+          }
+        });
+      }
+    }
+
+    if (!invoice) return null;
+
+    // Fetch linked appointment for richer context
+    let appointmentInfo: any = null;
+    if (invoice.visitId) {
+      appointmentInfo = await prisma.appointment.findFirst({
+        where: {
+          OR: [
+            { id: invoice.visitId },
+            { bookingReference: invoice.visitId }
+          ]
+        },
+        include: {
+          User: { select: { fullName: true } }
+        }
+      });
+    }
+
+    const completedPayments = (invoice.payments || []).filter((p: any) => p.status === 'COMPLETED' || p.status === 'REFUNDED');
+    const totalPaid = completedPayments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
+    const totalRefunded = completedPayments.flatMap((p: any) => p.refunds || []).reduce((sum: number, r: any) => sum + (Number(r.amount) || 0), 0);
+    const refundableAmount = Math.max(0, totalPaid - totalRefunded);
+
+    return {
+      id: invoice.id,
+      invoiceNumber: `INV-${invoice.id.substring(0, 8).toUpperCase()}`,
+      visitId: invoice.visitId,
+      status: invoice.status,
+      totalAmount: invoice.totalAmount,
+      totalPaid,
+      paidAmount: totalPaid,
+      totalRefunded,
+      refundableAmount,
+      patient: invoice.patient ? {
+        id: invoice.patient.id,
+        fullName: invoice.patient.fullName,
+        phone: invoice.patient.phone
+      } : null,
+      appointment: appointmentInfo ? {
+        id: appointmentInfo.id,
+        tokenNumber: appointmentInfo.tokenNumber,
+        bookingReference: appointmentInfo.bookingReference,
+        status: appointmentInfo.status,
+        cancellationReason: appointmentInfo.cancellationReason,
+        doctorName: appointmentInfo.User?.fullName || "Doctor"
+      } : null,
+      payments: invoice.payments,
+      lineItems: invoice.lineItems,
+      createdAt: invoice.createdAt
+    };
+  }
+
   async getInvoice(query: { invoiceId?: string, visitId?: string }) {
     if (query.invoiceId) {
       return prisma.invoice.findUnique({
