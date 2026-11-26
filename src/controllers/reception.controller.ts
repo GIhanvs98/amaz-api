@@ -2099,22 +2099,34 @@ export const getPOSHistory = async (req: Request, res: Response) => {
       const patient = (inv.patientId ? patientsMap.get(inv.patientId) : null) || matchedAppt?.Patient || null;
 
       if (matchedAppt) {
-        const existingVisitItem = unifiedItems.find(
-          ui => ui.type === "VISIT" && (ui.appointmentId === matchedAppt.id || (ui.bookingReference && ui.bookingReference === matchedAppt.bookingReference))
-        );
+        // Only consider consolidating if BOTH invoices are active and PAID.
+        // NEVER merge a REFUNDED or CANCELLED invoice into a PAID visit!
+        const existingVisitItem = (inv.status === "PAID") ? unifiedItems.find(
+          ui => ui.type === "VISIT" &&
+                ui.invoiceStatus === "PAID" &&
+                (ui.appointmentId === matchedAppt.id || (ui.bookingReference && ui.bookingReference === matchedAppt.bookingReference))
+        ) : null;
 
         if (existingVisitItem) {
-          existingVisitItem.totalAmount = Math.round((existingVisitItem.totalAmount + inv.totalAmount) * 100) / 100;
-          existingVisitItem.lineItems = [...(existingVisitItem.lineItems || []), ...(inv.lineItems || [])];
-          if (existingVisitItem.invoice) {
-            existingVisitItem.invoice.total = existingVisitItem.totalAmount;
-            existingVisitItem.invoice.subtotal = Math.round(((existingVisitItem.invoice.subtotal || 0) + (inv.subtotal || inv.totalAmount)) * 100) / 100;
-            existingVisitItem.invoice.items = (existingVisitItem.lineItems || []).map((li: any) => ({
-              name: li.description,
-              qty: li.quantity,
-              price: li.unitPrice,
-              total: li.total
-            }));
+          // Guard against duplicate line items (e.g. re-created or duplicate consultation charges)
+          const existingLineItemIds = new Set((existingVisitItem.lineItems || []).map((li: any) => li.id || li.referenceId));
+          const newItems = (inv.lineItems || []).filter((li: any) => !existingLineItemIds.has(li.id || li.referenceId));
+
+          if (newItems.length > 0) {
+            const addedTotal = newItems.reduce((sum: number, li: any) => sum + (Number(li.total) || 0), 0);
+            existingVisitItem.totalAmount = Math.round((existingVisitItem.totalAmount + addedTotal) * 100) / 100;
+            existingVisitItem.lineItems = [...(existingVisitItem.lineItems || []), ...newItems];
+            if (existingVisitItem.invoice) {
+              existingVisitItem.invoice.total = existingVisitItem.totalAmount;
+              existingVisitItem.invoice.subtotal = existingVisitItem.totalAmount;
+              existingVisitItem.invoice.items = existingVisitItem.lineItems.map((li: any) => ({
+                name: li.description,
+                qty: li.quantity,
+                price: li.unitPrice,
+                total: li.total,
+                department: li.department
+              }));
+            }
           }
           return;
         }
