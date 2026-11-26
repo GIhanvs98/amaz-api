@@ -1258,10 +1258,7 @@ export const updatePrescriptionConsultationFee = async (req: Request, res: Respo
     const newFee = Number(consultationFee);
 
     const rx = (await withRetry(() => (prisma as any).prescription.findUnique({
-      where: { id },
-      include: {
-        doctor: { select: { fullName: true } }
-      }
+      where: { id }
     }))) as any;
 
     if (!rx) {
@@ -1339,7 +1336,7 @@ export const updatePrescriptionConsultationFee = async (req: Request, res: Respo
               data: {
                 invoiceId: draftInv.id,
                 department: "CONSULTATION",
-                description: `Doctor Consultation Fee - Dr. ${rx.doctorName || rx.doctor?.fullName || 'Doctor'}`,
+                description: `Doctor Consultation Fee - Dr. ${rx.doctorName || 'Doctor'}`,
                 quantity: 1,
                 unitPrice: newFee,
                 total: newFee
