@@ -897,7 +897,12 @@ export class FrontdeskService {
       ]
     };
 
-    if (!ignoreConflict) {
+    const timeOrRoomChanged = 
+      (data.startTime !== undefined && data.startTime !== existing.startTime) ||
+      (data.endTime !== undefined && data.endTime !== existing.endTime) ||
+      (data.roomId !== undefined && data.roomId !== existing.roomId);
+
+    if (!ignoreConflict && timeOrRoomChanged) {
       // Check doctor overlap (date-aware)
       const existingSessions = await prisma.doctorScheduleSession.findMany({
         where: {
