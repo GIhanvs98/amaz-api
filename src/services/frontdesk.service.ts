@@ -260,14 +260,20 @@ export class FrontdeskService {
 
           // Handle automated refunds for prepaid appointments and send SMS
           const aptIds = pendingApts.map(apt => apt.id);
+          const bookingRefs = pendingApts.map(apt => apt.bookingReference).filter(Boolean) as string[];
+          const allLookupKeys = Array.from(new Set([...aptIds, ...bookingRefs]));
+
           const invoices = await prisma.invoice.findMany({
-            where: { visitId: { in: aptIds }, status: 'PAID' },
+            where: { visitId: { in: allLookupKeys }, status: 'PAID' },
             include: { payments: true }
           });
-          const invoiceMap = new Map(invoices.map(inv => [inv.visitId, inv]));
+          const invoiceMap = new Map();
+          for (const inv of invoices) {
+            if (inv.visitId) invoiceMap.set(inv.visitId, inv);
+          }
 
           for (const apt of pendingApts) {
-            const invoice = invoiceMap.get(apt.id);
+            const invoice = invoiceMap.get(apt.id) || (apt.bookingReference ? invoiceMap.get(apt.bookingReference) : null);
             
             if (invoice) {
               for (const p of invoice.payments) {
@@ -414,14 +420,18 @@ export class FrontdeskService {
     const { startOfDay, endOfDay } = getTimezoneBoundaries(dateString);
 
     const session = await prisma.doctorScheduleSession.findUnique({
-      where: { id: sessionId }
+      where: { id: sessionId },
+      include: { schedule: true }
     });
     if (!session) throw new Error('Session not found');
 
     const appointments = await prisma.appointment.findMany({
       where: {
-        sessionId,
-        appointmentDate: { gte: startOfDay, lte: endOfDay }
+        appointmentDate: { gte: startOfDay, lte: endOfDay },
+        OR: [
+          { sessionId },
+          { sessionId: null, doctorId: session.schedule?.doctorId }
+        ]
       },
       include: {
         Patient: true
@@ -445,9 +455,15 @@ export class FrontdeskService {
 
   // 4. Update Token / Appointment Status
   async updateAppointmentStatus(appointmentId: string, status: string, userId: string) {
+    const updateData: any = { status };
+    if (status === 'IN_PROGRESS' || status === 'CONSULTATION') updateData.calledAt = new Date();
+    if (status === 'COMPLETED') updateData.completedAt = new Date();
+    if (status === 'CHECKED_IN' || status === 'ARRIVED') updateData.checkedInAt = new Date();
+    if (status === 'CANCELLED') updateData.cancelledAt = new Date();
+
     const apt = await prisma.appointment.update({
       where: { id: appointmentId },
-      data: { status },
+      data: updateData,
       include: { Patient: true, User: true }
     });
 
