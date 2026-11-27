@@ -60,7 +60,11 @@ export class FrontdeskService {
 
     const mapped = doctors.map((doc: any) => {
       const docAttendance = attendance.find((a: any) => a.doctorId === doc.id);
-      const docSchedule = schedules.find((s: any) => s.doctorId === doc.id);
+      const docSchedules = schedules.filter((s: any) => s.doctorId === doc.id);
+      const allDocSessions = docSchedules.flatMap((s: any) => s.sessions || []);
+      const uniqueSessions = Array.from(
+        new Map(allDocSessions.map((sess: any) => [sess.id, sess])).values()
+      ).sort((a: any, b: any) => a.startTime.localeCompare(b.startTime));
       
       const docTokens = ongoingTokens.filter((t: any) => t.doctorId === doc.id);
       const currentToken = docTokens.find((t: any) => t.status === 'IN_PROGRESS') || docTokens[0];
@@ -70,7 +74,7 @@ export class FrontdeskService {
         roomId: docAttendance?.roomId || doc.roomId || null,
         roomNumber: docAttendance?.room?.roomNumber || doc.room?.roomNumber || null,
         attendance: docAttendance || null,
-        sessions: docSchedule?.sessions || [],
+        sessions: uniqueSessions,
         currentSessionId: currentToken?.sessionId || null,
         currentlyServing: currentToken ? (currentToken.tokenNumber.includes('-') ? parseInt(currentToken.tokenNumber.split('-')[1] || "0", 10) : currentToken.tokenNumber) : null
       };
@@ -438,11 +442,25 @@ export class FrontdeskService {
       }
     });
 
-    // Create a matrix of size `tokenCapacity`
+    // For unlimited sessions (tokenCapacity >= 9999), dynamically size matrix based on highest token + buffer
+    const isUnlimited = (session.tokenCapacity ?? 40) >= 9999;
+    const maxBookedTokenNum = appointments.reduce((max: number, a: any) => {
+      const num = parseInt(String(a.tokenNumber).replace(/\D/g, '') || "0", 10);
+      return Math.max(max, num);
+    }, 0);
+
+    const displayCapacity = isUnlimited 
+      ? Math.max(20, maxBookedTokenNum + 10) 
+      : Math.min(session.tokenCapacity, 500);
+
+    // Create a matrix of size `displayCapacity`
     const tokens = [];
-    for (let i = 1; i <= session.tokenCapacity; i++) {
+    for (let i = 1; i <= displayCapacity; i++) {
       const tokenStr = i.toString().padStart(2, "0");
-      const apt = appointments.find((a: any) => a.tokenNumber === tokenStr);
+      const apt = appointments.find((a: any) => {
+        const cleanApt = String(a.tokenNumber).replace(/\D/g, '').padStart(2, "0");
+        return cleanApt === tokenStr || a.tokenNumber === tokenStr;
+      });
       tokens.push({
         tokenNumber: tokenStr,
         status: apt ? apt.status : 'AVAILABLE',
@@ -969,6 +987,10 @@ export class FrontdeskService {
     }
 
     const { ignoreConflict: _, override: __, ...updateData } = data;
+
+    if (updateData.tokenCapacity !== undefined) {
+      updateData.tokenCapacity = parseInt(String(updateData.tokenCapacity), 10);
+    }
 
     const session = await prisma.doctorScheduleSession.update({
       where: { id: sessionId },

@@ -8,8 +8,13 @@ class WebSocketService {
   public initialize(server: HttpServer) {
     this.io = new SocketIOServer(server, {
       cors: {
-        origin: "*", // allow all origins for dev
-        methods: ["GET", "POST"]
+        origin: (origin, callback) => {
+          // Allow requests with no origin (like mobile apps or curl) or reflect requesting origin
+          if (!origin) return callback(null, true);
+          return callback(null, origin);
+        },
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
       }
     });
 

@@ -157,9 +157,15 @@ export class BookingService {
 
       // Normalize: token numbers are stored as zero-padded 3-char strings e.g. "001" or with prefixes like "MLT-001"
       const bookedNumbers = new Set(existingTokens.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
+      const isUnlimited = effectiveCapacity >= 9999;
+      const maxBookedNum = existingTokens.reduce((max, t) => {
+        const num = parseInt(t.tokenNumber.replace(/\D/g, '') || "0", 10);
+        return Math.max(max, num);
+      }, 0);
+      const displayCapacity = isUnlimited ? Math.max(20, maxBookedNum + 10) : effectiveCapacity;
+
       const tokens = [];
-      
-      for (let i = 1; i <= effectiveCapacity; i++) {
+      for (let i = 1; i <= displayCapacity; i++) {
         tokens.push({
           tokenNumber: i,
           status: bookedNumbers.has(i) ? "BOOKED" : "AVAILABLE"
@@ -169,7 +175,7 @@ export class BookingService {
       const bookedCount = existingTokens.length;
 
       return {
-        available: bookedCount < effectiveCapacity,
+        available: isUnlimited || bookedCount < effectiveCapacity,
         sessions: allSessions.map(s => ({
           id: s.id,
           sessionName: s.sessionName,
@@ -182,6 +188,7 @@ export class BookingService {
         sessionName: session.sessionName,
         bookedSlots: bookedCount,
         totalSlots: effectiveCapacity,
+        isUnlimited,
         tokens,
         startTime: effectiveStartTime,
         endTime: effectiveEndTime
