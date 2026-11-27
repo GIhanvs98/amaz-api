@@ -162,7 +162,7 @@ export class BookingService {
         const num = parseInt(t.tokenNumber.replace(/\D/g, '') || "0", 10);
         return Math.max(max, num);
       }, 0);
-      const displayCapacity = isUnlimited ? Math.max(20, maxBookedNum + 10) : effectiveCapacity;
+      const displayCapacity = isUnlimited ? Math.max(100, maxBookedNum + 50) : effectiveCapacity;
 
       const tokens = [];
       for (let i = 1; i <= displayCapacity; i++) {

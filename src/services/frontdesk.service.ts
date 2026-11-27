@@ -450,7 +450,7 @@ export class FrontdeskService {
     }, 0);
 
     const displayCapacity = isUnlimited 
-      ? Math.max(20, maxBookedTokenNum + 10) 
+      ? Math.max(100, maxBookedTokenNum + 50) 
       : Math.min(session.tokenCapacity, 500);
 
     // Create a matrix of size `displayCapacity`
