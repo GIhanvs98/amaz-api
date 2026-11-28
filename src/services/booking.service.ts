@@ -213,11 +213,17 @@ export class BookingService {
       select: { tokenNumber: true }
     });
 
-    const bookedNumbers = new Set(existingTokens.map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10)));
-    const tokens = [];
-    const capacity = 100; // Hardcoded capacity for non-doctor departments
+    const bookedNumbers = new Set(
+      existingTokens
+        .map(t => parseInt(t.tokenNumber.replace(/\D/g, ''), 10))
+        .filter(n => !isNaN(n))
+    );
 
-    for (let i = 1; i <= capacity; i++) {
+    const maxBookedNum = Array.from(bookedNumbers).reduce((max, n) => Math.max(max, n), 0);
+    const displayCapacity = Math.max(100, maxBookedNum + 50);
+
+    const tokens = [];
+    for (let i = 1; i <= displayCapacity; i++) {
       tokens.push({
         tokenNumber: i,
         status: bookedNumbers.has(i) ? "BOOKED" : "AVAILABLE"
@@ -225,10 +231,12 @@ export class BookingService {
     }
 
     return {
-      available: bookedNumbers.size < capacity,
+      available: true,
+      isUnlimited: true,
       bookedSlots: bookedNumbers.size,
-      totalSlots: capacity,
-      tokens
+      totalSlots: 9999,
+      tokens,
+      bookedTokenNumbers: Array.from(bookedNumbers)
     };
   }
 
