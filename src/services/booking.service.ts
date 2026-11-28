@@ -190,6 +190,7 @@ export class BookingService {
         totalSlots: effectiveCapacity,
         isUnlimited,
         tokens,
+        bookedTokenNumbers: Array.from(bookedNumbers),
         startTime: effectiveStartTime,
         endTime: effectiveEndTime
       };
